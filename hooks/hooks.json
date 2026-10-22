@@ -1,0 +1,30 @@
+{
+  "description": "Expose available LSP servers at session start and check changed source files before Codex stops.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/session_start.py",
+            "timeout": 10,
+            "statusMessage": "Checking language server availability"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/stop.py",
+            "timeout": 120,
+            "statusMessage": "Checking changed files with LSP"
+          }
+        ]
+      }
+    ]
+  }
+}

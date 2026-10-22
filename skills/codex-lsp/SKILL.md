@@ -1,0 +1,25 @@
+---
+name: codex-lsp
+description: Use the bundled local LSP CLI for code navigation, symbol lookup, diagnostics, and rename workflows when a matching language server is installed.
+---
+
+Use the `codex-lsp` command when language-server information can resolve a code question or validate edited files. If the CLI is not on `PATH`, locate the bundled executable at `bin/codex-lsp` relative to the plugin root; from this skill directory that is `../../bin/codex-lsp`. Invoke it directly or through `python3`.
+
+Start with `codex-lsp status`. Use the command output as evidence and open the affected source before editing. If no server matches or diagnostics are unverified, continue with the project's normal compiler, linter, or tests when appropriate.
+
+Common commands:
+
+- `codex-lsp diagnostics --file path/to/file.rs`
+- `codex-lsp diagnostics --changed`
+- `codex-lsp definition --file path/to/file.rs --line 20 --symbol parse`
+- `codex-lsp references --file path/to/file.rs --line 20 --symbol parse`
+- `codex-lsp hover --file path/to/file.rs --line 20 --symbol parse`
+- `codex-lsp symbols --file path/to/file.rs`
+- `codex-lsp symbols --workspace --query parser`
+- `codex-lsp rename --file path/to/file.rs --line 20 --symbol parse --new-name parse_value`
+- `codex-lsp code-actions --file path/to/file.rs --line 20`
+- `codex-lsp capabilities --file path/to/file.rs`
+
+Rename and code-action commands preview by default. Add `--apply` only when the user requested the change. `rename-file` also previews unless `--apply` is present. Raw requests require `--apply` unless their method is on the CLI's read-only allowlist.
+
+The CLI reads JSON overrides from `~/.codex/lsp.json` and `<git-root>/.codex/lsp.json`. Server settings use `command`, `args`, `fileTypes`, `rootMarkers`, and optional `languageId`, `initOptions`, and `settings`; built-in definitions are merged with these overrides. Hooks use built-in definitions and globally resolved executables only. They never apply edits.

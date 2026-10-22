@@ -1,0 +1,1 @@
+The bundled `src/codex_lsp/defaults.json` is derived from `packages/coding-agent/src/lsp/defaults.json` in [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi), commit `3a2758b68f7c8e6bdf22c3a76b86c8675e5e0c9e` (2026-10-21). The OMP-specific `typescript-native` and `swiftlint` entries are omitted. The upstream MIT license is included at `LICENSES/oh-my-pi-MIT.txt`.
