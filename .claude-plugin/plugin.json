@@ -1,0 +1,10 @@
+{
+  "name": "codex-lsp",
+  "version": "0.2.3",
+  "description": "Use local language servers from Claude Code with the codex-lsp CLI, skill, and lifecycle hooks.",
+  "author": {
+    "name": "trotsky1997"
+  },
+  "repository": "https://github.com/trotsky1997/omp-lsp-codex",
+  "license": "MIT"
+}

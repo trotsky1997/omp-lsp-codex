@@ -1,3 +1,3 @@
-"""Standalone LSP client for Codex workflows."""
+"""Standalone LSP client for agent workflows."""
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"

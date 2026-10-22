@@ -987,7 +987,7 @@ def _add_common(parser: argparse.ArgumentParser, needs_file: bool = True, positi
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="codex-lsp", description="Query local language servers from Codex workflows")
+    parser = argparse.ArgumentParser(prog="codex-lsp", description="Query local language servers from agent workflows")
     parser.add_argument("--version", action="version", version=f"codex-lsp {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 

@@ -1,5 +1,5 @@
 {
-  "description": "Expose available LSP servers at session start and check changed source files before Codex stops.",
+  "description": "Expose available LSP servers at session start and check changed source files before Claude Code stops.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/session_start.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
             "timeout": 10,
             "statusMessage": "Checking language server availability"
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/stop.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.py\"",
             "timeout": 120,
             "statusMessage": "Checking changed files with LSP"
           }

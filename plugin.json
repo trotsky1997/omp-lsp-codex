@@ -1,11 +1,11 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "codex-lsp",
-  "version": "0.2.2",
-  "description": "Use local language servers from Codex with a standalone CLI, skill, and lifecycle hooks.",
+  "version": "0.2.3",
+  "description": "Use local language servers from Codex and Claude Code with a standalone CLI, skill, and lifecycle hooks.",
   "extensions": {
     "com.openai": {
-      "hooks": "./hooks/hooks.json"
+      "hooks": "./hooks/codex-hooks.json"
     }
   }
 }

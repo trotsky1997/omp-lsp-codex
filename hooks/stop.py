@@ -9,10 +9,15 @@ def emit(value: dict) -> None:
     print(json.dumps(value, ensure_ascii=False))
 
 
+def allow_stop() -> None:
+    if not os.environ.get("CLAUDE_PLUGIN_ROOT"):
+        emit({"continue": True})
+
+
 def main() -> int:
     event = json.load(sys.stdin)
     if event.get("stop_hook_active"):
-        emit({"continue": True})
+        allow_stop()
         return 0
 
     plugin_root = Path(os.environ.get("PLUGIN_ROOT", Path(__file__).resolve().parents[1]))
@@ -46,7 +51,7 @@ def main() -> int:
             summary += f"\n... and {len(issues) - 12} more"
         emit({"decision": "block", "reason": f"LSP found errors in changed files. Fix them, or explain why they are expected.\n{summary}"})
     else:
-        emit({"continue": True})
+        allow_stop()
     return 0
 
 

@@ -1,0 +1,14 @@
+{
+  "name": "omp-lsp-codex",
+  "description": "The codex-lsp plugin for Codex and Claude Code.",
+  "owner": {
+    "name": "trotsky1997"
+  },
+  "plugins": [
+    {
+      "name": "codex-lsp",
+      "source": "./",
+      "description": "Use local language servers from Claude Code with the codex-lsp CLI, skill, and lifecycle hooks."
+    }
+  ]
+}

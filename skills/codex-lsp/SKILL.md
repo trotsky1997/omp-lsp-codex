@@ -3,7 +3,7 @@ name: codex-lsp
 description: Use the bundled local LSP CLI for code navigation, symbol lookup, diagnostics, and rename workflows; set up missing language servers when needed.
 ---
 
-This plugin exposes LSP operations as a CLI, not as a separate tool entry. Do not stop because the tool list has no LSP item. When a terminal or shell execution tool is available, call the CLI through it. If no terminal or shell execution tool is available, say that shell execution is unavailable.
+This plugin exposes LSP operations through a CLI, not as a separate tool entry. Do not stop because the tool list has no LSP item. In Codex or Claude Code, call the CLI through an available terminal or shell tool. If none is available, say that shell execution is unavailable.
 
 Use `codex-lsp` when language-server information can resolve a code question or validate edited files. Run it through the terminal or shell execution tool. Register the CLI with `uv tool install --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp` when it is not installed. If it is installed but not on `PATH`, get the executable directory from `uv tool dir --bin` and invoke `codex-lsp` from that directory. The private repository requires GitHub access. Use the plugin-bundled `bin/codex-lsp` only when uv installation is unavailable; resolve its absolute path from the installed skill/plugin location and do not run a workspace-relative `../../bin/codex-lsp` path.
 
