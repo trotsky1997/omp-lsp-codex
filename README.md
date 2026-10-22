@@ -57,7 +57,7 @@ Each server needs a command, file types, and root markers. Built-in fields can b
 
 ## Codex skill and hooks
 
-The `skills/codex-lsp` skill directs Codex to the CLI for navigation and diagnostics. Plugin hooks add available-server context when a session starts and check changed files before Codex stops. The Stop hook uses only bundled server definitions and executables resolved outside the project root. It asks Codex to continue when changed files have LSP errors; it skips when no server can verify them.
+The `skills/codex-lsp` skill directs Codex to invoke the CLI through terminal or shell execution; this plugin does not add a separate LSP tool entry. Plugin hooks add available-server context when a session starts and check changed files before Codex stops. The Stop hook uses only bundled server definitions and executables resolved outside the project root. It asks Codex to continue when changed files have LSP errors; it skips when no server can verify them.
 
 For plugin installation, add this folder as a local marketplace with `codex plugin marketplace add /absolute/path/to/omp-lsp-codex`, then install it from the local marketplace in the Codex desktop app. Review and trust the hook definitions with `/hooks` before they run. Lifecycle hooks are for manually installed Codex desktop plugins; packages containing them cannot be submitted to the public plugin directory.
 

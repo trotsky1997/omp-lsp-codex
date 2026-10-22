@@ -3,7 +3,9 @@ name: codex-lsp
 description: Use the bundled local LSP CLI for code navigation, symbol lookup, diagnostics, and rename workflows when a matching language server is installed.
 ---
 
-Use the `codex-lsp` command when language-server information can resolve a code question or validate edited files. If the CLI is not on `PATH`, locate the bundled executable at `bin/codex-lsp` relative to the plugin root; from this skill directory that is `../../bin/codex-lsp`. For standalone use without the plugin, invoke it with `uvx --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp`; the GitHub account used by `uvx` must have access to the private repository.
+This plugin exposes LSP operations as a CLI, not as a separate tool entry. Do not stop because the tool list has no LSP item. When a terminal or shell execution tool is available, call the CLI through it. If no terminal or shell execution tool is available, say that shell execution is unavailable.
+
+Use `codex-lsp` when language-server information can resolve a code question or validate edited files. Run it through the terminal or shell execution tool. If the command is not on `PATH`, use the bundled executable at `bin/codex-lsp` relative to the plugin root; from this skill directory that is `../../bin/codex-lsp`. For standalone use without the plugin, invoke it with `uvx --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp`; the GitHub account used by `uvx` must have access to the private repository.
 
 Start with `codex-lsp status`. Use the command output as evidence and open the affected source before editing. If no server matches or diagnostics are unverified, continue with the project's normal compiler, linter, or tests when appropriate.
 
