@@ -1,4 +1,4 @@
-# Codex LSP
+# codex-lsp
 
 A standalone Python 3.10+ CLI for local Language Server Protocol tools, packaged with Codex and Claude Code skills and lifecycle hooks. Runtime code uses only the Python standard library.
 
@@ -33,7 +33,7 @@ codex-lsp code-actions --file path/to/file.rs --line 20
 
 ## Server configuration
 
-The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths in `~/.codex/lsp.json`. Use `--project` to write to the current Git root's `.codex/lsp.json`. If an executable is missing, setup reports the server ID and command; the skill guides the agent to inspect the project toolchain, install the server with its package manager, and rerun setup. Setup itself does not install language servers.
+The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths. If an executable is missing, setup reports the server ID and command; the skill guides the agent to inspect the project toolchain, install the server with its package manager, and rerun setup. Setup itself does not install language servers.
 
 The CLI merges optional JSON files in this order:
 
@@ -57,7 +57,7 @@ Example:
 
 Each server needs a command, file types, and root markers. Built-in fields can be overridden by name. The CLI supports JSON configuration only.
 
-The same configuration is used from both Codex and Claude Code. The paths retain the existing Codex naming: `codex-lsp setup` writes to `~/.codex/lsp.json`, or `.codex/lsp.json` with `--project`.
+The same configuration is used from Codex and Claude Code. `codex-lsp setup` writes to `~/.codex/lsp.json`, or `.codex/lsp.json` with `--project`.
 
 ## Install the Codex plugin
 
@@ -103,7 +103,7 @@ The `skills/codex-lsp` skill directs the agent to invoke the CLI through termina
 
 Codex lifecycle hooks are for manually installed Codex desktop plugins; packages containing them cannot be submitted to the public Codex plugin directory. For development from a local checkout, add its path instead with `codex plugin marketplace add /absolute/path/to/omp-lsp-codex`.
 
-For the Codex CLI without plugin installation, clone this private repository, copy `skills/codex-lsp` into `~/.codex/skills/`, then merge the two handlers from `hooks/codex-hooks.json` into `~/.codex/hooks.json`. Replace `${PLUGIN_ROOT}` in each command with the checkout's absolute path. Register the CLI with `uv tool install --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp`; the scripts also work when called directly and infer the package root from their own file path.
+For the Codex CLI without plugin installation, clone this private repository, copy `skills/codex-lsp` into `~/.codex/skills/`, then merge the two handlers from `hooks/codex-hooks.json` into `~/.codex/hooks.json`. Replace `${PLUGIN_ROOT}` in each command with the checkout's absolute path. Install the CLI using the uv command at the top of this page.
 
 ## Scope
 
