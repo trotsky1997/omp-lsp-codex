@@ -4,7 +4,7 @@ A standalone Python 3.10+ CLI for local Language Server Protocol tools, packaged
 
 ## Install the CLI with uv
 
-The repository is private, so the GitHub account used by `uv` needs access. Register the command once:
+The repository is public, so no GitHub credentials are needed. Register the command once:
 
 ```sh
 uv tool install --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp
@@ -68,7 +68,7 @@ The same configuration is used from Codex and Claude Code. `codex-lsp setup` wri
 
 ## Install the Codex plugin
 
-The GitHub repository is private, so the Git credentials available to Codex must have read access. Add the repository as a marketplace, then install the plugin:
+The GitHub repository is public, so Codex does not need Git credentials to install it. Add the repository as a marketplace, then install the plugin:
 
 ```sh
 codex plugin marketplace add https://github.com/trotsky1997/omp-lsp-codex.git
@@ -95,7 +95,7 @@ codex plugin marketplace remove codex-lsp-local
 
 ## Install the Claude Code plugin
 
-The GitHub repository is private, so your Git credentials must have read access. Install the plugin for your user:
+The GitHub repository is public, so no GitHub credentials are required. Install the plugin for your user:
 
 ```sh
 claude plugin install codex-lsp --marketplace trotsky1997/omp-lsp-codex --scope user
@@ -110,7 +110,7 @@ The `skills/codex-lsp` skill directs the agent to invoke the CLI through termina
 
 Codex lifecycle hooks are for manually installed Codex desktop plugins; packages containing them cannot be submitted to the public Codex plugin directory. For development from a local checkout, add its path instead with `codex plugin marketplace add /absolute/path/to/omp-lsp-codex`.
 
-For the Codex CLI without plugin installation, clone this private repository, copy `skills/codex-lsp` into `~/.codex/skills/`, then merge the two handlers from `hooks/codex-hooks.json` into `~/.codex/hooks.json`. Replace `${PLUGIN_ROOT}` in each command with the checkout's absolute path. Install the CLI using the uv command at the top of this page.
+For the Codex CLI without plugin installation, clone this repository, copy `skills/codex-lsp` into `~/.codex/skills/`, then merge the two handlers from `hooks/codex-hooks.json` into `~/.codex/hooks.json`. Replace `${PLUGIN_ROOT}` in each command with the checkout's absolute path. Install the CLI using the uv command at the top of this page.
 
 ## Scope
 
