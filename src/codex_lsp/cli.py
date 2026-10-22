@@ -45,6 +45,11 @@ LANGUAGE_IDS = {
     ".tla": "tlaplus", ".toml": "toml", ".ts": "typescript", ".tsx": "typescriptreact", ".vue": "vue",
     ".yaml": "yaml", ".yml": "yaml", ".zig": "zig",
 }
+LANGUAGE_ALIASES = {
+    "bash": ".sh", "c++": ".cpp", "c#": ".cs", "docker": "dockerls",
+    "dockerfile": "dockerls", "helm": "helm-ls", "latex": "texlab", "odin": "ols",
+    "shell": ".sh", "tex": "texlab",
+}
 
 
 def _git_root(cwd: Path) -> Path:
@@ -143,6 +148,30 @@ def available_servers(
             continue
         result.append({**raw, "name": name, "root": root, "resolvedCommand": command})
     return result
+
+
+def _server_for_language(language: str, configs: dict[str, dict[str, Any]]) -> str:
+    name = language.casefold()
+    if name in configs:
+        return name
+    alias = LANGUAGE_ALIASES.get(name)
+    if alias in configs:
+        return alias
+    extensions = [alias] if alias else [
+        ext for ext, language_id in LANGUAGE_IDS.items() if language_id.casefold() == name
+    ]
+    if not extensions and name.startswith("."):
+        extensions = [name]
+    if not extensions:
+        extensions = [f".{name}"]
+    candidates = [
+        server_name
+        for server_name, config in configs.items()
+        if any(file_type.casefold() in extensions for file_type in config.get("fileTypes", []))
+    ]
+    if candidates:
+        return next((server for server in candidates if not configs[server].get("isLinter")), candidates[0])
+    raise LspError(f"No bundled language server matches {language!r}; pass a server ID to select one directly")
 
 
 def _matches_file(config: dict[str, Any], path: Path) -> bool:
@@ -368,7 +397,8 @@ def _atomic_write(path: Path, content: bytes) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     finally:
         try:
@@ -477,6 +507,60 @@ def _changed_files(cwd: Path) -> list[Path]:
 
 def _diagnostic_record(path: Path, diagnostics: list[dict[str, Any]], verified: bool) -> dict[str, Any]:
     return {"file": str(path), "verified": verified, "diagnostics": diagnostics}
+
+
+def command_setup(args: argparse.Namespace, cwd: Path) -> int:
+    configs = load_config(cwd)
+    languages = [
+        language.strip()
+        for value in args.languages
+        for language in re.split(r"[,，]", value)
+        if language.strip()
+    ]
+    if not languages:
+        raise LspError("Provide one or more languages, such as `codex-lsp setup rust python`")
+
+    selected: dict[str, tuple[str, str]] = {}
+    missing: list[str] = []
+    for language in languages:
+        name = _server_for_language(language, configs)
+        config = configs[name]
+        command = _resolve_command(config["command"], cwd, False)
+        if command is None:
+            missing.append(f"{language} ({name}: {config['command']})")
+        else:
+            selected[name] = (language, command)
+    if missing:
+        raise LspError("Install these language-server commands, then rerun setup: " + ", ".join(missing))
+
+    path = (_git_root(cwd) / ".codex" / "lsp.json") if args.project else (Path.home() / ".codex" / "lsp.json")
+    if path.is_file():
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise LspError(f"Invalid LSP config {path}: {exc}") from exc
+    else:
+        document = {"servers": {}}
+    if not isinstance(document, dict):
+        raise LspError(f"LSP config must contain an object: {path}")
+    wrapped = "servers" in document
+    entries = document["servers"] if wrapped else document
+    if not isinstance(entries, dict):
+        raise LspError(f"The servers field must contain an object: {path}")
+    for name, (_, command) in selected.items():
+        previous = entries.get(name, {})
+        if not isinstance(previous, dict):
+            raise LspError(f"LSP config entry {name!r} must contain an object: {path}")
+        entries[name] = {**previous, "command": command}
+    if wrapped:
+        document["servers"] = entries
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    print(f"Configured language servers in {path}:")
+    for name, (language, command) in selected.items():
+        print(f"- {language}: {name} ({command})")
+    return 0
 
 
 def command_status(args: argparse.Namespace, cwd: Path) -> int:
@@ -912,6 +996,10 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--builtins-only", action="store_true")
     status.add_argument("--global-bins-only", action="store_true", help=argparse.SUPPRESS)
 
+    setup = commands.add_parser("setup", help="Configure language servers for selected languages")
+    setup.add_argument("languages", nargs="+", metavar="LANGUAGE", help="Language names or server IDs; separate with spaces or English/Chinese commas")
+    setup.add_argument("--project", action="store_true", help="Write to <git-root>/.codex/lsp.json instead of ~/.codex/lsp.json")
+
     diagnostics = commands.add_parser("diagnostics", help="Get diagnostics for one file or changed files")
     _add_common(diagnostics, needs_file=False)
     diagnostics.add_argument("--changed", action="store_true", help="Check files changed from Git HEAD, including untracked files")
@@ -958,9 +1046,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    args.timeout = max(5, min(300, args.timeout))
+    if hasattr(args, "timeout"):
+        args.timeout = max(5, min(300, args.timeout))
     cwd = Path.cwd().resolve()
     try:
+        if args.command == "setup":
+            return command_setup(args, cwd)
         if args.command == "status":
             return command_status(args, cwd)
         if args.command == "diagnostics":

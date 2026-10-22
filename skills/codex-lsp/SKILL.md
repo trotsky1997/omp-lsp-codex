@@ -1,6 +1,6 @@
 ---
 name: codex-lsp
-description: Use the bundled local LSP CLI for code navigation, symbol lookup, diagnostics, and rename workflows when a matching language server is installed.
+description: Use the bundled local LSP CLI for code navigation, symbol lookup, diagnostics, and rename workflows; set up missing language servers when needed.
 ---
 
 This plugin exposes LSP operations as a CLI, not as a separate tool entry. Do not stop because the tool list has no LSP item. When a terminal or shell execution tool is available, call the CLI through it. If no terminal or shell execution tool is available, say that shell execution is unavailable.
@@ -9,8 +9,11 @@ Use `codex-lsp` when language-server information can resolve a code question or 
 
 Start with `codex-lsp status`. Use the command output as evidence and open the affected source before editing. If no server matches or diagnostics are unverified, continue with the project's normal compiler, linter, or tests when appropriate.
 
+Run `codex-lsp setup <language...>` to register servers in `~/.codex/lsp.json`; use `--project` to write to the current Git root's `.codex/lsp.json`. It accepts language names such as `rust`, `python`, and `typescript`, or a bundled server ID. When setup reports a missing executable, inspect the project's `AGENTS.md`, manifests, toolchain files, and existing package-manager conventions; install the named language server with the matching toolchain or package manager, then rerun setup. Do not stop after reporting the missing command. After setup succeeds, rerun `codex-lsp status` and verify the requested operation on a project file. If no bundled server matches, explain that and use a documented custom server entry only when the project provides a clear server choice.
+
 Common commands:
 
+- `codex-lsp setup rust python`
 - `codex-lsp diagnostics --file path/to/file.rs`
 - `codex-lsp diagnostics --changed`
 - `codex-lsp definition --file path/to/file.rs --line 20 --symbol parse`

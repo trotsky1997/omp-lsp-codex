@@ -16,6 +16,7 @@ To run from a local checkout, use `uvx --from . codex-lsp status` from the repos
 
 ```sh
 codex-lsp status
+codex-lsp setup rust python
 codex-lsp diagnostics --file path/to/file.rs
 codex-lsp diagnostics --changed
 codex-lsp definition --file path/to/file.rs --line 20 --symbol parse
@@ -31,7 +32,7 @@ codex-lsp code-actions --file path/to/file.rs --line 20
 
 ## Server configuration
 
-The bundled server list comes from the upstream `oh-my-pi` defaults. Install the language server executable for the language you need; the CLI does not install language servers.
+The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths in `~/.codex/lsp.json`. Use `--project` to write to the current Git root's `.codex/lsp.json`. If an executable is missing, setup reports the server ID and command; the Codex skill guides the agent to inspect the project toolchain, install the server with its package manager, and rerun setup. Setup itself does not install language servers.
 
 The CLI merges optional JSON files in this order:
 
