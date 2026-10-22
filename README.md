@@ -57,11 +57,38 @@ Example:
 
 Each server needs a command, file types, and root markers. Built-in fields can be overridden by name. The CLI supports JSON configuration only.
 
+## Install the Codex plugin
+
+The GitHub repository is private, so the Git credentials available to Codex must have read access. Add the repository as a marketplace, then install the plugin:
+
+```sh
+codex plugin marketplace add https://github.com/trotsky1997/omp-lsp-codex.git
+codex plugin add codex-lsp@codex-lsp-local
+codex plugin list --marketplace codex-lsp-local
+```
+
+The list should show `codex-lsp` as installed and enabled. Open `/hooks` in Codex to review and trust the lifecycle hooks. In Tcodex, use the same commands with `tcodex` in place of `codex`.
+
+To refresh after a new repository version is pushed, update the marketplace and reinstall the plugin:
+
+```sh
+codex plugin marketplace upgrade codex-lsp-local
+codex plugin remove codex-lsp@codex-lsp-local
+codex plugin add codex-lsp@codex-lsp-local
+```
+
+To uninstall it:
+
+```sh
+codex plugin remove codex-lsp@codex-lsp-local
+codex plugin marketplace remove codex-lsp-local
+```
+
 ## Codex skill and hooks
 
 The `skills/codex-lsp` skill directs Codex to invoke the CLI through terminal or shell execution; this plugin does not add a separate LSP tool entry. Plugin hooks add available-server context when a session starts and check changed files before Codex stops. The Stop hook uses only bundled server definitions and executables resolved outside the project root. It asks Codex to continue when changed files have LSP errors; it skips when no server can verify them.
 
-For plugin installation, add this folder as a local marketplace with `codex plugin marketplace add /absolute/path/to/omp-lsp-codex`, then install it from the local marketplace in the Codex desktop app. Review and trust the hook definitions with `/hooks` before they run. Lifecycle hooks are for manually installed Codex desktop plugins; packages containing them cannot be submitted to the public plugin directory.
+Lifecycle hooks are for manually installed Codex desktop plugins; packages containing them cannot be submitted to the public plugin directory. For development from a local checkout, add its path instead with `codex plugin marketplace add /absolute/path/to/omp-lsp-codex`.
 
 For the Codex CLI without plugin installation, clone this private repository, copy `skills/codex-lsp` into `~/.codex/skills/`, then merge the two handlers from `hooks/hooks.json` into `~/.codex/hooks.json`. Replace `${PLUGIN_ROOT}` in each command with the checkout's absolute path. Register the CLI with `uv tool install --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp`; the scripts also work when called directly and infer the package root from their own file path.
 

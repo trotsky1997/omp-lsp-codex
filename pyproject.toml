@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-lsp"
-version = "0.2.1"
+version = "0.2.2"
 description = "A standalone LSP command line client for Codex"
 requires-python = ">=3.10"
 dependencies = []
