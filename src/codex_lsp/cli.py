@@ -23,6 +23,7 @@ from codex_lsp.protocol import LspClient, LspError
 DEFAULTS = Path(__file__).with_name("defaults.json")
 MAX_FILES = 200
 MAX_FILE_BYTES = 16 * 1024 * 1024
+HOVER_RETRY_SECONDS = 6.0
 READ_ONLY_METHODS = {
     "textDocument/definition",
     "textDocument/declaration",
@@ -784,13 +785,36 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
         params = _position_params(uri, text, args)
         if method == "textDocument/references":
             params["context"] = {"includeDeclaration": True}
-        result = client.request(method, params)
         if method == "textDocument/hover":
-            content = _flatten_hover((result or {}).get("contents")) if isinstance(result, dict) else ""
+            position = params["position"]
+            symbol = symbol_at_position(text, position["line"], position["character"])
+            deadline = time.monotonic() + min(args.timeout, HOVER_RETRY_SECONDS)
+            delay = 0.1
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    result = None
+                    content = ""
+                    break
+                try:
+                    result = client.request(method, params, timeout=remaining)
+                except LspError as exc:
+                    if str(exc).casefold().replace(" ", "") != "contentmodified":
+                        raise
+                    result = None
+                    content = ""
+                except TimeoutError:
+                    result = None
+                    content = ""
+                    break
+                content = _flatten_hover((result or {}).get("contents")) if isinstance(result, dict) else ""
+                if content.strip() or not symbol:
+                    break
+                # Fresh LSP processes can answer before workspace indexing finishes.
+                time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+                delay = min(delay * 2, 0.5)
             provider = "lsp"
             if not content.strip():
-                position = params["position"]
-                symbol = symbol_at_position(text, position["line"], position["character"])
                 reference = find_reference(_language_id(server, path), symbol or "", timeout=min(args.timeout, 3))
                 if reference:
                     content = reference
@@ -798,6 +822,7 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
             data = {"success": True, "server": server["name"], "provider": provider, "hover": content}
             human = content or "No hover information"
         else:
+            result = client.request(method, params)
             locations = _locations(result)
             label = {"textDocument/definition": "definition", "textDocument/references": "reference", "textDocument/typeDefinition": "type definition", "textDocument/implementation": "implementation"}[method]
             data = {"success": True, "server": server["name"], "locations": locations}

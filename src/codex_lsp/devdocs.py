@@ -134,7 +134,7 @@ def _best_entry(entries: Any, symbol: str) -> dict[str, str] | None:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not isinstance(entry.get("path"), str):
             continue
         name = _normalize_symbol(entry["name"])
-        score = 0 if name == query else 1 if name.endswith(f".{query}") else 2 if query in name else 99
+        score = 0 if name == query else 1 if name.endswith((f".{query}", f"::{query}")) else 99
         if score < 99:
             ranked.append((score, len(name), entry))
     return min(ranked, default=(0, 0, None), key=lambda item: item[:2])[2]
