@@ -17,6 +17,7 @@ For a local checkout, run `uv tool install --from . codex-lsp` from the reposito
 
 ```sh
 codex-lsp status
+codex-lsp doctor
 codex-lsp setup rust python
 codex-lsp diagnostics --file path/to/file.rs
 codex-lsp diagnostics --changed
@@ -31,9 +32,15 @@ codex-lsp code-actions --file path/to/file.rs --line 20
 
 `rename`, `rename-file`, and `code-actions` preview changes. Pass `--apply` to write them. `--json` returns structured results. The timeout range is 5–300 seconds.
 
+When an LSP server returns no hover content, `codex-lsp hover` looks up the symbol in the DevDocs index for that file's language and returns a reference link. It downloads and caches the public catalog and indexes for 24 hours under `~/.codex/cache/codex-lsp/devdocs` (or `$CODEX_HOME/cache/codex-lsp/devdocs`); symbol matching happens locally. This is a best-effort reference lookup, not a replacement for full documentation.
+
 ## Server configuration
 
-The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths. If an executable is missing, setup reports the server ID and command; the skill guides the agent to inspect the project toolchain, install the server with its package manager, and rerun setup. Setup itself does not install language servers.
+The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths. If a server is missing, setup selects install command options for the current operating system and prints the official documentation URL. Setup itself does not install language servers.
+
+`codex-lsp doctor` checks the active configuration, initializes available language servers, and reports their capabilities. It does not write LSP configuration or apply workspace edits. A nonzero exit code means a configured server is missing or failed to initialize, or no server is available for the workspace.
+
+For `typescript-language-server`, registration and installation do not guarantee that the server can find TypeScript. If initialization reports a missing TypeScript installation, configure `initOptions.tsserver.fallbackPath` to an installed `typescript/lib/tsserver.js`; see the [upstream configuration](https://github.com/typescript-language-server/typescript-language-server/blob/master/docs/configuration.md#tsserver-options). An empty workspace-symbol response is server-dependent and may be incomplete; try file symbols or navigation from a known use.
 
 The CLI merges optional JSON files in this order:
 
@@ -107,4 +114,4 @@ For the Codex CLI without plugin installation, clone this private repository, co
 
 ## Scope
 
-Each CLI invocation starts and stops its language server; there is no OMP project mux or persistent server cache. This package includes diagnostics, navigation, document/workspace symbols, rename, code actions, capabilities, and raw requests. Workspace diagnostics, OMP-specific linter adapters, and YAML configuration are not included. Workspace edits are restricted to the server's workspace root.
+Each CLI invocation starts and stops its language server; there is no OMP project mux or persistent server cache. This package includes diagnostics, navigation, document/workspace symbols, rename, code actions, capabilities, and raw requests. Workspace-symbol completeness depends on the language server and its indexing behavior. Workspace diagnostics, OMP-specific linter adapters, and YAML configuration are not included. Workspace edits are restricted to the server's workspace root.

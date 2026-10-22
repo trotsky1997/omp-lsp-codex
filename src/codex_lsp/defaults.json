@@ -21,6 +21,10 @@
       "expandMacro": true,
       "runnables": true,
       "relatedTests": true
+    },
+    "setup": {
+      "install": "rustup component add rust-analyzer",
+      "docs": "https://rust-analyzer.github.io/book/installation.html"
     }
   },
   "tlaplus": {
@@ -34,7 +38,11 @@
     ],
     "rootMarkers": [
       "*.tla"
-    ]
+    ],
+    "setup": {
+      "install": "Install TLAPS for this OS, then build or enable its optional LSP adapter (`tlapm_lsp`) following the upstream repository instructions.",
+      "docs": "https://github.com/tlaplus/tlapm"
+    }
   },
   "clangd": {
     "command": "clangd",
@@ -62,7 +70,19 @@
       ".clangd",
       ".clang-format",
       "Makefile"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "brew install llvm",
+        "linux": [
+          "Debian/Ubuntu (apt): sudo apt install clangd",
+          "Fedora (dnf): sudo dnf install clang-tools-extra",
+          "Arch (pacman): sudo pacman -S clang"
+        ],
+        "win32": "winget install LLVM.LLVM"
+      },
+      "docs": "https://clangd.llvm.org/installation.html"
+    }
   },
   "zls": {
     "command": "zls",
@@ -74,7 +94,17 @@
       "build.zig",
       "build.zig.zon",
       "zls.json"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": [
+          "Recommended: use the official install tool to match the installed Zig version.",
+          "Homebrew: brew install zls"
+        ],
+        "default": "Use the official ZLS installer to select a build compatible with the installed Zig version."
+      },
+      "docs": "https://zigtools.org/zls/install/"
+    }
   },
   "gopls": {
     "command": "gopls",
@@ -100,6 +130,10 @@
         "staticcheck": true,
         "gofumpt": true
       }
+    },
+    "setup": {
+      "install": "go install golang.org/x/tools/gopls@latest",
+      "docs": "https://go.dev/gopls/"
     }
   },
   "typescript-language-server": {
@@ -127,6 +161,10 @@
         "includeInlayVariableTypeHints": true,
         "includeInlayFunctionParameterTypeHints": true
       }
+    },
+    "setup": {
+      "install": "npm install -g typescript-language-server typescript",
+      "docs": "https://www.npmjs.com/package/typescript-language-server"
     }
   },
   "biome": {
@@ -149,7 +187,11 @@
       "biome.json",
       "biome.jsonc"
     ],
-    "isLinter": true
+    "isLinter": true,
+    "setup": {
+      "install": "npm install -g @biomejs/biome",
+      "docs": "https://biomejs.dev/installation/install-biome/"
+    }
   },
   "eslint": {
     "command": "vscode-eslint-language-server",
@@ -178,6 +220,10 @@
     "settings": {
       "validate": "on",
       "run": "onType"
+    },
+    "setup": {
+      "install": "npm install -g vscode-langservers-extracted",
+      "docs": "https://github.com/hrsh7th/vscode-langservers-extracted"
     }
   },
   "denols": {
@@ -200,6 +246,14 @@
       "enable": true,
       "lint": true,
       "unstable": true
+    },
+    "setup": {
+      "install": {
+        "darwin": "brew install deno",
+        "linux": "curl -fsSL https://deno.land/install.sh | sh",
+        "win32": "PowerShell: irm https://deno.land/install.ps1 | iex"
+      },
+      "docs": "https://docs.deno.com/runtime/getting_started/installation/"
     }
   },
   "vscode-html-language-server": {
@@ -217,6 +271,10 @@
     ],
     "initOptions": {
       "provideFormatter": true
+    },
+    "setup": {
+      "install": "npm install -g vscode-langservers-extracted",
+      "docs": "https://github.com/hrsh7th/vscode-langservers-extracted"
     }
   },
   "vscode-css-language-server": {
@@ -236,6 +294,10 @@
     ],
     "initOptions": {
       "provideFormatter": true
+    },
+    "setup": {
+      "install": "npm install -g vscode-langservers-extracted",
+      "docs": "https://github.com/hrsh7th/vscode-langservers-extracted"
     }
   },
   "vscode-json-language-server": {
@@ -253,6 +315,10 @@
     ],
     "initOptions": {
       "provideFormatter": true
+    },
+    "setup": {
+      "install": "npm install -g vscode-langservers-extracted",
+      "docs": "https://github.com/hrsh7th/vscode-langservers-extracted"
     }
   },
   "tailwindcss": {
@@ -276,7 +342,11 @@
       "tailwind.config.ts",
       "tailwind.config.mjs",
       "tailwind.config.cjs"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g @tailwindcss/language-server",
+      "docs": "https://github.com/tailwindlabs/tailwindcss-intellisense/tree/main/packages/tailwindcss-language-server"
+    }
   },
   "svelte": {
     "command": "svelteserver",
@@ -290,7 +360,11 @@
       "svelte.config.js",
       "svelte.config.mjs",
       "package.json"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g svelte-language-server",
+      "docs": "https://www.npmjs.com/package/svelte-language-server"
+    }
   },
   "vue-language-server": {
     "command": "vue-language-server",
@@ -305,7 +379,11 @@
       "nuxt.config.js",
       "nuxt.config.ts",
       "package.json"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g @vue/language-server",
+      "docs": "https://github.com/vuejs/language-tools"
+    }
   },
   "astro": {
     "command": "astro-ls",
@@ -319,7 +397,11 @@
       "astro.config.mjs",
       "astro.config.js",
       "astro.config.ts"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g @astrojs/language-server",
+      "docs": "https://github.com/withastro/astro/tree/main/packages/language-tools/language-server"
+    }
   },
   "pyright": {
     "command": "pyright-langserver",
@@ -346,6 +428,10 @@
           "useLibraryCodeForTypes": true
         }
       }
+    },
+    "setup": {
+      "install": "npm install -g pyright",
+      "docs": "https://github.com/microsoft/pyright/blob/main/docs/installation.md"
     }
   },
   "basedpyright": {
@@ -371,6 +457,10 @@
           "useLibraryCodeForTypes": true
         }
       }
+    },
+    "setup": {
+      "install": "uv tool install basedpyright",
+      "docs": "https://docs.basedpyright.com/latest/installation/command-line-and-language-server/"
     }
   },
   "pylsp": {
@@ -385,7 +475,11 @@
       "setup.cfg",
       "requirements.txt",
       "Pipfile"
-    ]
+    ],
+    "setup": {
+      "install": "uv tool install python-lsp-server",
+      "docs": "https://github.com/python-lsp/python-lsp-server"
+    }
   },
   "ty": {
     "command": "ty",
@@ -403,7 +497,11 @@
       "setup.cfg",
       "requirements.txt",
       "Pipfile"
-    ]
+    ],
+    "setup": {
+      "install": "uv tool install ty",
+      "docs": "https://docs.astral.sh/ty/installation/"
+    }
   },
   "ruff": {
     "command": "ruff",
@@ -419,7 +517,11 @@
       "ruff.toml",
       ".ruff.toml"
     ],
-    "isLinter": true
+    "isLinter": true,
+    "setup": {
+      "install": "uv tool install ruff",
+      "docs": "https://docs.astral.sh/ruff/installation/"
+    }
   },
   "jdtls": {
     "command": "jdtls",
@@ -433,7 +535,14 @@
       "build.gradle.kts",
       "settings.gradle",
       ".project"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "brew install jdtls",
+        "default": "Download the matching Eclipse JDT Language Server build for this OS and add its launcher to PATH; see the official docs."
+      },
+      "docs": "https://github.com/eclipse-jdtls/eclipse.jdt.ls"
+    }
   },
   "kotlin-lsp": {
     "command": "kotlin-lsp",
@@ -450,7 +559,14 @@
       "pom.xml",
       "settings.gradle",
       "settings.gradle.kts"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "brew install JetBrains/utils/kotlin-lsp",
+        "default": "Follow the official installation instructions for this OS and architecture."
+      },
+      "docs": "https://github.com/Kotlin/kotlin-lsp"
+    }
   },
   "metals": {
     "command": "metals",
@@ -469,6 +585,10 @@
     "initOptions": {
       "statusBarProvider": "show-message",
       "isHttpEnabled": true
+    },
+    "setup": {
+      "install": "cs install metals",
+      "docs": "https://scalameta.org/metals/docs/"
     }
   },
   "hls": {
@@ -492,6 +612,10 @@
         "formattingProvider": "ormolu",
         "checkProject": true
       }
+    },
+    "setup": {
+      "install": "ghcup install hls",
+      "docs": "https://haskell-language-server.readthedocs.io/en/stable/installation.html"
     }
   },
   "ocamllsp": {
@@ -508,7 +632,11 @@
       "dune-workspace",
       "*.opam",
       ".ocamlformat"
-    ]
+    ],
+    "setup": {
+      "install": "opam install ocaml-lsp-server",
+      "docs": "https://ocaml.org/p/ocaml-lsp-server/latest"
+    }
   },
   "elixirls": {
     "command": "elixir-ls",
@@ -528,6 +656,10 @@
         "dialyzerEnabled": true,
         "fetchDeps": false
       }
+    },
+    "setup": {
+      "install": "mix escript.install github elixir-lsp/elixir-ls",
+      "docs": "https://elixir-lsp.github.io/elixir-ls/"
     }
   },
   "expert": {
@@ -544,7 +676,11 @@
     "rootMarkers": [
       "mix.exs",
       "mix.lock"
-    ]
+    ],
+    "setup": {
+      "install": "Download the `expert` binary matching this OS and architecture from the official releases and add it to PATH.",
+      "docs": "https://github.com/expert-lsp/expert/releases"
+    }
   },
   "erlangls": {
     "command": "erlang_ls",
@@ -557,7 +693,11 @@
       "rebar.config",
       "erlang.mk",
       "rebar.lock"
-    ]
+    ],
+    "setup": {
+      "install": "In a clone of the official repository, run `rebar3 escriptize`; put the generated `erlang_ls` executable on PATH.",
+      "docs": "https://erlang-ls.github.io/"
+    }
   },
   "gleam": {
     "command": "gleam",
@@ -569,7 +709,14 @@
     ],
     "rootMarkers": [
       "gleam.toml"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "brew install gleam",
+        "default": "Follow the OS-specific install steps in the official guide; the Gleam language server is included in the `gleam` binary."
+      },
+      "docs": "https://gleam.run/language-server/"
+    }
   },
   "solargraph": {
     "command": "solargraph",
@@ -599,6 +746,10 @@
         "rename": true,
         "symbols": true
       }
+    },
+    "setup": {
+      "install": "gem install solargraph",
+      "docs": "https://solargraph.org/guides/getting-started"
     }
   },
   "ruby-lsp": {
@@ -617,6 +768,10 @@
     ],
     "initOptions": {
       "formatter": "auto"
+    },
+    "setup": {
+      "install": "gem install ruby-lsp",
+      "docs": "https://shopify.github.io/ruby-lsp/"
     }
   },
   "rubocop": {
@@ -632,7 +787,11 @@
       ".rubocop.yml",
       "Gemfile"
     ],
-    "isLinter": true
+    "isLinter": true,
+    "setup": {
+      "install": "gem install rubocop",
+      "docs": "https://docs.rubocop.org/rubocop/usage/lsp.html"
+    }
   },
   "bashls": {
     "command": "bash-language-server",
@@ -651,6 +810,10 @@
       "bashIde": {
         "globPattern": "*@(.sh|.inc|.bash|.command)"
       }
+    },
+    "setup": {
+      "install": "npm install -g bash-language-server",
+      "docs": "https://www.npmjs.com/package/bash-language-server"
     }
   },
   "lua-language-server": {
@@ -683,6 +846,14 @@
           "enable": false
         }
       }
+    },
+    "setup": {
+      "install": {
+        "darwin": "brew install lua-language-server",
+        "linux": "mise use -g aqua:LuaLS/lua-language-server",
+        "win32": "scoop install lua-language-server"
+      },
+      "docs": "https://luals.github.io/wiki/Getting-Started/"
     }
   },
   "intelephense": {
@@ -698,7 +869,11 @@
       "composer.json",
       "composer.lock",
       ".git"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g intelephense",
+      "docs": "https://intelephense.net/docs"
+    }
   },
   "phpactor": {
     "command": "phpactor",
@@ -712,7 +887,11 @@
       "composer.json",
       ".phpactor.json",
       ".phpactor.yml"
-    ]
+    ],
+    "setup": {
+      "install": "composer global require phpactor/phpactor",
+      "docs": "https://phpactor.readthedocs.io/en/master/usage/standalone.html"
+    }
   },
   "omnisharp": {
     "command": "omnisharp",
@@ -741,6 +920,10 @@
       "RoslynExtensionsOptions": {
         "EnableAnalyzersSupport": true
       }
+    },
+    "setup": {
+      "install": "Install the .NET SDK, then download the matching OmniSharp release for this OS and architecture and add it to PATH.",
+      "docs": "https://github.com/OmniSharp/omnisharp-roslyn"
     }
   },
   "yamlls": {
@@ -769,6 +952,10 @@
           "enabled": false
         }
       }
+    },
+    "setup": {
+      "install": "npm install -g yaml-language-server",
+      "docs": "https://github.com/redhat-developer/yaml-language-server"
     }
   },
   "terraformls": {
@@ -784,7 +971,18 @@
       ".terraform",
       "terraform.tfstate",
       "*.tf"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "brew install hashicorp/tap/terraform-ls",
+        "linux": [
+          "Debian/Ubuntu: install `terraform-ls` from the official HashiCorp apt repository; follow its setup steps in the docs.",
+          "RHEL/Fedora: install `terraform-ls` from the official HashiCorp RPM repository; follow its setup steps in the docs."
+        ],
+        "win32": "Download the matching `terraform-ls` release binary and add it to PATH."
+      },
+      "docs": "https://github.com/hashicorp/terraform-ls/blob/main/docs/installation.md"
+    }
   },
   "dockerls": {
     "command": "docker-langserver",
@@ -800,7 +998,11 @@
       "docker-compose.yml",
       "docker-compose.yaml",
       ".dockerignore"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g dockerfile-language-server-nodejs",
+      "docs": "https://www.npmjs.com/package/dockerfile-language-server-nodejs"
+    }
   },
   "helm-ls": {
     "command": "helm_ls",
@@ -815,7 +1017,11 @@
     "rootMarkers": [
       "Chart.yaml",
       "Chart.yml"
-    ]
+    ],
+    "setup": {
+      "install": "mise use -g helm-ls@latest",
+      "docs": "https://github.com/mrjosh/helm-ls"
+    }
   },
   "nixd": {
     "command": "nixd",
@@ -827,7 +1033,15 @@
       "flake.nix",
       "default.nix",
       "shell.nix"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "nix profile add github:nixos/nixpkgs#nixd",
+        "linux": "nix profile add github:nixos/nixpkgs#nixd",
+        "win32": "Use WSL with Nix installed, then follow the official editor setup."
+      },
+      "docs": "https://github.com/nix-community/nixd/blob/main/nixd/docs/editor-setup.md"
+    }
   },
   "nil": {
     "command": "nil",
@@ -839,7 +1053,15 @@
       "flake.nix",
       "default.nix",
       "shell.nix"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "nix profile install nixpkgs#nil",
+        "linux": "nix profile install nixpkgs#nil",
+        "win32": "Use WSL with Nix installed, then follow the official setup instructions."
+      },
+      "docs": "https://github.com/oxalica/nil"
+    }
   },
   "ols": {
     "command": "ols",
@@ -850,7 +1072,15 @@
     "rootMarkers": [
       "ols.json",
       ".git"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "In a clone of the official repository, run `./build.sh`.",
+        "linux": "In a clone of the official repository, run `./build.sh`.",
+        "win32": "In a clone of the official repository, run `./build.bat`."
+      },
+      "docs": "https://github.com/DanielGavin/ols"
+    }
   },
   "dartls": {
     "command": "dart",
@@ -869,6 +1099,14 @@
       "closingLabels": true,
       "flutterOutline": true,
       "outline": true
+    },
+    "setup": {
+      "install": {
+        "darwin": "brew tap dart-lang/dart && brew trust dart-lang/dart && brew install dart",
+        "linux": "Install `dart` from the official Debian/Ubuntu apt repository; follow the linked setup steps first.",
+        "win32": "winget install --id=Google.DartSDK -e"
+      },
+      "docs": "https://dart.dev/get-dart"
     }
   },
   "marksman": {
@@ -884,7 +1122,18 @@
       ".marksman.toml",
       ".git"
     ],
-    "warmupTimeoutMs": 2000
+    "warmupTimeoutMs": 2000,
+    "setup": {
+      "install": {
+        "darwin": "brew install marksman",
+        "linux": [
+          "Homebrew: brew install marksman",
+          "Snap: sudo snap install marksman"
+        ],
+        "win32": "Download the Windows release, rename it to `marksman.exe`, and add it to PATH."
+      },
+      "docs": "https://github.com/artempyanykh/marksman/blob/main/docs/install.md"
+    }
   },
   "texlab": {
     "command": "texlab",
@@ -917,6 +1166,10 @@
           "onOpenAndSave": true
         }
       }
+    },
+    "setup": {
+      "install": "Download a release binary for this OS, or build from source with `cargo install --git https://github.com/latex-lsp/texlab --locked`.",
+      "docs": "https://github.com/latex-lsp/texlab"
     }
   },
   "graphql": {
@@ -936,7 +1189,11 @@
       ".graphqlrc.yml",
       ".graphqlrc.yaml",
       "graphql.config.js"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g graphql-language-service-cli",
+      "docs": "https://github.com/graphql/graphiql/tree/main/packages/graphql-language-service-cli"
+    }
   },
   "prismals": {
     "command": "prisma-language-server",
@@ -949,7 +1206,11 @@
     "rootMarkers": [
       "schema.prisma",
       "prisma/schema.prisma"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g @prisma/language-server",
+      "docs": "https://github.com/prisma/language-tools"
+    }
   },
   "vimls": {
     "command": "vim-language-server",
@@ -968,6 +1229,10 @@
       "diagnostic": {
         "enable": true
       }
+    },
+    "setup": {
+      "install": "npm install -g vim-language-server",
+      "docs": "https://github.com/iamcco/vim-language-server"
     }
   },
   "emmet-language-server": {
@@ -987,7 +1252,11 @@
     ],
     "rootMarkers": [
       ".git"
-    ]
+    ],
+    "setup": {
+      "install": "npm install -g @olrtg/emmet-language-server",
+      "docs": "https://github.com/olrtg/emmet-language-server"
+    }
   },
   "sourcekit-lsp": {
     "command": "sourcekit-lsp",
@@ -1001,6 +1270,13 @@
       "*.xcworkspace",
       "project.yml",
       ".swiftpm"
-    ]
+    ],
+    "setup": {
+      "install": {
+        "darwin": "xcode-select --install; install full Xcode if SourceKit-LSP is still missing.",
+        "default": "Install the Swift toolchain for this OS from the official download page; it includes SourceKit-LSP."
+      },
+      "docs": "https://www.swift.org/install/"
+    }
   }
 }

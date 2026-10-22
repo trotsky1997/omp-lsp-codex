@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from codex_lsp import __version__
+from codex_lsp.devdocs import find_reference, symbol_at_position
 from codex_lsp.protocol import LspClient, LspError
 
 
@@ -521,17 +522,38 @@ def command_setup(args: argparse.Namespace, cwd: Path) -> int:
         raise LspError("Provide one or more languages, such as `codex-lsp setup rust python`")
 
     selected: dict[str, tuple[str, str]] = {}
-    missing: list[str] = []
+    missing: list[tuple[str, str, str]] = []
     for language in languages:
         name = _server_for_language(language, configs)
         config = configs[name]
         command = _resolve_command(config["command"], cwd, False)
         if command is None:
-            missing.append(f"{language} ({name}: {config['command']})")
+            missing.append((language, name, config["command"]))
         else:
             selected[name] = (language, command)
     if missing:
-        raise LspError("Install these language-server commands, then rerun setup: " + ", ".join(missing))
+        lines = ["Missing language servers:"]
+        for language, name, command in missing:
+            lines.append(f"- {language}: {name} (executable: {command})")
+            guide = configs[name].get("setup", {})
+            if isinstance(guide, dict):
+                install = guide.get("install")
+                docs = guide.get("docs")
+            else:
+                install = docs = None
+            if isinstance(install, dict):
+                install = install.get(sys.platform) or install.get("default")
+            platform_name = {"darwin": "macOS", "linux": "Linux", "win32": "Windows"}.get(sys.platform, sys.platform)
+            if isinstance(install, str):
+                install = [install]
+            if not isinstance(install, list) or not all(isinstance(item, str) for item in install):
+                install = []
+            lines.append(f"  Install command(s) ({platform_name}):")
+            lines.extend(f"    {item}" for item in install or [f"Use the official documentation for {platform_name}-specific installation steps."])
+            lines.append(f"  Official documentation: {docs if isinstance(docs, str) else 'Consult the language server upstream project documentation.'}")
+        rerun = "codex-lsp setup " + " ".join(languages) + (" --project" if args.project else "")
+        lines.append(f"After installation, rerun: {rerun}")
+        raise LspError("\n".join(lines))
 
     path = (_git_root(cwd) / ".codex" / "lsp.json") if args.project else (Path.home() / ".codex" / "lsp.json")
     if path.is_file():
@@ -582,6 +604,96 @@ def command_status(args: argparse.Namespace, cwd: Path) -> int:
     else:
         print("No configured language servers are available for this workspace")
     return 0
+
+
+def command_doctor(args: argparse.Namespace, cwd: Path) -> int:
+    configs = load_config(cwd)
+    config_paths = [Path.home() / ".codex" / "lsp.json", _git_root(cwd) / ".codex" / "lsp.json"]
+    overrides: dict[str, dict[str, Any]] = {}
+    for path in config_paths:
+        overrides.update(_read_overrides(path))
+
+    servers = []
+    issues = []
+    for server in available_servers(configs, cwd):
+        try:
+            with LspClient(server, server["root"], args.timeout) as client:
+                capabilities = sorted(key for key, value in client.capabilities.items() if value)
+            servers.append({
+                "name": server["name"],
+                "status": "ok",
+                "command": server["resolvedCommand"],
+                "root": str(server["root"]),
+                "capabilities": capabilities,
+            })
+        except (LspError, TimeoutError, OSError, ValueError) as exc:
+            servers.append({
+                "name": server["name"],
+                "status": "error",
+                "command": server["resolvedCommand"],
+                "root": str(server["root"]),
+                "error": str(exc),
+            })
+            issues.append({"severity": "error", "server": server["name"], "message": str(exc)})
+
+    for name in sorted(overrides):
+        config = configs.get(name)
+        if not config or config.get("disabled") is True:
+            continue
+        root = _server_root(cwd, config.get("rootMarkers", []))
+        if root is None or _resolve_command(config["command"], root, False) is not None:
+            continue
+        message = f"Executable {config['command']!r} is missing; run `codex-lsp setup {name}` for install guidance"
+        servers.append({
+            "name": name,
+            "status": "missing",
+            "command": config["command"],
+            "root": str(root),
+            "message": message,
+        })
+        issues.append({"severity": "error", "server": name, "message": message})
+
+    if not servers:
+        issues.append({
+            "severity": "warning",
+            "message": "No language server is available for this workspace; run `codex-lsp setup <language...>` for guidance",
+        })
+
+    success = bool(servers) and all(server["status"] == "ok" for server in servers)
+    data = {
+        "success": success,
+        "runtime": {
+            "version": __version__,
+            "python": sys.version.split()[0],
+            "executable": str(Path(sys.argv[0]).resolve()),
+        },
+        "configFiles": [str(path) for path in config_paths if path.is_file()],
+        "servers": servers,
+        "issues": issues,
+    }
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False))
+    else:
+        print(f"codex-lsp doctor ({__version__})")
+        print(f"Python: {data['runtime']['python']} ({sys.executable})")
+        print("Config files:")
+        for path in data["configFiles"]:
+            print(f"- {path}")
+        if not data["configFiles"]:
+            print("- none; using built-in server discovery")
+        for server in servers:
+            if server["status"] == "ok":
+                print(f"OK {server['name']}: {server['command']} (root: {server['root']})")
+                print(f"  LSP capabilities: {', '.join(server['capabilities']) or 'none reported'}")
+            elif server["status"] == "missing":
+                print(f"ERROR {server['name']}: {server['message']}")
+            else:
+                print(f"ERROR {server['name']}: {server['error']}")
+        for issue in issues:
+            if issue["severity"] == "warning":
+                print(f"WARNING: {issue['message']}")
+        print("Doctor result: OK" if success else "Doctor result: needs attention")
+    return 0 if success else 1
 
 
 def command_diagnostics(args: argparse.Namespace, cwd: Path) -> int:
@@ -675,7 +787,15 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
         result = client.request(method, params)
         if method == "textDocument/hover":
             content = _flatten_hover((result or {}).get("contents")) if isinstance(result, dict) else ""
-            data = {"success": True, "server": server["name"], "hover": content}
+            provider = "lsp"
+            if not content.strip():
+                position = params["position"]
+                symbol = symbol_at_position(text, position["line"], position["character"])
+                reference = find_reference(_language_id(server, path), symbol or "", timeout=min(args.timeout, 3))
+                if reference:
+                    content = reference
+                    provider = "devdocs"
+            data = {"success": True, "server": server["name"], "provider": provider, "hover": content}
             human = content or "No hover information"
         else:
             locations = _locations(result)
@@ -996,6 +1116,10 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--builtins-only", action="store_true")
     status.add_argument("--global-bins-only", action="store_true", help=argparse.SUPPRESS)
 
+    doctor = commands.add_parser("doctor", help="Check LSP configuration and server health")
+    doctor.add_argument("--timeout", type=float, default=20, help="Initialize timeout per server in seconds (5..300)")
+    doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+
     setup = commands.add_parser("setup", help="Configure language servers for selected languages")
     setup.add_argument("languages", nargs="+", metavar="LANGUAGE", help="Language names or server IDs; separate with spaces or English/Chinese commas")
     setup.add_argument("--project", action="store_true", help="Write to <git-root>/.codex/lsp.json instead of ~/.codex/lsp.json")
@@ -1054,6 +1178,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_setup(args, cwd)
         if args.command == "status":
             return command_status(args, cwd)
+        if args.command == "doctor":
+            return command_doctor(args, cwd)
         if args.command == "diagnostics":
             if bool(args.changed) == bool(args.file):
                 raise LspError("Choose exactly one of --file or --changed")
