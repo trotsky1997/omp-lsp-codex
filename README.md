@@ -2,16 +2,15 @@
 
 A standalone Python 3.10+ CLI for local Language Server Protocol tools, packaged with a Codex skill and lifecycle hooks. Runtime code uses only the Python standard library.
 
-## Install the CLI
+## Run the CLI with uvx
 
-From this directory:
+The repository is private, so the GitHub account used by `uvx` needs access to it. Run a command directly from GitHub:
 
 ```sh
-python3 -m pip install .
-codex-lsp status
+uvx --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp status
 ```
 
-Or run the bundled executable directly with `./bin/codex-lsp status`.
+To run from a local checkout, use `uvx --from . codex-lsp status` from the repository root. Add the same `uvx --from ...` prefix to other `codex-lsp` commands. The plugin itself already bundles the CLI, so this step is only needed for standalone CLI use.
 
 ## Commands
 
@@ -62,7 +61,7 @@ The `skills/codex-lsp` skill directs Codex to the CLI for navigation and diagnos
 
 For plugin installation, add this folder as a local marketplace with `codex plugin marketplace add /absolute/path/to/omp-lsp-codex`, then install it from the local marketplace in the Codex desktop app. Review and trust the hook definitions with `/hooks` before they run. Lifecycle hooks are for manually installed Codex desktop plugins; packages containing them cannot be submitted to the public plugin directory.
 
-For the Codex CLI without plugin installation, copy `skills/codex-lsp` into `~/.codex/skills/`, install the CLI above, then merge the two handlers from `hooks/hooks.json` into `~/.codex/hooks.json`. Replace `${PLUGIN_ROOT}` in each command with this package's absolute path. The scripts also work when called directly; they infer the package root from their own file path.
+For the Codex CLI without plugin installation, clone this private repository, copy `skills/codex-lsp` into `~/.codex/skills/`, then merge the two handlers from `hooks/hooks.json` into `~/.codex/hooks.json`. Replace `${PLUGIN_ROOT}` in each command with the checkout's absolute path. The skill can run the CLI with the `uvx --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp` prefix. The scripts also work when called directly; they infer the package root from their own file path.
 
 ## Scope
 
