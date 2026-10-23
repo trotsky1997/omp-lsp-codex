@@ -22,6 +22,29 @@ client.wait_for_push_diagnostics.return_value = []
 assert cli._diagnostics_for_client(client, "file:///source.ts", 60) == ([], True)
 client.wait_for_push_diagnostics.assert_called_once_with("file:///source.ts", 60)
 
+workspace = LspClient.__new__(LspClient)
+workspace.server_status = None
+workspace._next_message = MagicMock(side_effect=[
+    {"method": "experimental/serverStatus", "params": {"quiescent": False, "health": "ok"}},
+    {"method": "experimental/serverStatus", "params": {"quiescent": True, "health": "ok"}},
+])
+workspace.wait_for_workspace(1)
+assert workspace._next_message.call_count == 2
+workspace.server_status = {"quiescent": True, "health": "warning", "message": "Missing Cargo dependencies"}
+try:
+    workspace.wait_for_workspace(1)
+except LspError as exc:
+    assert "Missing Cargo dependencies" in str(exc)
+else:
+    raise AssertionError("Incomplete workspaces must fail")
+workspace.server_status = None
+try:
+    workspace.wait_for_workspace(0)
+except TimeoutError:
+    pass
+else:
+    raise AssertionError("Workspace waits must respect the deadline")
+
 with TemporaryDirectory() as directory:
     root = Path(directory)
     source = root / "source.py"
@@ -47,6 +70,13 @@ with TemporaryDirectory() as directory:
     )), contextlib.redirect_stdout(io.StringIO()):
         assert cli.command_navigate(args, root, "textDocument/definition") == 0
     assert client.request.call_args.kwargs["timeout"] > 59
+    with patch.object(cli, "_client_for_file", return_value=(
+        {"name": "rust-analyzer"}, source, client, source.as_uri(), source.read_text()
+    )), contextlib.redirect_stdout(io.StringIO()) as out:
+        client.request.side_effect = [LspError("ContentModified"), client.request.return_value]
+        assert cli.command_navigate(args, root, "textDocument/definition") == 0
+    assert json.loads(out.getvalue())["found"] is True
+    client.wait_for_workspace.assert_called_once_with(60)
 
     server = {"name": "pyright", "root": root}
     client = MagicMock(capabilities={"workspaceSymbolProvider": True})

@@ -500,6 +500,7 @@ def _edit_summary(edit: dict[str, Any]) -> list[str]:
 
 def _diagnostics_for_client(client: LspClient, uri: str, timeout: float) -> tuple[list[dict[str, Any]], bool]:
     if client.config["name"] == "rust-analyzer":
+        client.wait_for_workspace(timeout)
         ready = client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), timeout)
         pushed = client.wait_for_push_diagnostics(uri, 0.1)
         if pushed is not None:
@@ -667,6 +668,8 @@ def command_doctor(args: argparse.Namespace, cwd: Path) -> int:
     for server in available_servers(configs, cwd):
         try:
             with LspClient(server, server["root"], args.timeout) as client:
+                if server["name"] == "rust-analyzer":
+                    client.wait_for_workspace(args.timeout)
                 capabilities = sorted(key for key, value in client.capabilities.items() if value)
             servers.append({
                 "name": server["name"],
@@ -864,12 +867,14 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
         }[method]
         if method == "textDocument/references":
             params["context"] = {"includeDeclaration": True}
+        deadline = time.monotonic() + args.timeout
+        workspace_ready = server["name"] == "rust-analyzer"
+        if workspace_ready:
+            client.wait_for_workspace(args.timeout)
         if method == "textDocument/hover":
             position = params["position"]
             symbol = symbol_at_position(text, position["line"], position["character"])
-            deadline = time.monotonic() + args.timeout
             delay = 0.1
-            progress_idle = False
             timed_out = False
             content = ""
             while True:
@@ -882,21 +887,15 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
                 except LspError as exc:
                     if str(exc).casefold().replace(" ", "") != "contentmodified":
                         raise
-                    result = None
-                    content = ""
+                    time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+                    continue
                 except TimeoutError:
                     timed_out = True
                     break
                 content = _flatten_hover((result or {}).get("contents")) if isinstance(result, dict) else ""
                 if content.strip() or not symbol:
                     break
-                if server["name"] == "rust-analyzer" and not progress_idle:
-                    progress_idle = client.wait_for_progress_idle(
-                        ("rustAnalyzer/", "rust-analyzer/"), max(0.0, deadline - time.monotonic())
-                    )
-                    if progress_idle:
-                        continue
-                if progress_idle:
+                if workspace_ready:
                     break
                 # Fresh LSP processes can answer before workspace indexing finishes.
                 time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
@@ -920,9 +919,7 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
         else:
             position = params["position"]
             symbol = symbol_at_position(text, position["line"], position["character"])
-            deadline = time.monotonic() + args.timeout
             delay = 0.1
-            progress_idle = False
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -932,19 +929,14 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
                 except LspError as exc:
                     if str(exc).casefold().replace(" ", "") != "contentmodified":
                         raise
-                    result = None
+                    time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+                    continue
                 except TimeoutError:
                     raise TimeoutError(f"Timed out waiting for {label} from {server['name']}") from None
                 locations = _locations(result)
                 if locations or not symbol:
                     break
-                if server["name"] == "rust-analyzer" and not progress_idle:
-                    progress_idle = client.wait_for_progress_idle(
-                        ("rustAnalyzer/", "rust-analyzer/"), max(0.0, deadline - time.monotonic())
-                    )
-                    if progress_idle:
-                        continue
-                if progress_idle:
+                if workspace_ready:
                     break
                 # Fresh LSP processes can answer before workspace indexing finishes.
                 time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
@@ -988,7 +980,7 @@ def command_symbols(args: argparse.Namespace, cwd: Path) -> int:
                             if client.wait_for_push_diagnostics(uri, args.timeout) is None:
                                 raise TimeoutError("Timed out waiting for Pyright workspace analysis")
                     if server["name"] == "rust-analyzer":
-                        client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), args.timeout)
+                        client.wait_for_workspace(args.timeout)
                     result = client.request("workspace/symbol", {"query": args.query}) or []
                     items.extend(_symbol_tree(result))
                     used.append(server["name"])
@@ -1030,7 +1022,7 @@ def command_rename(args: argparse.Namespace, cwd: Path) -> int:
     try:
         params = {**_position_params(uri, text, args), "newName": args.new_name}
         if server["name"] == "rust-analyzer":
-            client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), args.timeout)
+            client.wait_for_workspace(args.timeout)
         edit = client.request("textDocument/rename", params) or {}
         if args.apply:
             applied, reason = apply_workspace_edit(edit, server["root"])
@@ -1054,6 +1046,8 @@ def command_code_actions(args: argparse.Namespace, cwd: Path) -> int:
     server, path, client, uri, text = _client_for_file(args, cwd, allow_apply_edits=args.apply)
     try:
         params = _position_params(uri, text, args)
+        if server["name"] == "rust-analyzer":
+            client.wait_for_workspace(args.timeout)
         position = params["position"]
         params["range"] = {"start": position, "end": position}
         params["context"] = {"diagnostics": client.diagnostics.get(uri, [])}
@@ -1155,12 +1149,12 @@ def command_rename_file(args: argparse.Namespace, cwd: Path) -> int:
             try:
                 open_document(client, server, source)
                 if server["name"] == "rust-analyzer":
-                    client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), args.timeout)
+                    client.wait_for_workspace(args.timeout)
                 edit = client.request("workspace/willRenameFiles", pairs) or {}
                 clients.append((server, client, edit))
-            except LspError as exc:
+            except Exception as exc:
                 client.close()
-                if "method" not in str(exc).casefold():
+                if not isinstance(exc, LspError) or "method" not in str(exc).casefold():
                     raise
         if args.apply:
             root = matches[0]["root"] if matches else _git_root(source.parent)

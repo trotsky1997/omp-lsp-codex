@@ -42,6 +42,7 @@ class LspClient:
         self.diagnostics: dict[str, list[dict[str, Any]]] = {}
         self.progress: dict[str, dict[str, Any]] = {}
         self.progress_seen: set[str] = set()
+        self.server_status: dict[str, Any] | None = None
         self._request_id = 0
         self._stderr: deque[str] = deque(maxlen=40)
         self._closed = False
@@ -71,6 +72,7 @@ class LspClient:
                             "workspaceFolders": True,
                         },
                         "window": {"workDoneProgress": True},
+                        "experimental": {"serverStatusNotification": True},
                         "textDocument": {
                             "publishDiagnostics": {"relatedInformation": True},
                             "diagnostic": {"dynamicRegistration": False},
@@ -154,6 +156,9 @@ class LspClient:
         params = message.get("params") or {}
         if method == "textDocument/publishDiagnostics":
             self.diagnostics[params.get("uri", "")] = params.get("diagnostics", [])
+        if method == "experimental/serverStatus":
+            self.server_status = params
+            return None
         if method == "$/progress":
             token = params.get("token")
             value = params.get("value")
@@ -235,6 +240,20 @@ class LspClient:
                 return self.diagnostics.get(uri)
             self._dispatch(message)
         return self.diagnostics.get(uri)
+
+    def wait_for_workspace(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while not self.server_status or not self.server_status.get("quiescent"):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Timed out waiting for rust-analyzer workspace analysis")
+            try:
+                self._dispatch(self._next_message(remaining))
+            except TimeoutError:
+                continue
+        if self.server_status.get("health") != "ok":
+            detail = self.server_status.get("message") or self.server_status.get("health")
+            raise LspError(f"rust-analyzer workspace is incomplete: {detail}")
 
     def wait_for_progress_idle(self, prefixes: tuple[str, ...], timeout: float) -> bool:
         deadline = time.monotonic() + timeout

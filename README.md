@@ -34,7 +34,7 @@ codex-lsp code-actions --file path/to/file.rs --line 20
 
 For document symbols, `--query` filters by a case-insensitive name substring. For workspace symbols, the query is sent to each language server.
 
-Workspace-symbol searches open a source file to load the project and wait for Pyright's initial file analysis before querying. Use `symbols --workspace --file path/to/file.ts --query parser` to select a project explicitly. Server failures appear in JSON `errors` and produce a nonzero exit code.
+Workspace-symbol searches open a source file to load the project and wait for Pyright's initial file analysis before querying. Use `symbols --workspace --file path/to/file.ts --query parser` to select a project and its matching language servers. Root searches query all discovered servers; failures appear in JSON `errors` and produce a nonzero exit code even if another server returned symbols.
 
 File commands load configuration from the target file's Git root, including when an absolute path points outside the current directory. TypeScript Language Server uses `tsserver.useSyntaxServer: "never"` by default so the first cross-file request uses semantic results.
 
@@ -42,15 +42,17 @@ Rename previews show each edit's file, range, and replacement text. JSON preview
 
 Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for its diagnostics. Large workspaces may need a higher `--timeout`; this does not change the saved LSP configuration.
 
+Rust navigation, workspace symbols, edit previews, and doctor wait for rust-analyzer's [server status](https://rust-analyzer.github.io/book/contributing/lsp-extensions.html#server-status) to report a ready workspace. Dependency and build-configuration problems reported by the server produce a nonzero exit code with the server's explanation.
+
 When an LSP server returns no hover content, `codex-lsp hover` looks up the symbol in the DevDocs index for that file's language and returns a reference link. It downloads and caches the public catalog and indexes for 24 hours under `~/.codex/cache/codex-lsp/devdocs` (or `$CODEX_HOME/cache/codex-lsp/devdocs`); symbol matching happens locally. This is a best-effort reference lookup, not a replacement for full documentation.
 
 ## Server configuration
 
 The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths. If a server is missing, setup selects install command options for the current operating system and prints the official documentation URL. Setup itself does not install language servers.
 
-`codex-lsp doctor` checks the active configuration, initializes available language servers, and reports their capabilities. It does not write LSP configuration or apply workspace edits. A nonzero exit code means a configured server is missing or failed to initialize, or no server is available for the workspace.
+`codex-lsp doctor` checks the active configuration, initializes available language servers, validates Rust workspace readiness, and reports capabilities. It does not write LSP configuration or apply workspace edits. A nonzero exit code means a configured server is missing, failed to initialize or load its workspace, or no server is available. Large Rust projects may need `doctor --timeout 120`.
 
-Language-server processes run with `RUSTUP_AUTO_INSTALL=0`, so a missing Rust toolchain is reported without an implicit download. Install the project's required toolchain explicitly before retrying. Doctor checks initialization; project dependencies must also be available for complete cross-file results. For Rust, inspect `cargo metadata --locked --format-version 1` if cross-crate navigation is incomplete.
+Language-server processes run with `RUSTUP_AUTO_INSTALL=0`, so a missing Rust toolchain is reported without an implicit download. Install the project's required toolchain explicitly before retrying. Project dependencies must also be available for complete cross-file results. For Rust, inspect `cargo metadata --locked --format-version 1` when the server reports an incomplete workspace.
 
 For `typescript-language-server`, registration and installation do not guarantee that the server can find TypeScript. If initialization reports a missing TypeScript installation, configure `initOptions.tsserver.fallbackPath` to an installed `typescript/lib/tsserver.js`; see the [upstream configuration](https://github.com/typescript-language-server/typescript-language-server/blob/master/docs/configuration.md#tsserver-options). An empty workspace-symbol response is server-dependent and may be incomplete; try file symbols or navigation from a known use.
 
