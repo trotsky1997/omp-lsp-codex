@@ -97,6 +97,12 @@ def load_config(cwd: Path, builtins_only: bool = False) -> dict[str, dict[str, A
         for field in ("initOptions", "settings"):
             if field in config and not isinstance(config[field], dict):
                 raise LspError(f"LSP server {name!r} has an invalid {field} object")
+        if name == "typescript-language-server":
+            tsserver = config.setdefault("initOptions", {}).setdefault("tsserver", {})
+            if not isinstance(tsserver, dict):
+                raise LspError("typescript-language-server initOptions.tsserver must be an object")
+            # Short-lived CLI sessions need semantic results on their first request.
+            tsserver.setdefault("useSyntaxServer", "never")
     return servers
 
 
@@ -188,6 +194,24 @@ def _matches_file(config: dict[str, Any], path: Path) -> bool:
 
 def servers_for_file(servers: list[dict[str, Any]], path: Path) -> list[dict[str, Any]]:
     return sorted((server for server in servers if _matches_file(server, path)), key=lambda item: item.get("isLinter", False))
+
+
+def _workspace_source(server: dict[str, Any]) -> Path | None:
+    root = server["root"].resolve()
+    for directory, folders, names in os.walk(root):
+        folders[:] = sorted(name for name in folders if name not in {
+            ".git", ".codex", ".claude", "node_modules", ".venv", "venv", "target", "dist", "build",
+        })
+        for name in sorted(names):
+            path = Path(directory) / name
+            if _matches_file(server, path):
+                try:
+                    path = resolve_file(str(path), root)
+                    if path.is_relative_to(root):
+                        return path
+                except LspError:
+                    continue
+    return None
 
 
 def resolve_file(value: str, cwd: Path, must_exist: bool = True) -> Path:
@@ -458,13 +482,22 @@ def apply_workspace_edit(edit: dict[str, Any], root: Path) -> tuple[bool, str | 
 
 
 def _edit_summary(edit: dict[str, Any]) -> list[str]:
-    paths = set((edit.get("changes") or {}).keys())
+    changes = {uri: list(items or []) for uri, items in (edit.get("changes") or {}).items()}
     for change in edit.get("documentChanges") or []:
         if isinstance(change, dict):
             uri = (change.get("textDocument") or {}).get("uri")
             if uri:
-                paths.add(uri)
-    return [f"{len(paths)} file(s), {sum(len(items) for items in (edit.get('changes') or {}).values()) + sum(len(item.get('edits', [])) for item in edit.get('documentChanges', []) if isinstance(item, dict))} edit(s)"]
+                changes.setdefault(uri, []).extend(change.get("edits", []))
+    lines = [f"{len(changes)} file(s), {sum(len(items) for items in changes.values())} edit(s)"]
+    for uri, items in changes.items():
+        for item in items:
+            start = item.get("range", {}).get("start", {})
+            end = item.get("range", {}).get("end", {})
+            lines.append(
+                f"{_uri_path(uri) or uri}:{start.get('line', 0) + 1}:{start.get('character', 0) + 1}"
+                f"-{end.get('line', 0) + 1}:{end.get('character', 0) + 1} → {item.get('newText', '')!r}"
+            )
+    return lines
 
 
 def _diagnostics_for_client(client: LspClient, uri: str, timeout: float) -> tuple[list[dict[str, Any]], bool]:
@@ -802,10 +835,10 @@ def command_diagnostics(args: argparse.Namespace, cwd: Path) -> int:
 def _client_for_file(
     args: argparse.Namespace,
     cwd: Path,
-    configs: dict[str, dict[str, Any]],
     allow_apply_edits: bool = False,
 ) -> tuple[dict[str, Any], Path, LspClient, str, str]:
     path = resolve_file(args.file, cwd)
+    configs = load_config(path.parent, args.builtins_only)
     servers = available_servers(configs, path.parent)
     matches = servers_for_file(servers, path)
     if not matches:
@@ -821,8 +854,7 @@ def _client_for_file(
 
 
 def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
-    configs = load_config(cwd, args.builtins_only)
-    server, path, client, uri, text = _client_for_file(args, cwd, configs)
+    server, path, client, uri, text = _client_for_file(args, cwd)
     try:
         params = _position_params(uri, text, args)
         label = {
@@ -931,27 +963,41 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
 
 
 def command_symbols(args: argparse.Namespace, cwd: Path) -> int:
-    configs = load_config(cwd, args.builtins_only)
-    servers = available_servers(configs, cwd)
     if args.workspace:
         if not args.query:
             raise LspError("--query is required with --workspace")
+        path = resolve_file(args.file, cwd) if args.file else None
+        context = path.parent if path else cwd
+        servers = available_servers(load_config(context, args.builtins_only), context)
+        if path:
+            servers = servers_for_file(servers, path)
         items = []
         used = []
+        errors = []
         for server in servers:
             if server.get("isLinter"):
                 continue
             try:
                 with LspClient(server, server["root"], args.timeout) as client:
+                    if client.capabilities.get("workspaceSymbolProvider") in (None, False):
+                        continue
+                    # shortcut: one seed loads one project; discover more roots for cross-project searches.
+                    source = path or _workspace_source(server)
+                    if source:
+                        open_document(client, server, source)
+                    if server["name"] == "rust-analyzer":
+                        client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), args.timeout)
                     result = client.request("workspace/symbol", {"query": args.query}) or []
                     items.extend(_symbol_tree(result))
                     used.append(server["name"])
-            except LspError:
-                continue
+            except (LspError, TimeoutError, OSError) as exc:
+                errors.append({"server": server["name"], "error": str(exc)})
+        if not used and not errors:
+            raise LspError("No available language server supports workspace symbols; use --file to select a project")
         items = items[:MAX_FILES]
-        data = {"success": True, "servers": used, "symbols": items}
+        data = {"success": not errors, "servers": used, "symbols": items, "errors": errors}
     else:
-        server, path, client, uri, _ = _client_for_file(args, cwd, configs)
+        server, path, client, uri, _ = _client_for_file(args, cwd)
         try:
             result = client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
             items = _symbol_tree(result, uri)
@@ -968,17 +1014,22 @@ def command_symbols(args: argparse.Namespace, cwd: Path) -> int:
             location = f" @ {item['file']}:{item['line']}:{item['column']}" if item.get("file") else ""
             print(f"- {item.get('name', '')}{location}")
     else:
-        print("No symbols found")
-    return 0
+        print("No symbols found" if data["success"] else "Workspace symbol query failed")
+    if not args.json:
+        for error in data.get("errors", []):
+            print(f"ERROR {error['server']}: {error['error']}", file=sys.stderr)
+    return 0 if data["success"] else 1
 
 
 def command_rename(args: argparse.Namespace, cwd: Path) -> int:
     if not args.new_name:
         raise LspError("--new-name is required")
-    configs = load_config(cwd, args.builtins_only)
-    server, path, client, uri, text = _client_for_file(args, cwd, configs)
+    server, path, client, uri, text = _client_for_file(args, cwd)
     try:
-        edit = client.request("textDocument/rename", {**_position_params(uri, text, args), "newName": args.new_name}) or {}
+        params = {**_position_params(uri, text, args), "newName": args.new_name}
+        if server["name"] == "rust-analyzer":
+            client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), args.timeout)
+        edit = client.request("textDocument/rename", params) or {}
         if args.apply:
             applied, reason = apply_workspace_edit(edit, server["root"])
             if not applied:
@@ -986,7 +1037,7 @@ def command_rename(args: argparse.Namespace, cwd: Path) -> int:
             data = {"success": True, "applied": True, "server": server["name"], "edits": _edit_summary(edit)}
             human = "Applied rename:\n" + "\n".join(data["edits"])
         else:
-            data = {"success": True, "applied": False, "server": server["name"], "edits": _edit_summary(edit)}
+            data = {"success": True, "applied": False, "server": server["name"], "edits": _edit_summary(edit), "workspaceEdit": edit}
             human = "Rename preview:\n" + "\n".join(data["edits"])
         if args.json:
             print(json.dumps(data, ensure_ascii=False))
@@ -998,8 +1049,7 @@ def command_rename(args: argparse.Namespace, cwd: Path) -> int:
 
 
 def command_code_actions(args: argparse.Namespace, cwd: Path) -> int:
-    configs = load_config(cwd, args.builtins_only)
-    server, path, client, uri, text = _client_for_file(args, cwd, configs, allow_apply_edits=args.apply)
+    server, path, client, uri, text = _client_for_file(args, cwd, allow_apply_edits=args.apply)
     try:
         params = _position_params(uri, text, args)
         position = params["position"]
@@ -1092,7 +1142,7 @@ def command_rename_file(args: argparse.Namespace, cwd: Path) -> int:
         raise LspError("Source and destination are identical")
     if destination.exists():
         raise LspError(f"Destination already exists: {destination}")
-    configs = load_config(cwd, args.builtins_only)
+    configs = load_config(source.parent, args.builtins_only)
     servers = available_servers(configs, source.parent)
     matches = [item for item in servers_for_file(servers, source) if not item.get("isLinter")]
     pairs = {"files": [{"oldUri": source.as_uri(), "newUri": destination.as_uri()}]}
@@ -1101,6 +1151,9 @@ def command_rename_file(args: argparse.Namespace, cwd: Path) -> int:
         for server in matches:
             client = LspClient(server, server["root"], args.timeout)
             try:
+                open_document(client, server, source)
+                if server["name"] == "rust-analyzer":
+                    client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), args.timeout)
                 edit = client.request("workspace/willRenameFiles", pairs) or {}
                 clients.append((server, client, edit))
             except LspError as exc:
@@ -1108,7 +1161,7 @@ def command_rename_file(args: argparse.Namespace, cwd: Path) -> int:
                 if "method" not in str(exc).casefold():
                     raise
         if args.apply:
-            root = matches[0]["root"] if matches else _git_root(cwd)
+            root = matches[0]["root"] if matches else _git_root(source.parent)
             if not _inside(root, source) or not _inside(root, destination):
                 raise LspError("File rename must stay inside the workspace")
             if not destination.parent.is_dir():
@@ -1140,7 +1193,8 @@ def command_rename_file(args: argparse.Namespace, cwd: Path) -> int:
             human = f"Renamed {source} → {destination}"
         else:
             data = {"success": True, "applied": False, "source": str(source), "destination": str(destination), "edits": [_edit_summary(edit) for _, _, edit in clients]}
-            human = f"Rename preview: {source} → {destination}\n" + "\n".join(f"{server['name']}: {summary[0]}" for (server, _, _), summary in zip(clients, data["edits"]))
+            data["workspaceEdits"] = [{"server": server["name"], "edit": edit} for server, _, edit in clients]
+            human = f"Rename preview: {source} → {destination}\n" + "\n".join(f"{server['name']}: " + "\n".join(summary) for (server, _, _), summary in zip(clients, data["edits"]))
         if args.json:
             print(json.dumps(data, ensure_ascii=False))
         else:
@@ -1152,11 +1206,12 @@ def command_rename_file(args: argparse.Namespace, cwd: Path) -> int:
 
 
 def command_capabilities(args: argparse.Namespace, cwd: Path) -> int:
-    configs = load_config(cwd, args.builtins_only)
     if args.file:
         path = resolve_file(args.file, cwd)
+        configs = load_config(path.parent, args.builtins_only)
         servers = servers_for_file(available_servers(configs, path.parent), path)
     else:
+        configs = load_config(cwd, args.builtins_only)
         servers = available_servers(configs, cwd)
     result = []
     for server in servers:
@@ -1178,9 +1233,8 @@ def command_capabilities(args: argparse.Namespace, cwd: Path) -> int:
 def command_request(args: argparse.Namespace, cwd: Path) -> int:
     if args.method not in READ_ONLY_METHODS and not args.apply:
         raise LspError("Raw request methods require --apply unless listed as read-only")
-    configs = load_config(cwd, args.builtins_only)
     if args.file:
-        server, path, client, uri, text = _client_for_file(args, cwd, configs, allow_apply_edits=args.apply)
+        server, path, client, uri, text = _client_for_file(args, cwd, allow_apply_edits=args.apply)
         params: Any = json.loads(args.payload) if args.payload else {}
         if not args.payload and args.method in {
             "textDocument/definition", "textDocument/declaration", "textDocument/typeDefinition",
@@ -1192,6 +1246,7 @@ def command_request(args: argparse.Namespace, cwd: Path) -> int:
         elif not args.payload and args.method.startswith("textDocument/"):
             params = {"textDocument": {"uri": uri}}
     else:
+        configs = load_config(cwd, args.builtins_only)
         servers = available_servers(configs, cwd)
         if not servers:
             raise LspError("No available language server for this workspace")
@@ -1260,7 +1315,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     symbols = commands.add_parser("symbols", help="List document or workspace symbols")
     _add_common(symbols, needs_file=False)
-    symbols.add_argument("--workspace", action="store_true")
+    symbols.add_argument("--workspace", action="store_true", help="Search workspace symbols; --file selects a project")
     symbols.add_argument("--query", help="Filter symbol names; required with --workspace")
 
     rename = commands.add_parser("rename", help="Preview or apply a symbol rename")

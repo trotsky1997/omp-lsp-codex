@@ -34,6 +34,12 @@ codex-lsp code-actions --file path/to/file.rs --line 20
 
 For document symbols, `--query` filters by a case-insensitive name substring. For workspace symbols, the query is sent to each language server.
 
+Workspace-symbol searches open a source file to load the project. Use `symbols --workspace --file path/to/file.ts --query parser` to select a project explicitly. Server failures appear in JSON `errors` and produce a nonzero exit code.
+
+File commands load configuration from the target file's Git root, including when an absolute path points outside the current directory. TypeScript Language Server uses `tsserver.useSyntaxServer: "never"` by default so the first cross-file request uses semantic results.
+
+Rename previews show each edit's file, range, and replacement text. JSON previews also include the LSP `workspaceEdit` (`workspaceEdits` for `rename-file`).
+
 Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for its diagnostics. Large workspaces may need a higher `--timeout`; this does not change the saved LSP configuration.
 
 When an LSP server returns no hover content, `codex-lsp hover` looks up the symbol in the DevDocs index for that file's language and returns a reference link. It downloads and caches the public catalog and indexes for 24 hours under `~/.codex/cache/codex-lsp/devdocs` (or `$CODEX_HOME/cache/codex-lsp/devdocs`); symbol matching happens locally. This is a best-effort reference lookup, not a replacement for full documentation.
