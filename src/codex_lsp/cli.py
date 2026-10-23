@@ -23,6 +23,7 @@ from codex_lsp.protocol import LspClient, LspError
 DEFAULTS = Path(__file__).with_name("defaults.json")
 MAX_FILES = 200
 MAX_FILE_BYTES = 16 * 1024 * 1024
+HOVER_RETRY_SECONDS = 8.0
 NAVIGATION_RETRY_SECONDS = 6.0
 READ_ONLY_METHODS = {
     "textDocument/definition",
@@ -788,7 +789,7 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
         if method == "textDocument/hover":
             position = params["position"]
             symbol = symbol_at_position(text, position["line"], position["character"])
-            deadline = time.monotonic() + min(args.timeout, NAVIGATION_RETRY_SECONDS)
+            deadline = time.monotonic() + min(args.timeout, HOVER_RETRY_SECONDS)
             delay = 0.1
             while True:
                 remaining = deadline - time.monotonic()
