@@ -23,8 +23,6 @@ from codex_lsp.protocol import LspClient, LspError
 DEFAULTS = Path(__file__).with_name("defaults.json")
 MAX_FILES = 200
 MAX_FILE_BYTES = 16 * 1024 * 1024
-HOVER_RETRY_SECONDS = 12.0
-NAVIGATION_RETRY_SECONDS = 12.0
 READ_ONLY_METHODS = {
     "textDocument/definition",
     "textDocument/declaration",
@@ -525,7 +523,7 @@ def _diagnostics_for_client(client: LspClient, uri: str, timeout: float) -> tupl
                 return client.diagnostics[uri], True
         except (LspError, TimeoutError):
             pass
-    pushed = client.wait_for_push_diagnostics(uri, min(timeout, 5))
+    pushed = client.wait_for_push_diagnostics(uri, timeout)
     return (pushed or [], pushed is not None)
 
 
@@ -808,7 +806,7 @@ def command_diagnostics(args: argparse.Namespace, cwd: Path) -> int:
     ordered = [results[path] for path in paths if path in results]
     errors = [d for result in ordered for d in result["diagnostics"] if d.get("severity", 1) == 1]
     data = {
-        "success": not errors,
+        "success": not errors and all(result["verified"] and not result.get("errors") for result in ordered),
         "verified": all(result["verified"] for result in ordered),
         "checked": ordered,
         "hasErrors": bool(errors),
@@ -829,7 +827,7 @@ def command_diagnostics(args: argparse.Namespace, cwd: Path) -> int:
                 print(f"Unverified {result['file']} (no matching server or diagnostics response)")
             for error in result.get("errors", []):
                 print(f"  {error}")
-    return 1 if errors else 0
+    return 0 if data["success"] else 1
 
 
 def _client_for_file(
@@ -869,7 +867,7 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
         if method == "textDocument/hover":
             position = params["position"]
             symbol = symbol_at_position(text, position["line"], position["character"])
-            deadline = time.monotonic() + min(args.timeout, HOVER_RETRY_SECONDS)
+            deadline = time.monotonic() + args.timeout
             delay = 0.1
             progress_idle = False
             timed_out = False
@@ -922,7 +920,7 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
         else:
             position = params["position"]
             symbol = symbol_at_position(text, position["line"], position["character"])
-            deadline = time.monotonic() + min(args.timeout, NAVIGATION_RETRY_SECONDS)
+            deadline = time.monotonic() + args.timeout
             delay = 0.1
             progress_idle = False
             while True:
@@ -984,7 +982,11 @@ def command_symbols(args: argparse.Namespace, cwd: Path) -> int:
                     # shortcut: one seed loads one project; discover more roots for cross-project searches.
                     source = path or _workspace_source(server)
                     if source:
-                        open_document(client, server, source)
+                        uri, _ = open_document(client, server, source)
+                        if server["name"] == "pyright":
+                            # Pyright answers workspace queries before its file analysis is ready.
+                            if client.wait_for_push_diagnostics(uri, args.timeout) is None:
+                                raise TimeoutError("Timed out waiting for Pyright workspace analysis")
                     if server["name"] == "rust-analyzer":
                         client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), args.timeout)
                     result = client.request("workspace/symbol", {"query": args.query}) or []

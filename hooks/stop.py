@@ -50,6 +50,8 @@ def main() -> int:
         if len(issues) > 12:
             summary += f"\n... and {len(issues) - 12} more"
         emit({"decision": "block", "reason": f"LSP found errors in changed files. Fix them, or explain why they are expected.\n{summary}"})
+    elif not data.get("success"):
+        emit({"systemMessage": "LSP diagnostics could not verify every changed file; run `codex-lsp diagnostics --changed` to inspect the result."})
     else:
         allow_stop()
     return 0

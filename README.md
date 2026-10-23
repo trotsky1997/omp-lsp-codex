@@ -30,11 +30,11 @@ codex-lsp rename --file path/to/file.rs --line 20 --symbol parse --new-name pars
 codex-lsp code-actions --file path/to/file.rs --line 20
 ```
 
-`rename`, `rename-file`, and `code-actions` preview changes. Pass `--apply` to write them. `--json` writes a JSON object to stdout for both success and failure; check the exit code and the `success` field. Navigation and hover responses include `found`; diagnostics includes `verified` to distinguish an empty result from a completed check. The timeout range is 5–300 seconds.
+`rename`, `rename-file`, and `code-actions` preview changes. Pass `--apply` to write them. `--json` writes a JSON object to stdout for both success and failure; check the exit code and the `success` field. Navigation and hover responses include `found`; diagnostics includes `verified` to distinguish an empty result from a completed check. Unverified diagnostics return `success: false` and a nonzero exit code. The timeout range is 5–300 seconds; navigation retries and push diagnostics honor the requested value.
 
 For document symbols, `--query` filters by a case-insensitive name substring. For workspace symbols, the query is sent to each language server.
 
-Workspace-symbol searches open a source file to load the project. Use `symbols --workspace --file path/to/file.ts --query parser` to select a project explicitly. Server failures appear in JSON `errors` and produce a nonzero exit code.
+Workspace-symbol searches open a source file to load the project and wait for Pyright's initial file analysis before querying. Use `symbols --workspace --file path/to/file.ts --query parser` to select a project explicitly. Server failures appear in JSON `errors` and produce a nonzero exit code.
 
 File commands load configuration from the target file's Git root, including when an absolute path points outside the current directory. TypeScript Language Server uses `tsserver.useSyntaxServer: "never"` by default so the first cross-file request uses semantic results.
 
@@ -49,6 +49,8 @@ When an LSP server returns no hover content, `codex-lsp hover` looks up the symb
 The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths. If a server is missing, setup selects install command options for the current operating system and prints the official documentation URL. Setup itself does not install language servers.
 
 `codex-lsp doctor` checks the active configuration, initializes available language servers, and reports their capabilities. It does not write LSP configuration or apply workspace edits. A nonzero exit code means a configured server is missing or failed to initialize, or no server is available for the workspace.
+
+Language-server processes run with `RUSTUP_AUTO_INSTALL=0`, so a missing Rust toolchain is reported without an implicit download. Install the project's required toolchain explicitly before retrying. Doctor checks initialization; project dependencies must also be available for complete cross-file results. For Rust, inspect `cargo metadata --locked --format-version 1` if cross-crate navigation is incomplete.
 
 For `typescript-language-server`, registration and installation do not guarantee that the server can find TypeScript. If initialization reports a missing TypeScript installation, configure `initOptions.tsserver.fallbackPath` to an installed `typescript/lib/tsserver.js`; see the [upstream configuration](https://github.com/typescript-language-server/typescript-language-server/blob/master/docs/configuration.md#tsserver-options). An empty workspace-symbol response is server-dependent and may be incomplete; try file symbols or navigation from a known use.
 

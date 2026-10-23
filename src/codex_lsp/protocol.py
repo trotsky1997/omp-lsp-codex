@@ -10,6 +10,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
+from codex_lsp import __version__
+
 
 class LspError(RuntimeError):
     pass
@@ -27,6 +29,7 @@ class LspClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=-1,
+                env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"},
             )
         except OSError as exc:
             raise LspError(f"Could not start {config['name']}: {exc}") from exc
@@ -54,7 +57,7 @@ class LspClient:
                 "initialize",
                 {
                     "processId": os.getpid(),
-                    "clientInfo": {"name": "codex-lsp", "version": "0.1.0"},
+                    "clientInfo": {"name": "codex-lsp", "version": __version__},
                     "rootUri": root_uri,
                     "rootPath": str(self.root),
                     "workspaceFolders": [{"uri": root_uri, "name": self.root.name}],
