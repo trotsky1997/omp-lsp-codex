@@ -332,7 +332,9 @@ def _flatten_hover(value: Any) -> str:
 
 
 def _format_symbol(value: dict[str, Any], base_uri: str = "") -> dict[str, Any]:
-    location = value.get("location") if isinstance(value.get("location"), dict) else value
+    location = value.get("location")
+    if not isinstance(location, dict):
+        location = value
     point = _location(location) or {}
     start = (value.get("selectionRange") or value.get("range") or {}).get("start", {})
     if not point and base_uri:
