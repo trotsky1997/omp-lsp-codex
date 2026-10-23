@@ -701,14 +701,22 @@ def command_doctor(args: argparse.Namespace, cwd: Path) -> int:
 
 
 def command_diagnostics(args: argparse.Namespace, cwd: Path) -> int:
-    configs = load_config(cwd, args.builtins_only)
-    servers = available_servers(configs, cwd, args.global_bins_only)
     paths = _changed_files(cwd) if args.changed else [resolve_file(args.file, cwd)]
     if len(paths) > MAX_FILES:
         paths = paths[:MAX_FILES]
     groups: dict[tuple[str, str], tuple[dict[str, Any], list[Path]]] = {}
     results: dict[Path, dict[str, Any]] = {}
+    config_cache: dict[Path, dict[str, dict[str, Any]]] = {}
+    server_cache: dict[Path, list[dict[str, Any]]] = {}
     for path in paths:
+        project_root = _git_root(path.parent)
+        if project_root not in config_cache:
+            config_cache[project_root] = load_config(project_root, args.builtins_only)
+        if path.parent not in server_cache:
+            server_cache[path.parent] = available_servers(
+                config_cache[project_root], path.parent, args.global_bins_only
+            )
+        servers = server_cache[path.parent]
         matches = servers_for_file(servers, path)
         if not matches:
             results[path] = _diagnostic_record(path, [], False)
@@ -740,7 +748,12 @@ def command_diagnostics(args: argparse.Namespace, cwd: Path) -> int:
                 record.setdefault("errors", []).append(f"{server['name']}: {exc}")
     ordered = [results[path] for path in paths if path in results]
     errors = [d for result in ordered for d in result["diagnostics"] if d.get("severity", 1) == 1]
-    data = {"success": not errors, "checked": ordered, "hasErrors": bool(errors)}
+    data = {
+        "success": not errors,
+        "verified": all(result["verified"] for result in ordered),
+        "checked": ordered,
+        "hasErrors": bool(errors),
+    }
     if args.json:
         print(json.dumps(data, ensure_ascii=False))
     else:
