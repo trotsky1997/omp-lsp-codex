@@ -31,11 +31,13 @@ For diagnostics JSON, check `verified` as well as `hasErrors`; an empty diagnost
 - `codex-lsp definition --file path/to/file.rs --line 20 --symbol parse`
 - `codex-lsp references --file path/to/file.rs --line 20 --symbol parse`
 - `codex-lsp hover --file path/to/file.rs --line 20 --symbol parse`
-- `codex-lsp symbols --file path/to/file.rs`
+- `codex-lsp symbols --file path/to/file.rs --query parse`
 - `codex-lsp symbols --workspace --query parser`
 - `codex-lsp rename --file path/to/file.rs --line 20 --symbol parse --new-name parse_value`
 - `codex-lsp code-actions --file path/to/file.rs --line 20`
 - `codex-lsp capabilities --file path/to/file.rs`
+
+Use `symbols --query` to narrow large document-symbol output by name. Workspace-symbol searches require a query and use the language server's matching behavior.
 
 Rename and code-action commands preview by default. Add `--apply` only when the user requested the change. `rename-file` also previews unless `--apply` is present. Raw requests require `--apply` unless their method is on the CLI's read-only allowlist.
 

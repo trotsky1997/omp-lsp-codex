@@ -24,13 +24,15 @@ codex-lsp diagnostics --changed
 codex-lsp definition --file path/to/file.rs --line 20 --symbol parse
 codex-lsp references --file path/to/file.rs --line 20 --symbol parse
 codex-lsp hover --file path/to/file.rs --line 20 --symbol parse
-codex-lsp symbols --file path/to/file.rs
+codex-lsp symbols --file path/to/file.rs --query parse
 codex-lsp symbols --workspace --query parser
 codex-lsp rename --file path/to/file.rs --line 20 --symbol parse --new-name parse_value
 codex-lsp code-actions --file path/to/file.rs --line 20
 ```
 
 `rename`, `rename-file`, and `code-actions` preview changes. Pass `--apply` to write them. `--json` writes a JSON object to stdout for both success and failure; check the exit code and the `success` field. Navigation and hover responses include `found`; diagnostics includes `verified` to distinguish an empty result from a completed check. The timeout range is 5–300 seconds.
+
+For document symbols, `--query` filters by a case-insensitive name substring. For workspace symbols, the query is sent to each language server.
 
 Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for its diagnostics. Large workspaces may need a higher `--timeout`; this does not change the saved LSP configuration.
 

@@ -841,6 +841,7 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
             delay = 0.1
             progress_idle = False
             timed_out = False
+            content = ""
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -953,7 +954,10 @@ def command_symbols(args: argparse.Namespace, cwd: Path) -> int:
         server, path, client, uri, _ = _client_for_file(args, cwd, configs)
         try:
             result = client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
-            data = {"success": True, "server": server["name"], "symbols": _symbol_tree(result, uri)}
+            items = _symbol_tree(result, uri)
+            if args.query:
+                items = [item for item in items if args.query.casefold() in item["name"].casefold()]
+            data = {"success": True, "server": server["name"], "symbols": items}
         finally:
             client.close()
     if args.json:
@@ -1257,7 +1261,7 @@ def build_parser() -> argparse.ArgumentParser:
     symbols = commands.add_parser("symbols", help="List document or workspace symbols")
     _add_common(symbols, needs_file=False)
     symbols.add_argument("--workspace", action="store_true")
-    symbols.add_argument("--query")
+    symbols.add_argument("--query", help="Filter symbol names; required with --workspace")
 
     rename = commands.add_parser("rename", help="Preview or apply a symbol rename")
     _add_common(rename, position=True)
