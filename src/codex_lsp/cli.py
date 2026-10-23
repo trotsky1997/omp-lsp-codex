@@ -468,6 +468,20 @@ def _edit_summary(edit: dict[str, Any]) -> list[str]:
 
 
 def _diagnostics_for_client(client: LspClient, uri: str, timeout: float) -> tuple[list[dict[str, Any]], bool]:
+    if client.config["name"] == "rust-analyzer":
+        ready = client.wait_for_progress_idle(("rustAnalyzer/", "rust-analyzer/"), timeout)
+        pushed = client.wait_for_push_diagnostics(uri, 0.1)
+        if pushed is not None:
+            return pushed, True
+        provider = client.capabilities.get("diagnosticProvider")
+        if provider:
+            try:
+                report = client.request("textDocument/diagnostic", {"textDocument": {"uri": uri}}, timeout=timeout)
+                if isinstance(report, dict) and report.get("kind") == "full":
+                    return report.get("items", []), ready
+            except (LspError, TimeoutError):
+                pass
+        return [], False
     provider = client.capabilities.get("diagnosticProvider")
     if provider:
         try:
@@ -725,6 +739,18 @@ def command_diagnostics(args: argparse.Namespace, cwd: Path) -> int:
             key = server["name"], str(server["root"])
             groups.setdefault(key, (server, []))[1].append(path)
     for server, files in groups.values():
+        if server["name"] == "rust-analyzer":
+            settings = server.get("settings")
+            settings = settings if isinstance(settings, dict) else {}
+            rust_settings = settings.get("rust-analyzer")
+            rust_settings = rust_settings if isinstance(rust_settings, dict) else {}
+            server = {
+                **server,
+                "settings": {
+                    **settings,
+                    "rust-analyzer": {**rust_settings, "checkOnSave": True},
+                },
+            }
         try:
             with LspClient(server, server["root"], args.timeout) as client:
                 opened: dict[Path, str] = {}
@@ -799,6 +825,13 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
     server, path, client, uri, text = _client_for_file(args, cwd, configs)
     try:
         params = _position_params(uri, text, args)
+        label = {
+            "textDocument/definition": "definition",
+            "textDocument/references": "reference",
+            "textDocument/typeDefinition": "type definition",
+            "textDocument/implementation": "implementation",
+            "textDocument/hover": "hover information",
+        }[method]
         if method == "textDocument/references":
             params["context"] = {"includeDeclaration": True}
         if method == "textDocument/hover":
@@ -806,11 +839,12 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
             symbol = symbol_at_position(text, position["line"], position["character"])
             deadline = time.monotonic() + min(args.timeout, HOVER_RETRY_SECONDS)
             delay = 0.1
+            progress_idle = False
+            timed_out = False
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    result = None
-                    content = ""
+                    timed_out = True
                     break
                 try:
                     result = client.request(method, params, timeout=remaining)
@@ -820,11 +854,18 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
                     result = None
                     content = ""
                 except TimeoutError:
-                    result = None
-                    content = ""
+                    timed_out = True
                     break
                 content = _flatten_hover((result or {}).get("contents")) if isinstance(result, dict) else ""
                 if content.strip() or not symbol:
+                    break
+                if server["name"] == "rust-analyzer" and not progress_idle:
+                    progress_idle = client.wait_for_progress_idle(
+                        ("rustAnalyzer/", "rust-analyzer/"), max(0.0, deadline - time.monotonic())
+                    )
+                    if progress_idle:
+                        continue
+                if progress_idle:
                     break
                 # Fresh LSP processes can answer before workspace indexing finishes.
                 time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
@@ -835,6 +876,8 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
                 if reference:
                     content = reference
                     provider = "devdocs"
+            if timed_out and not content.strip():
+                raise TimeoutError(f"Timed out waiting for {label} from {server['name']}")
             data = {
                 "success": True,
                 "found": bool(content.strip()),
@@ -848,11 +891,11 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
             symbol = symbol_at_position(text, position["line"], position["character"])
             deadline = time.monotonic() + min(args.timeout, NAVIGATION_RETRY_SECONDS)
             delay = 0.1
+            progress_idle = False
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    locations = []
-                    break
+                    raise TimeoutError(f"Timed out waiting for {label} from {server['name']}")
                 try:
                     result = client.request(method, params, timeout=remaining)
                 except LspError as exc:
@@ -860,16 +903,21 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
                         raise
                     result = None
                 except TimeoutError:
-                    result = None
-                    locations = []
-                    break
+                    raise TimeoutError(f"Timed out waiting for {label} from {server['name']}") from None
                 locations = _locations(result)
                 if locations or not symbol:
+                    break
+                if server["name"] == "rust-analyzer" and not progress_idle:
+                    progress_idle = client.wait_for_progress_idle(
+                        ("rustAnalyzer/", "rust-analyzer/"), max(0.0, deadline - time.monotonic())
+                    )
+                    if progress_idle:
+                        continue
+                if progress_idle:
                     break
                 # Fresh LSP processes can answer before workspace indexing finishes.
                 time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
                 delay = min(delay * 2, 0.5)
-            label = {"textDocument/definition": "definition", "textDocument/references": "reference", "textDocument/typeDefinition": "type definition", "textDocument/implementation": "implementation"}[method]
             data = {"success": True, "found": bool(locations), "server": server["name"], "locations": locations}
             human = f"No {label} found" if not locations else f"Found {len(locations)} {label}(s):\n" + "\n".join(f"{item['file']}:{item['line']}:{item['column']}" for item in locations)
         if args.json:

@@ -37,6 +37,8 @@ class LspClient:
         self.allow_apply_edits = allow_apply_edits
         self.messages: queue.Queue[Any] = queue.Queue()
         self.diagnostics: dict[str, list[dict[str, Any]]] = {}
+        self.progress: dict[str, dict[str, Any]] = {}
+        self.progress_seen: set[str] = set()
         self._request_id = 0
         self._stderr: deque[str] = deque(maxlen=40)
         self._closed = False
@@ -65,6 +67,7 @@ class LspClient:
                             "configuration": True,
                             "workspaceFolders": True,
                         },
+                        "window": {"workDoneProgress": True},
                         "textDocument": {
                             "publishDiagnostics": {"relatedInformation": True},
                             "diagnostic": {"dynamicRegistration": False},
@@ -148,6 +151,17 @@ class LspClient:
         params = message.get("params") or {}
         if method == "textDocument/publishDiagnostics":
             self.diagnostics[params.get("uri", "")] = params.get("diagnostics", [])
+        if method == "$/progress":
+            token = params.get("token")
+            value = params.get("value")
+            if token is not None and isinstance(value, dict):
+                token = str(token)
+                self.progress_seen.add(token)
+                if value.get("kind") == "end":
+                    self.progress.pop(token, None)
+                else:
+                    self.progress[token] = value
+            return None
         if "id" in message:
             result: Any = None
             error: dict[str, Any] | None = None
@@ -218,6 +232,34 @@ class LspClient:
                 return self.diagnostics.get(uri)
             self._dispatch(message)
         return self.diagnostics.get(uri)
+
+    def wait_for_progress_idle(self, prefixes: tuple[str, ...], timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        probe_deadline = min(deadline, time.monotonic() + 0.25)
+        idle_since: float | None = None
+        while True:
+            seen = any(token.startswith(prefixes) for token in self.progress_seen)
+            active = any(token.startswith(prefixes) for token in self.progress)
+            now = time.monotonic()
+            if seen and not active:
+                idle_since = idle_since or now
+                if now - idle_since >= 0.1:
+                    return True
+            else:
+                idle_since = None
+            remaining = deadline - now
+            if remaining <= 0 or (not seen and now >= probe_deadline):
+                return False
+            if idle_since:
+                wait = min(remaining, max(0.0, 0.1 - (now - idle_since)))
+            elif not seen:
+                wait = min(remaining, probe_deadline - now)
+            else:
+                wait = remaining
+            try:
+                self._dispatch(self._next_message(wait))
+            except TimeoutError:
+                return seen and not active
 
     def _exit_message(self) -> str:
         detail = "\n".join(self._stderr)

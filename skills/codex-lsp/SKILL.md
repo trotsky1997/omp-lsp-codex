@@ -17,8 +17,8 @@ If `typescript-language-server` starts but initialization says it cannot find a 
 
 Workspace symbol results depend on each server's indexing behavior. An empty `symbols --workspace` result does not establish that the symbol is absent; try `symbols --file <path>`, definition/references from a known use, or source search. If a definition points to an import statement, inspect the imported module for the actual declaration.
 
-When parsing `--json` navigation or hover output, use `success` for request completion and `found` to check whether a result exists.
-For diagnostics JSON, check `verified` as well as `hasErrors`; a successful command may have no matching server or diagnostics response. With `--symbol`, use a token that actually appears on the specified line; an absent token is rejected before the LSP request. For a different workspace, run `doctor` from that workspace's root.
+In `--json` mode, stdout contains a JSON object on both success and failure. Check the process exit code and `success`; navigation and hover also include `found` to show whether a result exists. Returned file paths are canonical absolute paths, so macOS `/tmp/...` paths may appear as `/private/tmp/...`.
+For diagnostics JSON, check `verified` as well as `hasErrors`; an empty diagnostic list is useful only when `verified` is true. Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for compiler diagnostics; raise `--timeout` for large workspaces. With `--symbol`, use a token that actually appears on the specified line; an absent token is rejected before the LSP request. For a different workspace, run `doctor` from that workspace's root.
 
 `codex-lsp hover` automatically checks DevDocs when the language server returns no hover content. Use the returned DevDocs link as a reference for the symbol; the CLI searches the downloaded index locally and returns a matching page URL.
 
