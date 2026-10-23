@@ -822,7 +822,13 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
                 if reference:
                     content = reference
                     provider = "devdocs"
-            data = {"success": True, "server": server["name"], "provider": provider, "hover": content}
+            data = {
+                "success": True,
+                "found": bool(content.strip()),
+                "server": server["name"],
+                "provider": provider,
+                "hover": content,
+            }
             human = content or "No hover information"
         else:
             position = params["position"]
@@ -851,7 +857,7 @@ def command_navigate(args: argparse.Namespace, cwd: Path, method: str) -> int:
                 time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
                 delay = min(delay * 2, 0.5)
             label = {"textDocument/definition": "definition", "textDocument/references": "reference", "textDocument/typeDefinition": "type definition", "textDocument/implementation": "implementation"}[method]
-            data = {"success": True, "server": server["name"], "locations": locations}
+            data = {"success": True, "found": bool(locations), "server": server["name"], "locations": locations}
             human = f"No {label} found" if not locations else f"Found {len(locations)} {label}(s):\n" + "\n".join(f"{item['file']}:{item['line']}:{item['column']}" for item in locations)
         if args.json:
             print(json.dumps(data, ensure_ascii=False))

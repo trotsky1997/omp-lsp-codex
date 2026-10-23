@@ -30,7 +30,7 @@ codex-lsp rename --file path/to/file.rs --line 20 --symbol parse --new-name pars
 codex-lsp code-actions --file path/to/file.rs --line 20
 ```
 
-`rename`, `rename-file`, and `code-actions` preview changes. Pass `--apply` to write them. `--json` returns structured results. The timeout range is 5–300 seconds.
+`rename`, `rename-file`, and `code-actions` preview changes. Pass `--apply` to write them. `--json` returns structured results. Navigation and hover responses include `found` to distinguish an empty result from a successful request. The timeout range is 5–300 seconds.
 
 When an LSP server returns no hover content, `codex-lsp hover` looks up the symbol in the DevDocs index for that file's language and returns a reference link. It downloads and caches the public catalog and indexes for 24 hours under `~/.codex/cache/codex-lsp/devdocs` (or `$CODEX_HOME/cache/codex-lsp/devdocs`); symbol matching happens locally. This is a best-effort reference lookup, not a replacement for full documentation.
 

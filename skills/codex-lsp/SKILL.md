@@ -17,6 +17,8 @@ If `typescript-language-server` starts but initialization says it cannot find a 
 
 Workspace symbol results depend on each server's indexing behavior. An empty `symbols --workspace` result does not establish that the symbol is absent; try `symbols --file <path>`, definition/references from a known use, or source search. If a definition points to an import statement, inspect the imported module for the actual declaration.
 
+When parsing `--json` navigation or hover output, use `success` for request completion and `found` to check whether a result exists.
+
 `codex-lsp hover` automatically checks DevDocs when the language server returns no hover content. Use the returned DevDocs link as a reference for the symbol; the CLI searches the downloaded index locally and returns a matching page URL.
 
 ## Common commands
