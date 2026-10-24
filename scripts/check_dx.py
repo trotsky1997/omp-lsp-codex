@@ -46,9 +46,57 @@ else:
     raise AssertionError("Workspace waits must respect the deadline")
 
 with TemporaryDirectory() as directory:
-    root = Path(directory)
+    root = Path(directory).resolve()
     source = root / "source.py"
     source.write_text("hello = 1\n")
+    (root / "pyproject.toml").touch()
+    config = {"command": cli.sys.executable, "rootMarkers": ["pyproject.toml"], "fileTypes": [".py"],
+              "settings": {"python": {"analysis": {"typeCheckingMode": "strict"}}}}
+    for platform in ("darwin", "linux", "win32"):
+        executable = "Scripts/python.exe" if platform == "win32" else "bin/python"
+        for name in (".venv", "venv"):
+            interpreter = root / name / executable
+            interpreter.parent.mkdir(parents=True, exist_ok=True)
+            interpreter.touch()
+            interpreter.chmod(0o755)
+        for name in ("pyright", "basedpyright"):
+            with patch.object(cli.sys, "platform", platform):
+                server = cli.available_servers({name: config}, root)[0]
+            assert server["settings"]["python"]["pythonPath"] == str(root / ".venv" / executable)
+            assert server["settings"]["python"]["analysis"]["typeCheckingMode"] == "strict"
+            assert "pythonPath" not in config["settings"]["python"]
+        (root / ".venv" / executable).unlink()
+        with patch.object(cli.sys, "platform", platform):
+            server = cli.available_servers({"pyright": config}, root)[0]
+        assert server["settings"]["python"]["pythonPath"] == str(root / "venv" / executable)
+    config["settings"]["python"]["pythonPath"] = "/explicit/python"
+    server = cli.available_servers({"pyright": config}, root)[0]
+    assert server["settings"]["python"]["pythonPath"] == "/explicit/python"
+    try:
+        cli.available_servers({"pyright": {**config, "settings": {"python": None}}}, root)
+    except LspError as exc:
+        assert "settings.python" in str(exc)
+    else:
+        raise AssertionError("Invalid Python settings must fail")
+    with patch.object(cli, "load_config", return_value={"pyright": config}), \
+         patch.object(cli, "available_servers", return_value=[server]), \
+         patch.object(cli, "LspClient"), contextlib.redirect_stdout(io.StringIO()) as out:
+        assert cli.command_doctor(SimpleNamespace(file=None, timeout=5, json=True), root) == 0
+    assert json.loads(out.getvalue())["servers"][0]["pythonPath"] == "/explicit/python"
+    configs = {"pyright": config, "unrelated": {**config, "fileTypes": [".ts"]}}
+
+    def scoped_servers(selected, context):
+        assert list(selected) == ["pyright"] and context == source.parent
+        return [server]
+
+    with patch.object(cli, "load_config", return_value=configs), \
+         patch.object(cli, "_read_overrides", return_value=configs), \
+         patch.object(cli, "available_servers", side_effect=scoped_servers), \
+         patch.object(cli, "LspClient"), contextlib.redirect_stdout(io.StringIO()) as out:
+        args = cli.build_parser().parse_args(["doctor", "--file", str(source), "--json"])
+        assert cli.command_doctor(args, repo) == 0
+    assert len(json.loads(out.getvalue())["servers"]) == 1
+
     args = SimpleNamespace(file=str(source), changed=False, builtins_only=True,
                            global_bins_only=True, timeout=60, json=True)
     with patch.object(cli, "available_servers", return_value=[]), contextlib.redirect_stdout(io.StringIO()) as out:

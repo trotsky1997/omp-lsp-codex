@@ -18,6 +18,7 @@ For a local checkout, run `uv tool install --from . codex-lsp` from the reposito
 ```sh
 codex-lsp status
 codex-lsp doctor
+codex-lsp doctor --file path/to/file.ts
 codex-lsp setup rust python
 codex-lsp diagnostics --file path/to/file.rs
 codex-lsp diagnostics --changed
@@ -38,6 +39,8 @@ Workspace-symbol searches open a source file to load the project and wait for Py
 
 File commands load configuration from the target file's Git root, including when an absolute path points outside the current directory. TypeScript Language Server uses `tsserver.useSyntaxServer: "never"` by default so the first cross-file request uses semantic results.
 
+Pyright and basedpyright automatically use the matched project's `.venv`, then `venv`, when an executable Python is present. Discovery uses `bin/python` on macOS/Linux and `Scripts/python.exe` on Windows. An explicit `settings.python.pythonPath` takes precedence. `doctor` reports the selected analysis interpreter separately from the CLI's own Python runtime. Install project dependencies into that environment using the project's manifests and lockfiles.
+
 Rename previews show each edit's file, range, and replacement text. JSON previews also include the LSP `workspaceEdit` (`workspaceEdits` for `rename-file`).
 
 Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for its diagnostics. Large workspaces may need a higher `--timeout`; this does not change the saved LSP configuration.
@@ -51,6 +54,8 @@ When an LSP server returns no hover content, `codex-lsp hover` looks up the symb
 The bundled server list comes from the upstream `oh-my-pi` defaults. `codex-lsp setup rust python` resolves the built-in servers and records their executable paths. If a server is missing, setup selects install command options for the current operating system and prints the official documentation URL. Setup itself does not install language servers.
 
 `codex-lsp doctor` checks the active configuration, initializes available language servers, validates Rust workspace readiness, and reports capabilities. It does not write LSP configuration or apply workspace edits. A nonzero exit code means a configured server is missing, failed to initialize or load its workspace, or no server is available. Large Rust projects may need `doctor --timeout 120`.
+
+Use `doctor --file path/to/file.ts` to check only that file's language servers and project configuration, including when the file is outside the current directory. This keeps health checks focused on the language used by the task in a mixed-language repository.
 
 Language-server processes run with `RUSTUP_AUTO_INSTALL=0`, so a missing Rust toolchain is reported without an implicit download. Install the project's required toolchain explicitly before retrying. Project dependencies must also be available for complete cross-file results. For Rust, inspect `cargo metadata --locked --format-version 1` when the server reports an incomplete workspace.
 

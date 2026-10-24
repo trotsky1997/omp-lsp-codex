@@ -153,7 +153,22 @@ def available_servers(
         command = _resolve_command(raw["command"], root, global_bins_only)
         if command is None:
             continue
-        result.append({**raw, "name": name, "root": root, "resolvedCommand": command})
+        server = {**raw, "name": name, "root": root, "resolvedCommand": command}
+        if name in ("pyright", "basedpyright"):
+            settings = raw.get("settings", {})
+            python_settings = settings.get("python", {})
+            if not isinstance(python_settings, dict):
+                raise LspError(f"{name} settings.python must be an object")
+            if not python_settings.get("pythonPath"):
+                executable = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+                for directory in (".venv", "venv"):
+                    interpreter = root / directory / executable
+                    if interpreter.is_file() and os.access(interpreter, os.X_OK):
+                        server["settings"] = {
+                            **settings, "python": {**python_settings, "pythonPath": str(interpreter)},
+                        }
+                        break
+        result.append(server)
     return result
 
 
@@ -657,15 +672,19 @@ def command_status(args: argparse.Namespace, cwd: Path) -> int:
 
 
 def command_doctor(args: argparse.Namespace, cwd: Path) -> int:
-    configs = load_config(cwd)
-    config_paths = [Path.home() / ".codex" / "lsp.json", _git_root(cwd) / ".codex" / "lsp.json"]
+    path = resolve_file(args.file, cwd) if args.file else None
+    context = path.parent if path else cwd
+    configs = load_config(context)
+    if path:
+        configs = {name: config for name, config in configs.items() if _matches_file(config, path)}
+    config_paths = [Path.home() / ".codex" / "lsp.json", _git_root(context) / ".codex" / "lsp.json"]
     overrides: dict[str, dict[str, Any]] = {}
-    for path in config_paths:
-        overrides.update(_read_overrides(path))
+    for config_path in config_paths:
+        overrides.update(_read_overrides(config_path))
 
     servers = []
     issues = []
-    for server in available_servers(configs, cwd):
+    for server in available_servers(configs, context):
         try:
             with LspClient(server, server["root"], args.timeout) as client:
                 if server["name"] == "rust-analyzer":
@@ -687,12 +706,16 @@ def command_doctor(args: argparse.Namespace, cwd: Path) -> int:
                 "error": str(exc),
             })
             issues.append({"severity": "error", "server": server["name"], "message": str(exc)})
+        if server["name"] in ("pyright", "basedpyright"):
+            python_path = server.get("settings", {}).get("python", {}).get("pythonPath")
+            if python_path:
+                servers[-1]["pythonPath"] = python_path
 
     for name in sorted(overrides):
         config = configs.get(name)
         if not config or config.get("disabled") is True:
             continue
-        root = _server_root(cwd, config.get("rootMarkers", []))
+        root = _server_root(context, config.get("rootMarkers", []))
         if root is None or _resolve_command(config["command"], root, False) is not None:
             continue
         message = f"Executable {config['command']!r} is missing; run `codex-lsp setup {name}` for install guidance"
@@ -727,7 +750,7 @@ def command_doctor(args: argparse.Namespace, cwd: Path) -> int:
         print(json.dumps(data, ensure_ascii=False))
     else:
         print(f"codex-lsp doctor ({__version__})")
-        print(f"Python: {data['runtime']['python']} ({sys.executable})")
+        print(f"CLI Python: {data['runtime']['python']} ({sys.executable})")
         print("Config files:")
         for path in data["configFiles"]:
             print(f"- {path}")
@@ -741,6 +764,8 @@ def command_doctor(args: argparse.Namespace, cwd: Path) -> int:
                 print(f"ERROR {server['name']}: {server['message']}")
             else:
                 print(f"ERROR {server['name']}: {server['error']}")
+            if server.get("pythonPath"):
+                print(f"  Analysis Python: {server['pythonPath']}")
         for issue in issues:
             if issue["severity"] == "warning":
                 print(f"WARNING: {issue['message']}")
@@ -1290,6 +1315,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--global-bins-only", action="store_true", help=argparse.SUPPRESS)
 
     doctor = commands.add_parser("doctor", help="Check LSP configuration and server health")
+    doctor.add_argument("--file", help="Check only servers matching this source file and its project")
     doctor.add_argument("--timeout", type=float, default=20, help="Initialize timeout per server in seconds (5..300)")
     doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
