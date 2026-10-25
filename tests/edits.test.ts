@@ -101,3 +101,20 @@ test("file moves: never overwrite an existing destination", () => {
   expect(fs.readFileSync(first, "utf8")).toBe("hello\n");
   expect(fs.readFileSync(second, "utf8")).toBe("keep\n");
 });
+test("file rename: remapping merges edits for old and new URIs without losing either", () => {
+  const first = { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: "first" };
+  const second = { ...first, newText: "second" };
+  const original = { changes: { "file:///old": [first], "file:///new": [second] } };
+  expect(remapEdit(original, "file:///old", "file:///new")).toEqual({ changes: { "file:///new": [first, second] } });
+  expect(original.changes["file:///new"]).toEqual([second]);
+});
+test.each(["chmod", "unlink"])("file moves: %s failure preserves the source and cleans up the destination", (operation) => {
+  const { first, second } = fixture(); fs.unlinkSync(second);
+  const originalChmod = fs.chmodSync, originalUnlink = fs.unlinkSync;
+  const chmod = spyOn(fs, "chmodSync").mockImplementation((path, mode) => { if (operation === "chmod" && path === second) throw new Error("injected chmod failure"); originalChmod(path, mode); });
+  const unlink = spyOn(fs, "unlinkSync").mockImplementation((path) => { if (operation === "unlink" && path === first) throw new Error("injected unlink failure"); originalUnlink(path); });
+  try {
+    expect(() => moveNoReplace(first, second)).toThrow(`injected ${operation} failure`);
+    expect(fs.readFileSync(first, "utf8")).toBe("hello\n"); expect(fs.existsSync(second)).toBe(false);
+  } finally { chmod.mockRestore(); unlink.mockRestore(); }
+});

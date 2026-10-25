@@ -142,6 +142,24 @@ export function loadConfig(cwd: string, builtinsOnly = false): Record<string, Se
       if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value)))
         throw new Error(`Invalid ${name}.${field}`);
     }
+    for (const field of ["disabled", "isLinter"] as const)
+      if (config[field] !== undefined && typeof config[field] !== "boolean")
+        throw new Error(`Invalid ${name}.${field}: expected a boolean`);
+    if (config.languageId !== undefined && (typeof config.languageId !== "string" || !config.languageId.trim()))
+      throw new Error(`Invalid ${name}.languageId`);
+    if (config.warmupTimeoutMs !== undefined &&
+        (!Number.isInteger(config.warmupTimeoutMs) || config.warmupTimeoutMs < 1 || config.warmupTimeoutMs > 2147483647))
+      throw new Error(`Invalid ${name}.warmupTimeoutMs: expected 1–2147483647 milliseconds`);
+    if (config.setup !== undefined) {
+      const guide = object(config.setup), install = guide.install;
+      const commands = (value: unknown) => typeof value === "string" ||
+        (Array.isArray(value) && value.every((item) => typeof item === "string"));
+      if (!config.setup || typeof config.setup !== "object" || Array.isArray(config.setup) ||
+          (guide.docs !== undefined && typeof guide.docs !== "string") ||
+          (install !== undefined && !commands(install) &&
+            (!install || typeof install !== "object" || Array.isArray(install) || !Object.values(install).every(commands))))
+        throw new Error(`Invalid ${name}.setup`);
+    }
     if (name === "typescript-language-server") {
       config.initOptions ??= {};
       if (

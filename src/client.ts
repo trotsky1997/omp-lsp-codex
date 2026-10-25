@@ -106,6 +106,8 @@ export class LspClient {
         Math.max(timeoutMs, server.warmupTimeoutMs ?? 5000),
       );
       client.capabilities = result?.capabilities ?? {};
+      if (client.capabilities.positionEncoding !== undefined && client.capabilities.positionEncoding !== "utf-16")
+        throw new Error(`Unsupported LSP position encoding: ${client.capabilities.positionEncoding}; codex-lsp requires utf-16`);
       await client.notify("initialized", {});
       await client.notify("workspace/didChangeConfiguration", { settings: server.settings ?? {} });
       return client;
@@ -282,8 +284,8 @@ export class LspClient {
   }
 
   async #waitUntil(check: () => boolean, timeoutMs: number, label: string): Promise<void> {
-    if (check()) return;
     if (this.#failure) throw this.#failure;
+    if (check()) return;
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const wake = () => {
       if (check()) {
@@ -323,7 +325,7 @@ export class LspClient {
     return this.diagnostics.get(uri)!;
   }
   async waitWorkspace(timeoutMs = this.timeoutMs): Promise<void> {
-    await this.#waitUntil(() => !!this.serverStatus?.quiescent, timeoutMs, "workspace analysis");
+    await this.#waitUntil(() => this.serverStatus?.quiescent === true, timeoutMs, "workspace analysis");
     if (this.serverStatus?.health !== "ok")
       throw new Error(
         `rust-analyzer workspace is incomplete: ${this.serverStatus?.message ?? this.serverStatus?.health}`,

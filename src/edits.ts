@@ -143,7 +143,7 @@ export function moveNoReplace(source: string, destination: string): void {
 export function remapEdit(edit: WorkspaceEdit, oldUri: string, newUri: string): WorkspaceEdit {
   const result = structuredClone(edit);
   if (result.changes?.[oldUri]) {
-    result.changes[newUri] = result.changes[oldUri];
+    result.changes[newUri] = [...result.changes[oldUri], ...(result.changes[newUri] ?? [])];
     delete result.changes[oldUri];
   }
   for (const change of result.documentChanges ?? [])

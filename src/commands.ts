@@ -143,15 +143,15 @@ export function location(value: unknown): ObjectValue | undefined {
     start = object(range.start);
   if (
     typeof uri !== "string" ||
-    typeof start.line !== "number" ||
-    typeof start.character !== "number"
+    !Number.isInteger(start.line) || Number(start.line) < 0 ||
+    !Number.isInteger(start.character) || Number(start.character) < 0
   )
     return;
   const path = uriFile(uri);
   return {
     file: path && existsSync(path) ? realpathSync(path) : (path ?? uri),
-    line: start.line + 1,
-    column: start.character + 1,
+    line: Number(start.line) + 1,
+    column: Number(start.character) + 1,
   };
 }
 export function formatSymbols(values: unknown, uri = "", container?: string): ObjectValue[] {
@@ -391,6 +391,7 @@ async function codeActions(args: Options): Promise<Result> {
     if ("disabled" in chosen && chosen.disabled) throw new Error(chosen.disabled.reason);
     if (!("edit" in chosen) && !("command" in chosen) && client.capabilities.codeActionProvider)
       chosen = await client.request<CodeAction>("codeAction/resolve", chosen);
+    if ("disabled" in chosen && chosen.disabled) throw new Error(chosen.disabled.reason);
     client.applyEdit = (edit) => applyWorkspaceEdit(edit, server.root);
     if ("edit" in chosen && chosen.edit) await applyWorkspaceEdit(chosen.edit, server.root);
     if (typeof chosen.command === "string")
@@ -583,17 +584,34 @@ export async function changedFiles(cwd: string): Promise<string[]> {
       timeout: 5000,
     });
     const output = await new Response(proc.stdout).text();
-    if (await proc.exited) continue;
-    for (const name of output.split("\0").filter(Boolean)) {
-      try {
-        const path = realpathSync(join(root, name));
-        if (statSync(path).isFile() && statSync(path).size <= MAX_FILE_BYTES) found.add(path);
-      } catch {
-        /* Deleted paths need no diagnostics. */
+    if (await proc.exited) {
+      if (args.at(-1) === "HEAD") {
+        const head = Bun.spawn(["git", "-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], {
+          stdout: "ignore", stderr: "ignore", timeout: 5000,
+        });
+        // Only an unborn HEAD may fail; other Git failures must remain visible.
+        if (await head.exited === 1) continue;
       }
+      throw new Error("Git could not enumerate changed files; inspect the repository or use --file");
+    }
+    for (const name of output.split("\0").filter(Boolean)) {
+      let path: string, info: ReturnType<typeof statSync>;
+      try {
+        path = realpathSync(join(root, name));
+        info = statSync(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if (!info.isFile()) continue;
+      if (!inside(root, path)) throw new Error(`Changed file is outside the workspace: ${path}`);
+      if (info.size > MAX_FILE_BYTES) throw new Error(`Changed file exceeds the 16 MiB LSP limit: ${path}`);
+      found.add(path);
     }
   }
-  return [...found].sort().slice(0, MAX_FILES);
+  if (found.size > MAX_FILES)
+    throw new Error(`Changed files exceed the ${MAX_FILES} file limit; use --file to check individual files`);
+  return [...found].sort();
 }
 
 export async function diagnostics(args: Options): Promise<Result> {
@@ -605,15 +623,16 @@ export async function diagnostics(args: Options): Promise<Result> {
     { file: string; diagnostics: Diagnostic[]; verified: boolean; errors: string[] }
   >();
   for (const path of paths) {
-    records.set(path, { file: path, diagnostics: [], verified: false, errors: [] });
-    for (const server of fileServers(
+    const servers = fileServers(
       availableServers(
         loadConfig(dirname(path), args.builtinsOnly),
         dirname(path),
         args.globalBinsOnly,
       ),
       path,
-    )) {
+    );
+    records.set(path, { file: path, diagnostics: [], verified: !!servers.length, errors: [] });
+    for (const server of servers) {
       const key = `${server.name}\0${server.root}`;
       if (!groups.has(key)) groups.set(key, { server, files: [] });
       groups.get(key)!.files.push(path);
@@ -635,10 +654,10 @@ export async function diagnostics(args: Options): Promise<Result> {
       for (const file of files) {
         const result = await client.getDiagnostics(fileUri(file)),
           record = records.get(file)!;
-        record.verified ||= result.verified;
-        const seen = new Set(record.diagnostics.map((x) => JSON.stringify([x.range, x.message])));
+        record.verified &&= result.verified;
+        const seen = new Set(record.diagnostics.map((x) => JSON.stringify([x.range, x.message, x.severity ?? 1])));
         for (const diagnostic of result.diagnostics) {
-          const key = JSON.stringify([diagnostic.range, diagnostic.message]);
+          const key = JSON.stringify([diagnostic.range, diagnostic.message, diagnostic.severity ?? 1]);
           if (!seen.has(key)) {
             record.diagnostics.push(diagnostic);
             seen.add(key);
@@ -646,7 +665,10 @@ export async function diagnostics(args: Options): Promise<Result> {
         }
       }
     } catch (error) {
-      for (const file of files) records.get(file)!.errors.push(`${server.name}: ${error}`);
+      for (const file of files) {
+        records.get(file)!.verified = false;
+        records.get(file)!.errors.push(`${server.name}: ${error}`);
+      }
     } finally {
       await client?.close();
     }
@@ -742,33 +764,33 @@ async function request(args: Options): Promise<Result> {
   if (!args.method) throw new Error("--method is required");
   if (!READ_ONLY.has(args.method) && !args.apply)
     throw new Error("Raw request methods require --apply unless listed as read-only");
-  let client: LspClient,
+  let client: LspClient | undefined,
     server: Server,
     params: unknown = args.payload ? JSON.parse(args.payload) : {};
-  if (args.file) {
-    const context = await fileContext(args);
-    ({ client, server } = context);
-    if (!args.payload) {
-      params = { textDocument: { uri: context.uri } };
-      if (
-        Object.values(NAVIGATION).includes(args.method) ||
-        args.method === "textDocument/declaration"
-      )
-        params = {
-          ...object(params),
-          position: await position(context.path, context.text, args),
-          ...(args.method === "textDocument/references"
-            ? { context: { includeDeclaration: true } }
-            : {}),
-        };
-    }
-  } else {
-    const servers = availableServers(loadConfig(args.cwd, args.builtinsOnly), args.cwd);
-    server = servers.find((x) => !x.isLinter) ?? servers[0];
-    if (!server) throw new Error("No available language server for this workspace");
-    client = await LspClient.start(server, args.timeout, args.apply);
-  }
   try {
+    if (args.file) {
+      const context = await fileContext(args);
+      ({ client, server } = context);
+      if (!args.payload) {
+        params = { textDocument: { uri: context.uri } };
+        if (
+          Object.values(NAVIGATION).includes(args.method) ||
+          args.method === "textDocument/declaration"
+        )
+          params = {
+            ...object(params),
+            position: await position(context.path, context.text, args),
+            ...(args.method === "textDocument/references"
+              ? { context: { includeDeclaration: true } }
+              : {}),
+          };
+      }
+    } else {
+      const servers = availableServers(loadConfig(args.cwd, args.builtinsOnly), args.cwd);
+      server = servers.find((x) => !x.isLinter) ?? servers[0];
+      if (!server) throw new Error("No available language server for this workspace");
+      client = await LspClient.start(server, args.timeout, args.apply);
+    }
     let applied = false;
     if (args.apply)
       client.applyEdit = async (edit) => {
@@ -785,7 +807,7 @@ async function request(args: Options): Promise<Result> {
       human: JSON.stringify(result, null, 2),
     };
   } finally {
-    await client.close();
+    await client?.close();
   }
 }
 

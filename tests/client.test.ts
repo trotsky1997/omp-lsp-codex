@@ -188,3 +188,41 @@ test("wire: unknown client methods receive JSON-RPC MethodNotFound", async () =>
   const reply = await client.request<{ error: { code: number } }>("fixture/callback", { method: "unknown/clientMethod", params: {} });
   expect(reply.error.code).toBe(-32601);
 });
+
+test("readiness: malformed Rust status cannot satisfy a workspace wait", async () => {
+  const { server } = fixture(), client = await LspClient.start(server, 50);
+  await client.request("fixture/notification", { method: "experimental/serverStatus", params: { quiescent: "true", health: "ok" } });
+  await expect(client.waitWorkspace()).rejects.toThrow("workspace analysis");
+});
+test.each(["running", "finished", "unrelated"])("Rust diagnostics: %s check progress controls verification", async (state) => {
+  const { server, root } = fixture("normal", "rust-analyzer"), client = await LspClient.start(server, 160), uri = fileUri(join(root, "source.rs"));
+  const notify = (method: string, params: unknown) => client.request("fixture/notification", { method, params });
+  await notify("experimental/serverStatus", { quiescent: true, health: "ok" });
+  await notify("textDocument/publishDiagnostics", { uri, diagnostics: [] });
+  const token = state === "unrelated" ? "other/check" : "rustAnalyzer/checkOnSave/0";
+  await notify("$/progress", { token, value: { kind: "begin" } });
+  if (state !== "running") await notify("$/progress", { token, value: { kind: "end" } });
+  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: state === "finished" });
+});
+test("diagnostics: cached reports from an exited server cannot remain verified", async () => {
+  const { server, root } = fixture(), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.ts"));
+  await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [] } });
+  await expect(client.request("fixture/exit", {})).rejects.toThrow();
+  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: false });
+});
+test("wire: configuration sections and workspace folder callbacks preserve values", async () => {
+  const { server } = fixture(), client = await LspClient.start(server, 1000);
+  const config = await client.request<{ result: unknown }>("fixture/callback", { method: "workspace/configuration", params: { items: [{ section: "python.analysis.typeCheckingMode" }, { section: "missing" }, {}] } });
+  expect(config.result).toEqual(["strict", null, server.settings]);
+  const folders = await client.request<{ result: unknown }>("fixture/callback", { method: "workspace/workspaceFolders" });
+  expect(folders.result).toEqual([{ uri: fileUri(server.root), name: server.root.split(/[\\/]/).at(-1) }]);
+});
+test("wire: dynamic diagnostics registration is honored and benign callbacks are acknowledged", async () => {
+  const { server } = fixture(), client = await LspClient.start(server, 1000);
+  await client.request("fixture/callback", { method: "client/registerCapability", params: { registrations: [{ method: "textDocument/diagnostic", registerOptions: { interFileDependencies: true } }] } });
+  expect(client.capabilities.diagnosticProvider).toEqual({ interFileDependencies: true });
+  for (const method of ["client/unregisterCapability", "window/workDoneProgress/create", "workspace/diagnostic/refresh"]) {
+    const response = await client.request<{ result: unknown }>("fixture/callback", { method });
+    expect(response.result).toBeNull();
+  }
+});

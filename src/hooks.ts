@@ -34,10 +34,12 @@ export async function hook(args: Options): Promise<void> {
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
     ]);
-    await proc.exited;
+    const code = await proc.exited;
     if (!stdout.trim())
       throw new Error(stderr.trim() || "LSP check timed out or produced no result");
     const data = object(JSON.parse(stdout));
+    if (code !== 0 && !(kind === "stop" && code === 1 && data.success === false))
+      throw new Error(stderr.trim() || `LSP check exited with code ${code}`);
     if (kind === "session-start") {
       const servers = Array.isArray(data.servers) ? data.servers : [];
       if (servers.length)
@@ -54,7 +56,7 @@ export async function hook(args: Options): Promise<void> {
         );
       return;
     }
-    if (data.hasErrors) {
+    if (data.hasErrors === true) {
       const issues: string[] = [];
       for (const file of Array.isArray(data.checked) ? data.checked : [])
         for (const diagnostic of Array.isArray(object(file).diagnostics)
@@ -72,7 +74,7 @@ export async function hook(args: Options): Promise<void> {
           reason: `LSP found errors in changed files. Fix them, or explain why they are expected.\n${issues.slice(0, 12).join("\n")}${issues.length > 12 ? `\n... and ${issues.length - 12} more` : ""}`,
         }),
       );
-    } else if (!data.success)
+    } else if (data.success !== true)
       console.log(
         JSON.stringify({
           systemMessage:

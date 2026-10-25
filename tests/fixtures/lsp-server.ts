@@ -1,8 +1,10 @@
-import { appendFileSync, closeSync, fstatSync, readdirSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, readdirSync, readFileSync } from "node:fs";
 import { encodeMessageFrame, MessageFramer } from "../../src/omp/message-framing.ts";
 import { object } from "../../src/config.ts";
 
 const [mode, tracePath] = process.argv.slice(2);
+const scenario = mode === "scenario" ? JSON.parse(readFileSync(process.argv[4], "utf8")) : {};
+const calls = new Map<string, number>();
 const trace = (direction: string, message: Record<string, unknown>) => appendFileSync(tracePath, JSON.stringify({ direction, ...message }) + "\n");
 trace("lifecycle", { pid: process.pid });
 const send = async (message: Record<string, unknown>) => {
@@ -30,7 +32,15 @@ for await (const chunk of Bun.stdin.stream()) {
       case "initialize":
         if (mode === "exit-init") { process.stderr.write("fixture initialization failed\n"); process.exit(17); }
         if (mode === "stall-init") break;
-        await reply({ capabilities: { diagnosticProvider: mode.startsWith("pull"), hoverProvider: true } });
+        await reply({ capabilities: scenario.capabilities ?? { diagnosticProvider: mode.startsWith("pull"), hoverProvider: true } });
+        break;
+      case "textDocument/didOpen":
+        if (mode === "scenario") {
+          if (scenario.diagnostics !== false)
+            await send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [] } });
+          if (scenario.serverStatus) await send({ method: "experimental/serverStatus", params: scenario.serverStatus });
+          for (const progress of scenario.progress ?? []) await send({ method: "$/progress", params: progress });
+        }
         break;
       case "fixture/echo": await reply(params); break;
       case "fixture/reverse":
@@ -76,6 +86,17 @@ for await (const chunk of Bun.stdin.stream()) {
       case "exit": if (mode !== "hang") process.exit(0); break;
       default:
         if (message.id === "server-request" && !message.method) await send({ id: callbackId, result: message });
+        else if (mode === "scenario" && message.id !== undefined) {
+          const method = String(message.method), count = calls.get(method) ?? 0;
+          calls.set(method, count + 1);
+          if (scenario.callbacks?.[method]) {
+            callbackId = message.id;
+            await send({ id: "server-request", ...scenario.callbacks[method] });
+          } else if (count < (scenario.contentModified?.[method] ?? 0))
+            await send({ id: message.id, error: { code: -32801, message: "Content Modified" } });
+          else if (scenario.errors?.[method]) await send({ id: message.id, error: scenario.errors[method] });
+          else await reply(scenario.responses?.[method] ?? null);
+        }
     }
   }
 }
