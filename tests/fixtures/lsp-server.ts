@@ -38,8 +38,11 @@ for await (const chunk of Bun.stdin.stream()) {
       case "textDocument/didOpen":
         if (mode === "scenario") {
           if (scenario.afterOpen) writeFileSync(scenario.afterOpen.file, scenario.afterOpen.text);
-          if (scenario.diagnostics !== false)
-            await send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [], ...("diagnosticVersion" in scenario ? { version: scenario.diagnosticVersion } : {}) } });
+          if (scenario.diagnostics !== false) {
+            const publish = () => send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [], ...("diagnosticVersion" in scenario ? { version: scenario.diagnosticVersion } : {}) } });
+            if (scenario.diagnosticDelay) setTimeout(publish, scenario.diagnosticDelay);
+            else await publish();
+          }
           if (scenario.serverStatus) await send({ method: "experimental/serverStatus", params: scenario.serverStatus });
           for (const progress of scenario.progress ?? []) await send({ method: "$/progress", params: progress });
         }
@@ -79,6 +82,7 @@ for await (const chunk of Bun.stdin.stream()) {
         await send({ id: "server-request", method: params.method, params: params.params });
         break;
       case "textDocument/diagnostic":
+        if (scenario.stallMethods?.includes(message.method)) break;
         if (mode === "pull-malformed") await reply({ kind: "full", items: [null] });
         else if (mode === "pull-missing") await reply({ kind: "full" });
         else if (mode === "pull-throws") await send({ id: message.id, error: { code: -32601, message: "Use push diagnostics" } });
@@ -93,6 +97,7 @@ for await (const chunk of Bun.stdin.stream()) {
         }
         else if (mode === "scenario" && message.id !== undefined) {
           const method = String(message.method), count = calls.get(method) ?? 0;
+          if (scenario.stallMethods?.includes(method)) break;
           calls.set(method, count + 1);
           const mutation = scenario.beforeResponse?.[method];
           if (mutation) writeFileSync(mutation.file, mutation.text);

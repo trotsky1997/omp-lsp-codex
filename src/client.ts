@@ -371,8 +371,8 @@ export class LspClient {
     if (this.server.name === "rust-analyzer") await this.waitWorkspace();
     if (["pyright", "basedpyright"].includes(this.server.name)) await this.waitDiagnostics(uri);
   }
-  async #waitRustCheck(): Promise<boolean> {
-    const deadline = Date.now() + this.timeoutMs;
+  async #waitRustCheck(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
     const relevant = (token: string) => /^(rustAnalyzer|rust-analyzer)\//.test(token);
     while (Date.now() < deadline) {
       if ([...this.progressSeen].some(relevant) && ![...this.progress].some(relevant)) {
@@ -383,18 +383,19 @@ export class LspClient {
     }
     return false;
   }
-  async getDiagnostics(uri: string): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
-    const result = await this.#collectDiagnostics(uri), document = this.documents.get(uri);
+  async getDiagnostics(uri: string, timeoutMs = this.timeoutMs): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
+    const result = await this.#collectDiagnostics(uri, timeoutMs), document = this.documents.get(uri);
     if (result.verified && document &&
         readText(resolveFile(uriFile(uri)!, this.server.root)) !== document.text)
       return { diagnostics: [], verified: false };
     return result;
   }
-  async #collectDiagnostics(uri: string): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
+  async #collectDiagnostics(uri: string, timeoutMs: number): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
+    const deadline = Date.now() + timeoutMs, remaining = () => Math.max(1, deadline - Date.now());
     let ready = true;
     if (this.server.name === "rust-analyzer") {
-      await this.waitWorkspace();
-      ready = await this.#waitRustCheck();
+      await this.waitWorkspace(remaining());
+      ready = await this.#waitRustCheck(remaining());
       if (this.diagnostics.has(uri))
         return { diagnostics: this.diagnostics.get(uri)!, verified: ready };
     }
@@ -403,6 +404,7 @@ export class LspClient {
         const report = await this.request<{ kind: string; items?: Diagnostic[] }>(
           "textDocument/diagnostic",
           { textDocument: { uri } },
+          remaining(),
         );
         if (report.kind === "full")
           return validDiagnostics(report.items)
@@ -413,7 +415,7 @@ export class LspClient {
       }
     }
     try {
-      return { diagnostics: await this.waitDiagnostics(uri), verified: ready };
+      return { diagnostics: await this.waitDiagnostics(uri, remaining()), verified: ready };
     } catch {
       return { diagnostics: [], verified: false };
     }

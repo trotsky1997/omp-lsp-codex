@@ -9,9 +9,11 @@ import { version } from "../package.json";
 const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Bun ${Bun.version})
 
 Commands:
-  setup LANGUAGE...      Register servers; print install commands and official docs if missing
+  setup LANGUAGE... [--project]  Register servers; project scope uses the current directory
   status [--file PATH]    List available servers for the workspace or target file
   doctor [--file PATH]    Check configuration, runtime and workspace health
+  inspect                --file PATH --line N [--symbol NAME] [--new-name NAME]
+                         Hover, definition, references, symbols and diagnostics in one session
   diagnostics            --file PATH or --changed
   definition             --file PATH --line N [--symbol NAME | --column N]
   references             --file PATH --line N [--symbol NAME | --column N]
@@ -26,9 +28,11 @@ Commands:
   request                --method METHOD [--file PATH] [--payload JSON] [--apply]
 
 Options: --json, --timeout SECONDS (5–300, default 20), --builtins-only
-  --limit N             Show at most N results or hover lines (default 50; 0 shows all)
+  --limit N             Show at most N results or hover lines (default 50, inspect 10; 0 shows all)
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
+--project is a flag without a path; run setup from the intended project directory.
 Rename and code-actions preview by default. Add --apply to write changes.
+inspect is read-only; --new-name adds a rename preview. Each section honors --limit.
 `;
 
 export function parseOptions(
@@ -62,7 +66,7 @@ export function parseOptions(
     },
   });
   const timeout = Number(v.timeout ?? 20),
-    limit = Number(v.limit ?? 50),
+    limit = Number(v.limit ?? (positionals[0] === "inspect" ? 10 : 50)),
     line = Number(v.line ?? 1),
     column = v.column === undefined ? undefined : Number(v.column);
   if (!Number.isFinite(timeout)) throw new Error("--timeout must be a number");

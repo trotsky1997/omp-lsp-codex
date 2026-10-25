@@ -40,7 +40,7 @@ test("navigation: repeated ContentModified fails without claiming an empty resul
   await expect(run(w.args("definition"))).rejects.toThrow("Timed out");
 });
 test("navigation: transient empty results exhaust the deadline; non-symbol positions can return empty", async () => {
-  const w = workspace();
+  const w = workspace({ diagnostics: false });
   await expect(run(w.args("references"))).rejects.toThrow("Timed out");
   expect((await run(w.args("references", "--column", "10"))).data.found).toBe(false);
 });

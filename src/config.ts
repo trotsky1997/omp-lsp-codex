@@ -103,11 +103,16 @@ export function inside(root: string, path: string): boolean {
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 export function configPaths(cwd: string): string[] {
-  return [join(homedir(), ".codex/lsp.json"), join(gitRoot(cwd), ".codex/lsp.json")];
+  const roots = ancestors(cwd);
+  const root = roots.find((path) => existsSync(join(path, ".git"))) ??
+    roots.find((path) => path !== homedir() && existsSync(join(path, ".codex/lsp.json"))) ?? cwd;
+  return [join(homedir(), ".codex/lsp.json"), join(root, ".codex/lsp.json")];
 }
 export function readOverrides(path: string): Record<string, ServerConfig> {
   if (!existsSync(path)) return {};
-  const doc: unknown = JSON.parse(readFileSync(path, "utf8"));
+  let doc: unknown;
+  try { doc = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`Cannot read LSP configuration ${path}: ${error instanceof Error ? error.message : String(error)}`); }
   if (!doc || typeof doc !== "object" || Array.isArray(doc))
     throw new Error(`LSP config must contain an object: ${path}`);
   const entries = "servers" in doc ? doc.servers : doc;

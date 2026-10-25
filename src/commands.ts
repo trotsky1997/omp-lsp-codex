@@ -77,6 +77,7 @@ const READ_ONLY = new Set([
   "textDocument/implementation",
   "textDocument/references",
   "textDocument/hover",
+  "textDocument/signatureHelp",
   "textDocument/documentSymbol",
   "textDocument/codeAction",
   "workspace/symbol",
@@ -90,6 +91,7 @@ const NAVIGATION: Record<string, string> = {
   "type-definition": "textDocument/typeDefinition",
   implementation: "textDocument/implementation",
 };
+const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp"]);
 
 interface FileContext {
   server: Server;
@@ -98,10 +100,17 @@ interface FileContext {
   uri: string;
   text: string;
 }
+function compilerDiagnostics(server: Server): Server {
+  return server.name === "rust-analyzer" ? {
+    ...server, settings: { ...server.settings,
+      "rust-analyzer": { ...object(server.settings?.["rust-analyzer"]), checkOnSave: true },
+    },
+  } : server;
+}
 async function fileContext(args: Options, semantic = true): Promise<FileContext> {
   if (!args.file) throw new Error("--file is required");
   const path = resolveFile(args.file, args.cwd);
-  const server = fileServers(
+  let server = fileServers(
     availableServers(
       loadConfig(dirname(path), args.builtinsOnly),
       dirname(path),
@@ -110,7 +119,8 @@ async function fileContext(args: Options, semantic = true): Promise<FileContext>
     path,
   )[0];
   if (!server)
-    throw new Error(`No available language server matches ${path}; run codex-lsp setup <language>`);
+    throw new Error(`No available language server matches ${path}; run codex-lsp setup <language> --project from the project root`);
+  if (args.command === "inspect") server = compilerDiagnostics(server);
   const client = await LspClient.start(server, args.timeout, args.apply);
   try {
     const opened = await client.open(path);
@@ -179,8 +189,8 @@ function hoverText(value: unknown): string {
   return typeof object(value).value === "string" ? String(object(value).value) : "";
 }
 
-async function navigate(args: Options): Promise<Result> {
-  const { server, path, client, uri, text } = await fileContext(args);
+async function navigate(args: Options, shared?: FileContext): Promise<Result> {
+  const { server, path, client, uri, text } = shared ?? await fileContext(args);
   try {
     const pos = await position(path, text, args),
       method = NAVIGATION[args.command];
@@ -196,6 +206,7 @@ async function navigate(args: Options): Promise<Result> {
       locations: ObjectValue[] = [],
       delay = 100;
     let timedOut = false;
+    let checkedAnalysis = false;
     while (true) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
@@ -223,6 +234,10 @@ async function navigate(args: Options): Promise<Result> {
         !symbolAt(text, pos.line, pos.character)
       )
         break;
+      if (!checkedAnalysis) {
+        checkedAnalysis = true;
+        if ((await client.getDiagnostics(uri, Math.max(1, deadline - Date.now()))).verified) break;
+      }
       await Bun.sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
       delay = Math.min(delay * 2, 500);
     }
@@ -266,13 +281,13 @@ async function navigate(args: Options): Promise<Result> {
         : `No ${args.command} found`,
     };
   } finally {
-    await client.close();
+    if (!shared) await client.close();
   }
 }
 
-async function symbols(args: Options): Promise<Result> {
+async function symbols(args: Options, shared?: FileContext): Promise<Result> {
   if (!args.workspace) {
-    const { server, client, uri } = await fileContext(args, false);
+    const { server, client, uri } = shared ?? await fileContext(args, false);
     try {
       let items = formatSymbols(
         await client.request("textDocument/documentSymbol", { textDocument: { uri } }),
@@ -292,7 +307,7 @@ async function symbols(args: Options): Promise<Result> {
           : "No symbols found", summary.hint ?? hint].filter(Boolean).join("\n"),
       };
     } finally {
-      await client.close();
+      if (!shared) await client.close();
     }
   }
   if (!args.query) throw new Error("--query is required with --workspace");
@@ -339,9 +354,9 @@ async function symbols(args: Options): Promise<Result> {
   };
 }
 
-async function rename(args: Options): Promise<Result> {
+async function rename(args: Options, shared?: FileContext): Promise<Result> {
   if (!args.newName) throw new Error("--new-name is required");
-  const { server, path, client, uri, text } = await fileContext(args);
+  const { server, path, client, uri, text } = shared ?? await fileContext(args);
   try {
     const edit =
       (await client.request<WorkspaceEdit | null>("textDocument/rename", {
@@ -368,7 +383,7 @@ async function rename(args: Options): Promise<Result> {
       human: [`${args.apply ? "Applied rename" : "Rename preview"}:\n${edits.join("\n")}`, summary.hint].filter(Boolean).join("\n"),
     };
   } finally {
-    await client.close();
+    if (!shared) await client.close();
   }
 }
 
@@ -381,10 +396,17 @@ async function codeActions(args: Options): Promise<Result> {
     let diagnostics = client.diagnostics.get(uri) ?? [];
     if (client.capabilities.diagnosticProvider && server.name !== "rust-analyzer")
       diagnostics = (await client.getDiagnostics(uri)).diagnostics;
+    else if (server.name !== "rust-analyzer" && !client.diagnostics.has(uri)) {
+      try { diagnostics = await client.waitDiagnostics(uri, Math.min(args.timeout, 1000)); }
+      catch { /* Actions can be available without published diagnostics. */ }
+    }
+    const actionRange = args.column === undefined && !args.symbol
+      ? { start: { line: pos.line, character: 0 }, end: { line: pos.line, character: text.split("\n")[pos.line].replace(/\r$/, "").length } }
+      : { start: pos, end: pos };
     const actions =
       (await client.request<(CodeAction | Command)[]>("textDocument/codeAction", {
         textDocument: { uri },
-        range: { start: pos, end: pos },
+        range: actionRange,
         context: { diagnostics },
       })) ?? [];
     if (!args.apply) {
@@ -396,10 +418,11 @@ async function codeActions(args: Options): Promise<Result> {
         }))
         .filter((x) => !args.query || x.title.toLowerCase().includes(args.query.toLowerCase()));
       const summary = outputInfo(items.length, args.limit), selected = items.slice(0, summary.shown);
+      const hint = summary.hint ?? (!items.length ? "No applicable actions for this range; check diagnostics and server capabilities, or select a different line/position." : undefined);
       return {
-        data: { success: true, server: server.name, ...summary, actions: selected },
+        data: { success: true, server: server.name, ...summary, ...(hint ? { hint } : {}), actions: selected },
         human:
-          [`${items.length} code action(s):`, ...selected.map((x) => `${x.index}: ${x.title}`), summary.hint].filter(Boolean).join("\n"),
+          [`${items.length} code action(s):`, ...selected.map((x) => `${x.index}: ${x.title}`), hint].filter(Boolean).join("\n"),
       };
     }
     if (!args.query) throw new Error("--query must select an action when using --apply");
@@ -551,6 +574,8 @@ function setup(args: Options): Result {
       .map((x) => x.trim())
       .filter(Boolean);
   if (!languages.length) throw new Error("Provide languages, such as codex-lsp setup rust python");
+  if (args.project && languages.some((name) => name === "." || name === ".." || /[\\/]/.test(name) && !Object.hasOwn(configs, name)))
+    throw new Error("--project takes no path; run from the project directory, for example: codex-lsp setup python --project");
   const selected: Record<string, string> = {},
     missing: string[] = [];
   for (const language of languages) {
@@ -574,7 +599,7 @@ function setup(args: Options): Result {
     throw new Error(
       `Missing language servers:\n${missing.join("\n")}\nAfter installation, rerun: codex-lsp setup ${languages.join(" ")}${args.project ? " --project" : ""}`,
     );
-  const path = args.project ? join(gitRoot(args.cwd), ".codex/lsp.json") : configPaths(args.cwd)[0];
+  const path = configPaths(args.cwd)[args.project ? 1 : 0];
   const doc = existsSync(path)
     ? (JSON.parse(readFileSync(path, "utf8")) as ObjectValue)
     : { servers: {} };
@@ -590,7 +615,10 @@ function setup(args: Options): Result {
       (!previous || typeof previous !== "object" || Array.isArray(previous))
     )
       throw new Error(`Invalid server entry ${name}`);
-    (entries as ObjectValue)[name] = { ...object(previous), command };
+    (entries as ObjectValue)[name] = {
+      ...object(previous), command, disabled: false,
+      ...(args.project ? { rootMarkers: [...new Set([...(configs[name].rootMarkers ?? []), ".codex/lsp.json"])] } : {}),
+    };
   }
   atomicWrite(path, Buffer.from(JSON.stringify(doc, null, 2) + "\n"));
   return {
@@ -648,7 +676,7 @@ export async function changedFiles(cwd: string): Promise<string[]> {
   return [...found].sort();
 }
 
-export async function diagnostics(args: Options): Promise<Result> {
+export async function diagnostics(args: Options, shared?: FileContext): Promise<Result> {
   if (!!args.file === args.changed) throw new Error("Choose exactly one of --file or --changed");
   const paths = args.changed ? await changedFiles(args.cwd) : [resolveFile(args.file!, args.cwd)];
   const groups = new Map<string, { server: Server; files: string[] }>();
@@ -673,18 +701,12 @@ export async function diagnostics(args: Options): Promise<Result> {
     }
   }
   for (let { server, files } of groups.values()) {
-    if (server.name === "rust-analyzer")
-      server = {
-        ...server,
-        settings: {
-          ...server.settings,
-          "rust-analyzer": { ...object(server.settings?.["rust-analyzer"]), checkOnSave: true },
-        },
-      };
+    server = compilerDiagnostics(server);
+    const reuse = shared?.server.name === server.name && shared.server.root === server.root;
     let client: LspClient | undefined;
     try {
-      client = await LspClient.start(server, args.timeout);
-      for (const file of files) await client.open(file);
+      client = reuse ? shared.client : await LspClient.start(server, args.timeout);
+      for (const file of files) if (!client.documents.has(fileUri(file))) await client.open(file);
       for (const file of files) {
         const result = await client.getDiagnostics(fileUri(file)),
           record = records.get(file)!;
@@ -704,7 +726,7 @@ export async function diagnostics(args: Options): Promise<Result> {
         records.get(file)!.errors.push(`${server.name}: ${error}`);
       }
     } finally {
-      await client?.close();
+      if (!reuse) await client?.close();
     }
   }
   const checked = [...records.values()],
@@ -734,6 +756,45 @@ export async function diagnostics(args: Options): Promise<Result> {
           ]), summary.hint].filter(Boolean).join("\n")
       : "No changed source files to check",
   };
+}
+
+async function inspect(args: Options): Promise<Result> {
+  if (args.apply || args.workspace || args.changed)
+    throw new Error("inspect is read-only and checks one file; omit --apply, --workspace and --changed");
+  const context = await fileContext(args);
+  const results: ObjectValue = {}, human: string[] = [], failedSections: string[] = [];
+  try {
+    const pos = await position(context.path, context.text, args);
+    const queries: [string, string | undefined][] = [
+      ["hover", "hoverProvider"], ["definition", "definitionProvider"],
+      ["references", "referencesProvider"], ["symbols", "documentSymbolProvider"],
+      ["diagnostics", undefined], ...(args.newName ? [["rename", "renameProvider"] as [string, string]] : []),
+    ];
+    for (const [command, capability] of queries) {
+      if (capability && !context.client.capabilities[capability]) {
+        results[command] = { success: true, supported: false, hint: `${context.server.name} does not advertise ${capability}` };
+        human.push(`${command}: unsupported by ${context.server.name}`);
+        continue;
+      }
+      try {
+        const query = { ...args, command, query: args.query ?? symbolAt(context.text, pos.line, pos.character) };
+        const result = command === "symbols" ? await symbols(query, context)
+          : command === "diagnostics" ? await diagnostics(query, context)
+          : command === "rename" ? await rename(query, context) : await navigate(query, context);
+        results[command] = result.data;
+        if (result.data.success === false) failedSections.push(command);
+        human.push(`${command}:\n${result.human}`);
+      } catch (error) {
+        failedSections.push(command);
+        const message = error instanceof Error ? error.message : String(error);
+        results[command] = { success: false, error: message };
+        human.push(`${command}: ERROR ${message}`);
+      }
+    }
+    const success = !failedSections.length;
+    if (!success) human.unshift(`Inspection has issues in: ${failedSections.join(", ")}. See each section below.`);
+    return { data: { success, applied: false, server: context.server.name, failedSections, results }, human: human.join("\n\n"), code: success ? 0 : 1 };
+  } finally { await context.client.close(); }
 }
 
 async function renameFile(args: Options): Promise<Result> {
@@ -832,16 +893,17 @@ async function request(args: Options): Promise<Result> {
     server: Server,
     params: unknown = args.payload ? JSON.parse(args.payload) : {};
   let applied = false;
+  if (args.file && args.payload && args.method.startsWith("textDocument/") &&
+      (params === null || typeof params !== "object" || Array.isArray(params)))
+    throw new Error("--payload with --file must contain an object for textDocument requests");
   try {
     if (args.file) {
       const context = await fileContext(args);
       ({ client, server } = context);
-      if (!args.payload) {
-        params = { textDocument: { uri: context.uri } };
-        if (
-          Object.values(NAVIGATION).includes(args.method) ||
-          args.method === "textDocument/declaration"
-        )
+      if (!args.payload || args.method.startsWith("textDocument/")) {
+        const supplied = object(params);
+        params = { ...supplied, textDocument: { uri: context.uri, ...object(supplied.textDocument) } };
+        if (POSITION_METHODS.has(args.method) && supplied.position === undefined)
           params = {
             ...object(params),
             position: await position(context.path, context.text, args),
@@ -878,13 +940,15 @@ async function request(args: Options): Promise<Result> {
 
 export async function run(args: Options): Promise<Result> {
   const navigation = Object.hasOwn(NAVIGATION, args.command);
-  if (args.file && (navigation || ["rename", "code-actions"].includes(args.command) ||
-      (args.command === "request" && !args.payload && (Object.values(NAVIGATION).includes(args.method ?? "") || args.method === "textDocument/declaration")))) {
+  if (args.file && (navigation || ["inspect", "rename", "code-actions"].includes(args.command) ||
+      (args.command === "request" && !args.payload && POSITION_METHODS.has(args.method ?? "")))) {
     const path = resolveFile(args.file, args.cwd);
     await position(path, readText(path), args);
   }
   if (navigation) return navigate(args);
   switch (args.command) {
+    case "inspect":
+      return inspect(args);
     case "status":
       return status(args);
     case "setup":

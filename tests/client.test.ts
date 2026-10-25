@@ -121,9 +121,9 @@ test.skipIf(process.platform === "win32")("CLI: SIGINT followed by SIGTERM still
   }
 });
 test("readiness: diagnostics for another URI never satisfy the target", async () => {
-  const { server, root } = fixture(), client = await LspClient.start(server, 50), uri = fileUri(join(root, "target.py"));
+  const { server, root } = fixture(), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "target.py"));
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri: uri + "-other", diagnostics: [] } });
-  await expect(client.waitDiagnostics(uri)).rejects.toThrow("file analysis");
+  await expect(client.waitDiagnostics(uri, 50)).rejects.toThrow("file analysis");
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [] } });
   expect(await client.waitDiagnostics(uri)).toEqual([]);
 });
@@ -133,26 +133,26 @@ test("readiness: unhealthy ready workspaces report the server reason", async () 
   await expect(client.waitWorkspace()).rejects.toThrow("Cargo metadata failed");
 });
 test.each(["pull-malformed", "pull-missing"])("diagnostics: %s cannot be reported as verified", async (mode) => {
-  const { server, root } = fixture(mode), client = await LspClient.start(server, 50), uri = fileUri(join(root, "source.ts"));
+  const { server, root } = fixture(mode), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.ts"));
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [] } });
-  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: false });
+  expect(await client.getDiagnostics(uri, 50)).toEqual({ diagnostics: [], verified: false });
 });
 test("diagnostics: malformed push diagnostics cannot establish readiness", async () => {
-  const { server, root } = fixture(), client = await LspClient.start(server, 50), uri = fileUri(join(root, "source.ts"));
+  const { server, root } = fixture(), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.ts"));
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [null] } });
-  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: false });
+  expect(await client.getDiagnostics(uri, 50)).toEqual({ diagnostics: [], verified: false });
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [] } });
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [null] } });
-  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: false });
+  expect(await client.getDiagnostics(uri, 50)).toEqual({ diagnostics: [], verified: false });
 });
 test.each([
   { message: "missing range" },
   { message: "backwards range", range: { start: { line: 1, character: 2 }, end: { line: 0, character: 0 } } },
   { message: "invalid severity", severity: 99, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
 ])("diagnostics: reject malformed diagnostic fields %#", async (diagnostic) => {
-  const { server, root } = fixture(), client = await LspClient.start(server, 50), uri = fileUri(join(root, "source.ts"));
+  const { server, root } = fixture(), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.ts"));
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [diagnostic] } });
-  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: false });
+  expect(await client.getDiagnostics(uri, 50)).toEqual({ diagnostics: [], verified: false });
 });
 test("diagnostics: retain valid errors including omitted optional severity", async () => {
   const { server, root } = fixture(), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.ts"));
@@ -190,25 +190,25 @@ test("wire: unknown client methods receive JSON-RPC MethodNotFound", async () =>
 });
 
 test("readiness: malformed Rust status cannot satisfy a workspace wait", async () => {
-  const { server } = fixture(), client = await LspClient.start(server, 50);
+  const { server } = fixture(), client = await LspClient.start(server, 1000);
   await client.request("fixture/notification", { method: "experimental/serverStatus", params: { quiescent: "true", health: "ok" } });
-  await expect(client.waitWorkspace()).rejects.toThrow("workspace analysis");
+  await expect(client.waitWorkspace(50)).rejects.toThrow("workspace analysis");
 });
 test.each(["running", "finished", "unrelated"])("Rust diagnostics: %s check progress controls verification", async (state) => {
-  const { server, root } = fixture("normal", "rust-analyzer"), client = await LspClient.start(server, 160), uri = fileUri(join(root, "source.rs"));
+  const { server, root } = fixture("normal", "rust-analyzer"), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.rs"));
   const notify = (method: string, params: unknown) => client.request("fixture/notification", { method, params });
   await notify("experimental/serverStatus", { quiescent: true, health: "ok" });
   await notify("textDocument/publishDiagnostics", { uri, diagnostics: [] });
   const token = state === "unrelated" ? "other/check" : "rustAnalyzer/checkOnSave/0";
   await notify("$/progress", { token, value: { kind: "begin" } });
   if (state !== "running") await notify("$/progress", { token, value: { kind: "end" } });
-  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: state === "finished" });
+  expect(await client.getDiagnostics(uri, 160)).toEqual({ diagnostics: [], verified: state === "finished" });
 });
 test("diagnostics: cached reports from an exited server cannot remain verified", async () => {
   const { server, root } = fixture(), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.ts"));
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [] } });
   await expect(client.request("fixture/exit", {})).rejects.toThrow();
-  expect(await client.getDiagnostics(uri)).toEqual({ diagnostics: [], verified: false });
+  expect(await client.getDiagnostics(uri, 50)).toEqual({ diagnostics: [], verified: false });
 });
 test("wire: configuration sections and workspace folder callbacks preserve values", async () => {
   const { server } = fixture(), client = await LspClient.start(server, 1000);

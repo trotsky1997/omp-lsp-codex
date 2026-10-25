@@ -26,6 +26,7 @@ Update the CLI with `bun add --global --force git+https://github.com/trotsky1997
 codex-lsp setup rust python typescript
 codex-lsp doctor --file path/to/file.rs --timeout 120
 codex-lsp status --json
+codex-lsp inspect --file path/to/file.rs --line 20 --symbol parse --json
 codex-lsp diagnostics --file path/to/file.rs
 codex-lsp diagnostics --changed
 codex-lsp definition --file path/to/file.rs --line 20 --symbol parse
@@ -41,6 +42,8 @@ codex-lsp capabilities --file path/to/file.rs
 
 Positions are one-based; columns use UTF-16. Use `--symbol name#2` for a repeated token. File paths are resolved from the target project even when the CLI runs elsewhere. `symbols --query` filters document symbols; workspace queries use the matching language servers and return their errors alongside results.
 
+Start with `status --file` for quick discovery. `inspect` shares one server session across hover, definition, references, matching file symbols and diagnostics, reducing repeated cold starts. It defaults to 10 results or hover lines per section; `--limit` changes all sections. JSON `results` retains individual errors and unsupported capabilities, with `failedSections` explaining a nonzero exit. Diagnostic errors cause exit 1 with navigation results preserved. Add `--new-name NAME` for a rename preview; inspect always runs read-only.
+
 `--json` emits one JSON object on success and failure. Check the exit code and `success`; navigation also includes `found`, and diagnostics includes `verified`. Empty or incomplete diagnostics fail verification. Existing type errors remain visible while navigation is available.
 
 Navigation lists, symbols, code-actions, diagnostics and rename previews show at most 50 results by default; hover shows at most 50 lines. Use `--limit N` for a smaller preview, or `--limit 0 --json > result.json` for complete output. These JSON results include `total`, `shown`, and `truncated`; diagnostics also include full severity `counts`. Truncated rename previews omit the complete edit object and set `workspaceEditOmitted`. `--apply` always processes the full edit set. Raw `request` responses remain complete. Empty document-symbol searches suggest a scoped workspace search; wrong-line symbol errors suggest nearby matching lines before starting a server.
@@ -49,11 +52,13 @@ Navigation lists, symbols, code-actions, diagnostics and rename previews show at
 
 Raw requests require `--apply` unless the method is read-only. `textDocument/codeAction` is read-only and returns suggestions; use `--payload` to supply its range and diagnostics context. Applying a selected code action can execute its server command.
 
+`code-actions --file PATH --line N` selects the whole line and includes initial diagnostics; `--symbol` or `--column` selects a point. `textDocument/signatureHelp` is read-only. Raw document requests fill missing `textDocument.uri` from `--file`, so partial payloads such as `{"position":{"line":0,"character":5}}` work. Payload positions use zero-based LSP coordinates.
+
 ## Setup and configuration
 
 `setup LANGUAGE...` resolves and registers installed server executables. Missing servers produce platform-specific install commands and official documentation for the agent to follow. Install the project's declared dependencies and required toolchain, then rerun setup and doctor.
 
-Configuration merges the bundled definitions with `~/.codex/lsp.json` and `<git-root>/.codex/lsp.json`. `setup --project` writes the latter. Settings accept `command`, `args`, `fileTypes`, `rootMarkers`, `languageId`, `initOptions` and `settings`.
+Configuration merges the bundled definitions with `~/.codex/lsp.json` and `<git-root>/.codex/lsp.json`. Outside Git, the nearest parent `.codex/lsp.json` supplies project settings. Run `setup LANGUAGE --project` from the project root; `--project` accepts no path. It enables the selected servers and adds the project config as a root marker, so standalone source directories work too. Settings accept `command`, `args`, `fileTypes`, `rootMarkers`, `languageId`, `initOptions` and `settings`.
 
 ```json
 {
