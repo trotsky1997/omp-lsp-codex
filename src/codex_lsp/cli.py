@@ -31,6 +31,7 @@ READ_ONLY_METHODS = {
     "textDocument/references",
     "textDocument/hover",
     "textDocument/documentSymbol",
+    "textDocument/codeAction",
     "workspace/symbol",
     "textDocument/diagnostic",
     "textDocument/semanticTokens/full",
@@ -873,6 +874,10 @@ def _client_for_file(
     client = LspClient(server, server["root"], args.timeout, allow_apply_edits=allow_apply_edits)
     try:
         uri, text = open_document(client, server, path)
+        if server["name"] in ("pyright", "basedpyright"):
+            # These servers can return partial references and empty renames before file analysis.
+            if client.wait_for_push_diagnostics(uri, args.timeout) is None:
+                raise TimeoutError(f"Timed out waiting for {server['name']} file analysis")
     except Exception:
         client.close()
         raise
@@ -1000,10 +1005,10 @@ def command_symbols(args: argparse.Namespace, cwd: Path) -> int:
                     source = path or _workspace_source(server)
                     if source:
                         uri, _ = open_document(client, server, source)
-                        if server["name"] == "pyright":
+                        if server["name"] in ("pyright", "basedpyright"):
                             # Pyright answers workspace queries before its file analysis is ready.
                             if client.wait_for_push_diagnostics(uri, args.timeout) is None:
-                                raise TimeoutError("Timed out waiting for Pyright workspace analysis")
+                                raise TimeoutError(f"Timed out waiting for {server['name']} workspace analysis")
                     if server["name"] == "rust-analyzer":
                         client.wait_for_workspace(args.timeout)
                     result = client.request("workspace/symbol", {"query": args.query}) or []
@@ -1049,6 +1054,11 @@ def command_rename(args: argparse.Namespace, cwd: Path) -> int:
         if server["name"] == "rust-analyzer":
             client.wait_for_workspace(args.timeout)
         edit = client.request("textDocument/rename", params) or {}
+        has_changes = any((edit.get("changes") or {}).values()) or any(
+            change.get("edits") or change.get("kind") for change in edit.get("documentChanges") or []
+        )
+        if not has_changes:
+            raise LspError("The language server returned no rename edits; try the symbol's declaration or check rename support")
         if args.apply:
             applied, reason = apply_workspace_edit(edit, server["root"])
             if not applied:

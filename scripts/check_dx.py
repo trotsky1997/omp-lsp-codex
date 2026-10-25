@@ -151,6 +151,67 @@ with TemporaryDirectory() as directory:
         assert json.loads(out.getvalue())["errors"]
         client.request.assert_not_called()
 
+    rename_args = cli.build_parser().parse_args([
+        "rename", "--file", str(source), "--line", "1", "--symbol", "hello", "--new-name", "renamed", "--json",
+    ])
+    edit = {"changes": {source.as_uri(): [{"range": {"start": {"line": 0, "character": 0},
+                                                       "end": {"line": 0, "character": 5}}, "newText": "renamed"}]}}
+    for name in ("pyright", "basedpyright"):
+        server = {"name": name, "root": root, "fileTypes": [".py"]}
+        client = MagicMock()
+        client.wait_for_push_diagnostics.return_value = []
+
+        def ready_rename(*_args, **_kwargs):
+            client.wait_for_push_diagnostics.assert_called_once_with(source.as_uri(), rename_args.timeout)
+            return edit
+
+        client.request.side_effect = ready_rename
+        with patch.object(cli, "load_config", return_value={}), \
+             patch.object(cli, "available_servers", return_value=[server]), \
+             patch.object(cli, "LspClient", return_value=client):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                assert cli.command_rename(rename_args, root) == 0
+            assert json.loads(out.getvalue())["workspaceEdit"] == edit
+            client.close.assert_called_once()
+            client.reset_mock()
+            client.wait_for_push_diagnostics.return_value = None
+            try:
+                cli.command_rename(rename_args, root)
+            except TimeoutError:
+                pass
+            else:
+                raise AssertionError("Python semantic requests must wait for file analysis")
+            client.request.assert_not_called()
+            client.close.assert_called_once()
+
+    for rename_args.apply in (False, True):
+        for empty in (None, {}, {"changes": {}}, {"changes": {source.as_uri(): []}},
+                      {"documentChanges": [{"textDocument": {"uri": source.as_uri()}, "edits": []}]}):
+            client = MagicMock()
+            client.request.return_value = empty
+            with patch.object(cli, "_client_for_file", return_value=(server, source, client, source.as_uri(), source.read_text())), \
+                 patch.object(cli, "apply_workspace_edit") as apply:
+                try:
+                    cli.command_rename(rename_args, root)
+                except LspError:
+                    pass
+                else:
+                    raise AssertionError("An empty rename must fail without applying edits")
+                apply.assert_not_called()
+                client.close.assert_called_once()
+
+    request_args = cli.build_parser().parse_args([
+        "request", "--method", "textDocument/codeAction", "--file", str(source), "--json",
+    ])
+    client = MagicMock()
+    client.request.return_value = [{"title": "Suggested edit", "edit": edit}]
+    with patch.object(cli, "_client_for_file", return_value=(server, source, client, source.as_uri(), source.read_text())) as factory, \
+         patch.object(cli, "apply_workspace_edit") as apply, contextlib.redirect_stdout(io.StringIO()) as out:
+        assert cli.command_request(request_args, root) == 0
+        factory.assert_called_once_with(request_args, root, allow_apply_edits=False)
+        assert json.loads(out.getvalue())["applied"] is False
+        apply.assert_not_called()
+
     with patch("codex_lsp.protocol.subprocess.Popen", side_effect=OSError("not installed")) as popen:
         try:
             LspClient({"resolvedCommand": "rust-analyzer", "name": "rust-analyzer"}, root, 5)

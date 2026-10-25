@@ -22,6 +22,9 @@ File commands load the target project's configuration even when run from another
 TypeScript Language Server defaults to `tsserver.useSyntaxServer: "never"` so cold cross-file queries use semantic results. If a server still points to an import, inspect the imported module for the declaration.
 
 In `--json` mode, stdout contains a JSON object on both success and failure. Check the process exit code and `success`; navigation and hover also include `found` to show whether a result exists. Returned file paths are canonical absolute paths, so macOS `/tmp/...` paths may appear as `/private/tmp/...`.
+
+Pyright and Basedpyright file commands wait for initial file diagnostics so cross-file references and rename previews use an analyzed project. A timeout fails the command; increase `--timeout` for expensive files. Type errors reported during analysis do not block navigation. Symbol renames with no edits return a nonzero exit code.
+
 For diagnostics JSON, check `verified` as well as `hasErrors`; unverified checks return `success: false` and a nonzero exit code. Navigation retries and push diagnostics use the requested `--timeout` (5–300 seconds). Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for compiler diagnostics; raise `--timeout` for large workspaces. With `--symbol`, use a token that actually appears on the specified line; an absent token is rejected before the LSP request. For a different workspace, run `doctor` from that workspace's root.
 
 Rust semantic commands and doctor wait for the server to report a ready workspace. Large projects may need `doctor --timeout 120`. Workspace health warnings and errors fail with the server's explanation; inspect `cargo metadata --locked --format-version 1`, project dependencies, build scripts, and toolchain availability before retrying. LSP processes disable rustup's implicit toolchain installation. Install the project's required toolchain explicitly, then retry; keep the existing user environment when checking servers.
@@ -45,6 +48,6 @@ Rust semantic commands and doctor wait for the server to report a ready workspac
 
 Use `symbols --query` to narrow large document-symbol output by name. Workspace-symbol searches require a query and use the language server's matching behavior.
 
-Rename and code-action commands preview by default. Rename previews list file ranges and replacement text; JSON also includes `workspaceEdit` (`workspaceEdits` for `rename-file`). Add `--apply` only when the user requested the change. `rename-file` also previews unless `--apply` is present. Raw requests require `--apply` unless their method is on the CLI's read-only allowlist.
+Rename and code-action commands preview by default. Rename previews list file ranges and replacement text; JSON also includes `workspaceEdit` (`workspaceEdits` for `rename-file`). Add `--apply` only when the user requested the change. `rename-file` also previews unless `--apply` is present. Raw requests require `--apply` unless their method is on the CLI's read-only allowlist. Raw `textDocument/codeAction` queries are read-only and return suggestions without executing them; use `--payload` for the LSP range and diagnostics context.
 
 The CLI reads JSON overrides from `~/.codex/lsp.json` and `<git-root>/.codex/lsp.json`. Server settings use `command`, `args`, `fileTypes`, `rootMarkers`, and optional `languageId`, `initOptions`, and `settings`; built-in definitions are merged with these overrides. Hooks use built-in definitions and globally resolved executables only. They never apply edits.

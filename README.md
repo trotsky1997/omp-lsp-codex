@@ -35,13 +35,15 @@ codex-lsp code-actions --file path/to/file.rs --line 20
 
 For document symbols, `--query` filters by a case-insensitive name substring. For workspace symbols, the query is sent to each language server.
 
-Workspace-symbol searches open a source file to load the project and wait for Pyright's initial file analysis before querying. Use `symbols --workspace --file path/to/file.ts --query parser` to select a project and its matching language servers. Root searches query all discovered servers; failures appear in JSON `errors` and produce a nonzero exit code even if another server returned symbols.
+Workspace-symbol searches open a source file to load the project and wait for Pyright or Basedpyright's initial file analysis before querying. Use `symbols --workspace --file path/to/file.ts --query parser` to select a project and its matching language servers. Root searches query all discovered servers; failures appear in JSON `errors` and produce a nonzero exit code even if another server returned symbols.
+
+File commands using Pyright or Basedpyright wait for the opened file's first diagnostics before querying. This prevents cold-start references from being partial and rename previews from returning empty edits before analysis is ready. A missing analysis response fails with a timeout; the diagnostics can contain type errors while navigation remains available.
 
 File commands load configuration from the target file's Git root, including when an absolute path points outside the current directory. TypeScript Language Server uses `tsserver.useSyntaxServer: "never"` by default so the first cross-file request uses semantic results.
 
 Pyright and basedpyright automatically use the matched project's `.venv`, then `venv`, when an executable Python is present. Discovery uses `bin/python` on macOS/Linux and `Scripts/python.exe` on Windows. An explicit `settings.python.pythonPath` takes precedence. `doctor` reports the selected analysis interpreter separately from the CLI's own Python runtime. Install project dependencies into that environment using the project's manifests and lockfiles.
 
-Rename previews show each edit's file, range, and replacement text. JSON previews also include the LSP `workspaceEdit` (`workspaceEdits` for `rename-file`).
+Rename previews show each edit's file, range, and replacement text. JSON previews also include the LSP `workspaceEdit` (`workspaceEdits` for `rename-file`). Symbol renames that return no edits fail with a nonzero exit code and do not apply changes. Raw `textDocument/codeAction` requests are read-only: they return suggestions without executing them and do not require `--apply`.
 
 Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for its diagnostics. Large workspaces may need a higher `--timeout`; this does not change the saved LSP configuration.
 
