@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/session_start.py",
+            "command": "bun \"${PLUGIN_ROOT}/src/cli.ts\" hook session-start",
             "timeout": 10,
             "statusMessage": "Checking language server availability"
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/stop.py",
+            "command": "bun \"${PLUGIN_ROOT}/src/cli.ts\" hook stop",
             "timeout": 120,
             "statusMessage": "Checking changed files with LSP"
           }

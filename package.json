@@ -1,0 +1,34 @@
+{
+  "name": "codex-lsp",
+  "version": "0.3.0",
+  "description": "Standalone TypeScript LSP CLI, skills and hooks for coding agents",
+  "license": "MIT",
+  "repository": "https://github.com/trotsky1997/omp-lsp-codex",
+  "bin": {
+    "codex-lsp": "src/cli.ts"
+  },
+  "files": [
+    "src",
+    "hooks",
+    "skills",
+    "plugin.json",
+    ".claude-plugin",
+    ".agents",
+    "LICENSE",
+    "LICENSES",
+    "NOTICE.md",
+    "README.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "bun scripts/check.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  }
+}

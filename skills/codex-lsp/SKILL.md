@@ -5,7 +5,7 @@ description: Use the bundled local LSP CLI for code navigation, symbol lookup, d
 
 This skill is already loaded when invoked; do not search for another `SKILL.md` under a guessed Codex skills path. The plugin exposes LSP through a CLI, not a separate tool entry. In Codex or Claude Code, run `codex-lsp` through an available terminal or shell tool.
 
-Register the CLI with `uv tool install --from 'git+https://github.com/trotsky1997/omp-lsp-codex.git' codex-lsp` if it is missing. If the command is not on `PATH`, use the directory from `uv tool dir --bin`. Use the plugin-bundled CLI only when uv is unavailable; resolve its absolute path from the installed plugin location.
+The CLI and hooks run directly from TypeScript using Bun. Register with `bun add --global git+https://github.com/trotsky1997/omp-lsp-codex.git` if missing. Check `bun --version` first; use the official Bun installation instructions for the current platform if needed. If the command is not on `PATH`, use the directory from `bun pm bin --global`. The bundled fallback is `bun <absolute-plugin-path>/src/cli.ts <command>`; resolve the path from the installed plugin location. Update with `bun add --global --force git+https://github.com/trotsky1997/omp-lsp-codex.git`.
 
 ## Setup and use
 
@@ -27,7 +27,7 @@ Pyright and Basedpyright file commands wait for initial file diagnostics so cros
 
 For diagnostics JSON, check `verified` as well as `hasErrors`; unverified checks return `success: false` and a nonzero exit code. Navigation retries and push diagnostics use the requested `--timeout` (5–300 seconds). Rust diagnostics run rust-analyzer's Cargo check for that invocation and wait for compiler diagnostics; raise `--timeout` for large workspaces. With `--symbol`, use a token that actually appears on the specified line; an absent token is rejected before the LSP request. For a different workspace, run `doctor` from that workspace's root.
 
-Rust semantic commands and doctor wait for the server to report a ready workspace. Large projects may need `doctor --timeout 120`. Workspace health warnings and errors fail with the server's explanation; inspect `cargo metadata --locked --format-version 1`, project dependencies, build scripts, and toolchain availability before retrying. LSP processes disable rustup's implicit toolchain installation. Install the project's required toolchain explicitly, then retry; keep the existing user environment when checking servers.
+Rust semantic commands and doctor wait for the server to report a ready workspace. Large projects may need `doctor --timeout 120`. Workspace health warnings and errors fail with the server's explanation; inspect `cargo metadata --locked --format-version 1`, project dependencies, build scripts, and toolchain availability before retrying. If the project has no Cargo.lock, allow an initial metadata run without `--locked`. LSP processes disable rustup's implicit toolchain installation. Install the project's required toolchain explicitly, then retry; keep the existing user environment when checking servers.
 
 `codex-lsp hover` automatically checks DevDocs when the language server returns no hover content. Use the returned DevDocs link as a reference for the symbol; the CLI searches the downloaded index locally and returns a matching page URL.
 
