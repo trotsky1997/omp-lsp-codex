@@ -43,6 +43,8 @@ Positions are one-based; columns use UTF-16. Use `--symbol name#2` for a repeate
 
 `--json` emits one JSON object on success and failure. Check the exit code and `success`; navigation also includes `found`, and diagnostics includes `verified`. Empty or incomplete diagnostics fail verification. Existing type errors remain visible while navigation is available.
 
+Navigation lists, symbols, code-actions, diagnostics and rename previews show at most 50 results by default; hover shows at most 50 lines. Use `--limit N` for a smaller preview, or `--limit 0 --json > result.json` for complete output. These JSON results include `total`, `shown`, and `truncated`; diagnostics also include full severity `counts`. Truncated rename previews omit the complete edit object and set `workspaceEditOmitted`. `--apply` always processes the full edit set. Raw `request` responses remain complete. Empty document-symbol searches suggest a scoped workspace search; wrong-line symbol errors suggest nearby matching lines before starting a server.
+
 `rename`, `rename-file` and `code-actions` preview changes. Add `--apply` to write them. Rename previews include ranges, replacements and the raw workspace edit. Empty symbol renames fail. Edits stay within the server's workspace, validate ranges and overlaps before writing, and roll back written files if an application fails. Resource operations returned inside workspace edits are rejected.
 
 Raw requests require `--apply` unless the method is read-only. `textDocument/codeAction` is read-only and returns suggestions; use `--payload` to supply its range and diagnostics context. Applying a selected code action can execute its server command.

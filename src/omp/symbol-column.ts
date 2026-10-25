@@ -63,7 +63,10 @@ export async function resolveSymbolColumn(filePath: string, line: number, symbol
 		const exactIndexes = findSymbolMatchIndexes(targetLine, symbol);
 		const fallbackIndexes = exactIndexes.length > 0 ? exactIndexes : findSymbolMatchIndexes(targetLine, symbol, true);
 		if (fallbackIndexes.length === 0) {
-			throw new Error(`Symbol "${symbol}" not found on line ${lineNumber}`);
+			const nearest = lines.flatMap((text, index) =>
+				findSymbolMatchIndexes(text, symbol, true).length ? [index + 1] : [])
+				.sort((a, b) => Math.abs(a - lineNumber) - Math.abs(b - lineNumber) || a - b).slice(0, 5);
+			throw new Error(`Symbol "${symbol}" not found on line ${lineNumber}${nearest.length ? `; nearest matching lines: ${nearest.join(", ")}` : "; use symbols --file to locate the declaration"}`);
 		}
 		if (occurrence > fallbackIndexes.length) {
 			throw new Error(

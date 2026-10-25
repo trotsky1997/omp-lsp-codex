@@ -16,6 +16,7 @@ import {
   MAX_FILE_BYTES,
   object,
   readOverrides,
+  readText,
   resolveCommand,
   resolveFile,
   serverForLanguage,
@@ -51,6 +52,7 @@ export interface Options {
   method?: string;
   payload?: string;
   timeout: number;
+  limit: number;
   json: boolean;
   changed: boolean;
   workspace: boolean;
@@ -63,6 +65,10 @@ export interface Result {
   data: ObjectValue;
   human: string;
   code?: number;
+}
+function outputInfo(total: number, limit: number) {
+  const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
+  return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
 }
 const READ_ONLY = new Set([
   "textDocument/definition",
@@ -235,23 +241,28 @@ async function navigate(args: Options): Promise<Result> {
       }
       if (timedOut && !content.trim())
         throw new Error(`Timed out waiting for hover information from ${server.name}`);
+      const found = !!content.trim(), lines = found ? content.split("\n") : [], summary = outputInfo(lines.length, args.limit);
+      content = lines.slice(0, summary.shown).join("\n");
       return {
         data: {
           success: true,
-          found: !!content.trim(),
+          found,
           server: server.name,
           provider,
           hover: content,
+          ...summary,
         },
-        human: content || "No hover information",
+        human: [content.trim() ? content : found ? "Hover information found." : "No hover information", summary.hint].filter(Boolean).join("\n"),
       };
     }
     if (timedOut) throw new Error(`Timed out waiting for ${args.command} from ${server.name}`);
+    const summary = outputInfo(locations.length, args.limit);
+    locations = locations.slice(0, summary.shown);
     return {
-      data: { success: true, found: !!locations.length, server: server.name, locations },
+      data: { success: true, found: !!summary.total, server: server.name, ...summary, locations },
       human: locations.length
-        ? `Found ${locations.length} ${args.command}(s):\n` +
-          locations.map((x) => `${x.file}:${x.line}:${x.column}`).join("\n")
+        ? [`Found ${summary.total} ${args.command}(s):`,
+          ...locations.map((x) => `${x.file}:${x.line}:${x.column}`), summary.hint].filter(Boolean).join("\n")
         : `No ${args.command} found`,
     };
   } finally {
@@ -271,11 +282,14 @@ async function symbols(args: Options): Promise<Result> {
         items = items.filter((x) =>
           String(x.name).toLowerCase().includes(args.query!.toLowerCase()),
         );
+      const summary = outputInfo(items.length, args.limit);
+      items = items.slice(0, summary.shown);
+      const hint = !items.length && args.query ? "Use symbols --workspace --file <path> --query <name> to search the project." : undefined;
       return {
-        data: { success: true, server: server.name, symbols: items },
-        human: items.length
+        data: { success: true, server: server.name, ...summary, ...(hint ? { hint } : {}), symbols: items },
+        human: [items.length
           ? items.map((x) => `${x.name} @ ${x.file}:${x.line}:${x.column}`).join("\n")
-          : "No symbols found",
+          : "No symbols found", summary.hint ?? hint].filter(Boolean).join("\n"),
       };
     } finally {
       await client.close();
@@ -312,15 +326,16 @@ async function symbols(args: Options): Promise<Result> {
     throw new Error(
       "No available server supports workspace symbols; use --file to select a project",
     );
-  const selected = items.slice(0, MAX_FILES);
+  const summary = outputInfo(items.length, args.limit), selected = items.slice(0, summary.shown);
   return {
-    data: { success: !errors.length, servers: used, symbols: selected, errors },
+    data: { success: !errors.length, servers: used, ...summary, symbols: selected, errors },
     code: errors.length ? 1 : 0,
     human:
       [
         ...selected.map((x) => `${x.name} @ ${x.file}:${x.line}:${x.column}`),
         ...errors.map((x) => `ERROR ${x.server}: ${x.error}`),
-      ].join("\n") || "No symbols found",
+        summary.hint,
+      ].filter(Boolean).join("\n") || "No symbols found",
   };
 }
 
@@ -338,17 +353,19 @@ async function rename(args: Options): Promise<Result> {
       throw new Error(
         "The language server returned no rename edits; try the symbol's declaration or check rename support",
       );
-    const edits = editSummary(edit);
+    const summary = outputInfo([...textChanges(edit).values()].reduce((n, items) => n + items.length, 0), args.limit);
+    const edits = editSummary(edit, summary.shown);
     if (args.apply) await client.edit(edit);
     return {
       data: {
         success: true,
         applied: args.apply,
         server: server.name,
+        ...summary,
         edits,
-        ...(!args.apply ? { workspaceEdit: edit } : {}),
+        ...(!args.apply ? summary.truncated ? { workspaceEditOmitted: true } : { workspaceEdit: edit } : {}),
       },
-      human: `${args.apply ? "Applied rename" : "Rename preview"}:\n${edits.join("\n")}`,
+      human: [`${args.apply ? "Applied rename" : "Rename preview"}:\n${edits.join("\n")}`, summary.hint].filter(Boolean).join("\n"),
     };
   } finally {
     await client.close();
@@ -378,11 +395,11 @@ async function codeActions(args: Options): Promise<Result> {
           kind: "kind" in item ? item.kind : undefined,
         }))
         .filter((x) => !args.query || x.title.toLowerCase().includes(args.query.toLowerCase()));
+      const summary = outputInfo(items.length, args.limit), selected = items.slice(0, summary.shown);
       return {
-        data: { success: true, server: server.name, actions: items },
+        data: { success: true, server: server.name, ...summary, actions: selected },
         human:
-          `${items.length} code action(s):\n` +
-          items.map((x) => `${x.index}: ${x.title}`).join("\n"),
+          [`${items.length} code action(s):`, ...selected.map((x) => `${x.index}: ${x.title}`), summary.hint].filter(Boolean).join("\n"),
       };
     }
     if (!args.query) throw new Error("--query must select an action when using --apply");
@@ -430,11 +447,14 @@ async function codeActions(args: Options): Promise<Result> {
 }
 
 export function status(args: Options): Result {
-  const servers = availableServers(
-    loadConfig(args.cwd, args.builtinsOnly),
-    args.cwd,
+  const path = args.file ? resolveFile(args.file, args.cwd) : undefined,
+    cwd = path ? dirname(path) : args.cwd;
+  const available = availableServers(
+    loadConfig(cwd, args.builtinsOnly),
+    cwd,
     args.globalBinsOnly,
-  ).map((x) => ({
+  );
+  const servers = (path ? fileServers(available, path) : available).map((x) => ({
     name: x.name,
     command: x.resolvedCommand,
     args: x.args ?? [],
@@ -691,20 +711,27 @@ export async function diagnostics(args: Options): Promise<Result> {
     verified = checked.every((x) => x.verified),
     hasErrors = checked.some((x) => x.diagnostics.some((d) => (d.severity ?? 1) === 1));
   const success = verified && !hasErrors && checked.every((x) => !x.errors.length);
+  const all = checked.flatMap((record) => record.diagnostics), summary = outputInfo(all.length, args.limit);
+  const counts = { errors: 0, warnings: 0, information: 0, hints: 0 };
+  for (const diagnostic of all) counts[(["errors", "warnings", "information", "hints"] as const)[(diagnostic.severity ?? 1) - 1]]++;
+  let remaining = summary.shown;
+  const visible = checked.map((record) => {
+    const diagnostics = record.diagnostics.slice(0, remaining); remaining -= diagnostics.length;
+    return { ...record, diagnosticCount: record.diagnostics.length, diagnostics };
+  });
   return {
-    data: { success, verified, checked, hasErrors },
+    data: { success, verified, hasErrors, ...summary, counts, checked: visible },
     code: success ? 0 : 1,
     human: checked.length
-      ? checked
+      ? [`${all.length} diagnostic(s): ${counts.errors} error(s), ${counts.warnings} warning(s), ${counts.information} information, ${counts.hints} hint(s)`, ...visible
           .flatMap((x) => [
-            `${x.file}: ${x.verified ? "verified" : "unverified"}, ${x.diagnostics.length} diagnostic(s)`,
+            `${x.file}: ${x.verified ? "verified" : "unverified"}, ${x.diagnosticCount} diagnostic(s)`,
             ...x.diagnostics.map(
               (d) =>
                 `  ${d.range.start.line + 1}:${d.range.start.character + 1} [${d.severity ?? 1}] ${d.message}`,
             ),
             ...x.errors.map((e) => `  ERROR: ${e}`),
-          ])
-          .join("\n")
+          ]), summary.hint].filter(Boolean).join("\n")
       : "No changed source files to check",
   };
 }
@@ -771,19 +798,26 @@ async function renameFile(args: Options): Promise<Result> {
         throw new Error(`File renamed and edits applied, but LSP notification failed (${source} → ${destination}): ${error}`);
       }
     }
-    const edits = clients.map((x) => editSummary(x.edit));
+    const total = clients.reduce((n, x) => n + [...textChanges(x.edit).values()].reduce((n, items) => n + items.length, 0), 0);
+    const summary = outputInfo(total, args.limit);
+    let remaining = summary.shown;
+    const edits = clients.map((x) => {
+      const count = [...textChanges(x.edit).values()].reduce((n, items) => n + items.length, 0);
+      const lines = editSummary(x.edit, remaining); remaining -= Math.min(remaining, count); return lines;
+    });
     return {
       data: {
         success: true,
         applied: args.apply,
         source,
         destination,
+        ...summary,
         edits,
         ...(!args.apply
-          ? { workspaceEdits: clients.map((x) => ({ server: x.server.name, edit: x.edit })) }
+          ? summary.truncated ? { workspaceEditOmitted: true } : { workspaceEdits: clients.map((x) => ({ server: x.server.name, edit: x.edit })) }
           : {}),
       },
-      human: `${args.apply ? "Renamed" : "Rename preview"}: ${source} → ${destination}\n${edits.flat().join("\n")}`,
+      human: [`${args.apply ? "Renamed" : "Rename preview"}: ${source} → ${destination}\n${edits.flat().join("\n")}`, summary.hint].filter(Boolean).join("\n"),
     };
   } finally {
     for (const { client } of clients) await client.close();
@@ -843,7 +877,13 @@ async function request(args: Options): Promise<Result> {
 }
 
 export async function run(args: Options): Promise<Result> {
-  if (NAVIGATION[args.command]) return navigate(args);
+  const navigation = Object.hasOwn(NAVIGATION, args.command);
+  if (args.file && (navigation || ["rename", "code-actions"].includes(args.command) ||
+      (args.command === "request" && !args.payload && (Object.values(NAVIGATION).includes(args.method ?? "") || args.method === "textDocument/declaration")))) {
+    const path = resolveFile(args.file, args.cwd);
+    await position(path, readText(path), args);
+  }
+  if (navigation) return navigate(args);
   switch (args.command) {
     case "status":
       return status(args);

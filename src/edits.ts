@@ -50,13 +50,14 @@ export function textChanges(edit: WorkspaceEdit): Map<string, TextEdit[]> {
   }
   return changes;
 }
-export function editSummary(edit: WorkspaceEdit): string[] {
+export function editSummary(edit: WorkspaceEdit, limit = Infinity): string[] {
   const changes = textChanges(edit);
   const lines = [
     `${changes.size} file(s), ${[...changes.values()].reduce((n, items) => n + items.length, 0)} edit(s)`,
   ];
   for (const [uri, edits] of changes)
     for (const edit of edits) {
+      if (lines.length > limit) return lines;
       const { start, end } = edit.range;
       lines.push(
         `${uriFile(uri) ?? uri}:${start.line + 1}:${start.character + 1}-${end.line + 1}:${end.character + 1} → ${JSON.stringify(edit.newText)}`,

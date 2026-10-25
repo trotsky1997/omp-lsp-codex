@@ -120,7 +120,7 @@ export function readOverrides(path: string): Record<string, ServerConfig> {
   return entries as Record<string, ServerConfig>;
 }
 export function loadConfig(cwd: string, builtinsOnly = false): Record<string, ServerConfig> {
-  const configs = structuredClone(defaults) as Record<string, ServerConfig>;
+  const configs: Record<string, ServerConfig> = Object.assign(Object.create(null), structuredClone(defaults));
   if (!builtinsOnly)
     for (const path of configPaths(cwd)) {
       for (const [name, override] of Object.entries(readOverrides(path)))
@@ -346,9 +346,9 @@ export function serverForLanguage(language: string, configs: Record<string, Serv
     tex: "texlab",
   };
   const name = language.toLowerCase(),
-    alias = aliases[name];
-  if (configs[name]) return name;
-  if (alias && configs[alias]) return alias;
+    alias = Object.hasOwn(aliases, name) ? aliases[name] : undefined;
+  if (Object.hasOwn(configs, name)) return name;
+  if (alias && Object.hasOwn(configs, alias)) return alias;
   const extensions = alias
     ? [alias]
     : Object.keys(LANGUAGES).filter((ext) => LANGUAGES[ext] === name);

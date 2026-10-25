@@ -50,7 +50,7 @@ test.each([false, true])("hooks: clean checks allow completion for Claude=%s", a
   instrument(); await hook(args());
   expect(decoded()).toEqual(claude ? [] : [{ continue: true }]);
   const [command, options] = calls[0] as [string[], { timeout: number }];
-  expect(command.slice(2)).toEqual(["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--json"]); expect(options.timeout).toBe(110000);
+  expect(command.slice(2)).toEqual(["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--limit", "0", "--json"]); expect(options.timeout).toBe(110000);
 });
 test.each([false, true])("hooks: recursion guard never spawns for Claude=%s", async (claude) => {
   if (claude) process.env.CLAUDE_PLUGIN_ROOT = "/fixture/plugin"; else delete process.env.CLAUDE_PLUGIN_ROOT;

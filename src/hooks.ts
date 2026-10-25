@@ -18,7 +18,7 @@ export async function hook(args: Options): Promise<void> {
   const command =
     kind === "session-start"
       ? ["status", "--builtins-only", "--global-bins-only", "--json"]
-      : ["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--json"];
+      : ["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--limit", "0", "--json"];
   try {
     const proc = Bun.spawn(
       [process.execPath, join(dirname(import.meta.path), "cli.ts"), ...command],

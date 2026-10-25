@@ -58,7 +58,7 @@ test("symbols: nested document symbols and case-insensitive filters", async () =
 });
 test("symbols: workspace queries seed a file and respect the output limit", async () => {
   const w = workspace(); w.setScenario({ capabilities: { workspaceSymbolProvider: true }, responses: { "workspace/symbol": Array.from({ length: MAX_FILES + 1 }, (_, i) => ({ name: `value${i}`, location: { uri: w.uri, range } })) } });
-  const result = await run(w.args("symbols", "--workspace", "--query", "value"));
+  const result = await run(w.args("symbols", "--workspace", "--query", "value", "--limit", String(MAX_FILES)));
   expect((result.data.symbols as unknown[]).length).toBe(MAX_FILES); expect(result.data.servers).toEqual(["fixture"]);
   expect(w.events().some((e) => e.method === "textDocument/didOpen")).toBe(true);
 });

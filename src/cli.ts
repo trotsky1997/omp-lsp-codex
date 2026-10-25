@@ -10,7 +10,7 @@ const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Bun ${Bu
 
 Commands:
   setup LANGUAGE...      Register servers; print install commands and official docs if missing
-  status                 List available servers
+  status [--file PATH]    List available servers for the workspace or target file
   doctor [--file PATH]    Check configuration, runtime and workspace health
   diagnostics            --file PATH or --changed
   definition             --file PATH --line N [--symbol NAME | --column N]
@@ -26,6 +26,7 @@ Commands:
   request                --method METHOD [--file PATH] [--payload JSON] [--apply]
 
 Options: --json, --timeout SECONDS (5–300, default 20), --builtins-only
+  --limit N             Show at most N results or hover lines (default 50; 0 shows all)
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 Rename and code-actions preview by default. Add --apply to write changes.
 `;
@@ -48,6 +49,7 @@ export function parseOptions(
       method: { type: "string" },
       payload: { type: "string" },
       timeout: { type: "string" },
+      limit: { type: "string" },
       json: { type: "boolean" },
       changed: { type: "boolean" },
       workspace: { type: "boolean" },
@@ -60,9 +62,11 @@ export function parseOptions(
     },
   });
   const timeout = Number(v.timeout ?? 20),
+    limit = Number(v.limit ?? 50),
     line = Number(v.line ?? 1),
     column = v.column === undefined ? undefined : Number(v.column);
   if (!Number.isFinite(timeout)) throw new Error("--timeout must be a number");
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("--limit must be a nonnegative integer; 0 shows all results");
   if (
     !Number.isInteger(line) ||
     line < 1 ||
@@ -85,6 +89,7 @@ export function parseOptions(
     method: v.method,
     payload: v.payload,
     timeout: Math.max(5, Math.min(300, timeout)) * 1000,
+    limit,
     json: !!v.json,
     changed: !!v.changed,
     workspace: !!v.workspace,
