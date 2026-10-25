@@ -111,4 +111,6 @@ bun run check
 bun run test
 ```
 
-`bun run test` runs the focused protocol, edit-safety and CLI checks in `scripts/check.ts`; real-project acceptance logs are maintained outside the repository.
+`bun run test` runs the unit and fault-injection tests in `tests/`, followed by the CLI checks in `scripts/check.ts`. Tests use Bun's built-in runner and local fixtures, without network requests or installed language servers. Run `bun test --coverage` for coverage, or `bun test --randomize --seed 42` to check order independence.
+
+The instrumented LSP fixture records JSON-RPC traffic in temporary files and injects fragmented and reordered responses, late replies, broken streams, crashes and unresponsive shutdowns. Filesystem spies inject write failures and concurrent edits to verify rollback and temporary-file cleanup. DevDocs tests inject offline, corrupt-cache and invalid-catalog responses. Real-project acceptance logs are maintained outside the repository.

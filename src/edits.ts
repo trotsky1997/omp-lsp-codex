@@ -117,6 +117,8 @@ export async function applyWorkspaceEdit(edit: WorkspaceEdit, root: string): Pro
     const failures: string[] = [];
     for (const item of written.reverse()) {
       try {
+        if (!readFileSync(item.path).equals(item.updated))
+          throw new Error(`File changed before rollback: ${item.path}`);
         atomicWrite(item.path, item.original);
       } catch {
         failures.push(item.path);

@@ -1,0 +1,81 @@
+import { appendFileSync, closeSync, fstatSync, readdirSync } from "node:fs";
+import { encodeMessageFrame, MessageFramer } from "../../src/omp/message-framing.ts";
+import { object } from "../../src/config.ts";
+
+const [mode, tracePath] = process.argv.slice(2);
+const trace = (direction: string, message: Record<string, unknown>) => appendFileSync(tracePath, JSON.stringify({ direction, ...message }) + "\n");
+trace("lifecycle", { pid: process.pid });
+const send = async (message: Record<string, unknown>) => {
+  trace("send", message);
+  const frame = encodeMessageFrame({ jsonrpc: "2.0", ...message });
+  if (mode === "fragmented") {
+    for (let offset = 0; offset < frame.length; offset += 7) {
+      process.stdout.write(frame.subarray(offset, offset + 7));
+      await Bun.sleep(1);
+    }
+  } else process.stdout.write(frame);
+};
+if (mode === "hang") { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }
+const queued: Record<string, unknown>[] = [];
+let callbackId: unknown;
+let lateId: unknown;
+const framer = new MessageFramer(Buffer.alloc(0));
+for await (const chunk of Bun.stdin.stream()) {
+  framer.push(chunk);
+  for (const text of framer.drain(() => {})) {
+    const message = object(JSON.parse(text)), params = object(message.params);
+    trace("receive", message);
+    const reply = (result: unknown) => send({ id: message.id, result });
+    switch (message.method) {
+      case "initialize":
+        if (mode === "exit-init") { process.stderr.write("fixture initialization failed\n"); process.exit(17); }
+        if (mode === "stall-init") break;
+        await reply({ capabilities: { diagnosticProvider: mode.startsWith("pull"), hoverProvider: true } });
+        break;
+      case "fixture/echo": await reply(params); break;
+      case "fixture/reverse":
+        queued.push(message);
+        if (queued.length === 2) for (const item of queued.splice(0).reverse()) await send({ id: item.id, result: item.params });
+        break;
+      case "fixture/collision":
+        await send({ id: message.id, method: "workspace/configuration", params: { items: [{ section: "python.analysis" }] } });
+        await reply("original response");
+        break;
+      case "fixture/stall": break;
+      case "fixture/late": lateId = message.id; break;
+      case "$/cancelRequest":
+        if (lateId !== undefined && params.id === lateId) await send({ id: lateId, result: "late response" });
+        break;
+      case "fixture/exit": process.stderr.write("fixture crash detail\n"); process.exit(23);
+      case "fixture/close-stdout": {
+        // Bun keeps duplicate pipe handles; all stdout copies must close to produce EOF.
+        const stdout = fstatSync(1);
+        for (const descriptor of readdirSync("/dev/fd")) {
+          try {
+            const fd = Number(descriptor), info = fstatSync(fd);
+            if (info.ino === stdout.ino && info.dev === stdout.dev) closeSync(fd);
+          } catch { /* The directory listing can include its own closed descriptor. */ }
+        }
+        break;
+      }
+      case "fixture/bad-json": process.stdout.write("Content-Length: 1\r\n\r\n{"); break;
+      case "fixture/bad-length": process.stdout.write("Content-Length: -1\r\n\r\n"); break;
+      case "fixture/stderr": process.stderr.write("x".repeat(20000) + "\nfixture stderr tail\n"); await reply(true); break;
+      case "fixture/notification": await send({ method: params.method, params: params.params }); await reply(true); break;
+      case "fixture/callback":
+        callbackId = message.id;
+        await send({ id: "server-request", method: params.method, params: params.params });
+        break;
+      case "textDocument/diagnostic":
+        if (mode === "pull-malformed") await reply({ kind: "full", items: [null] });
+        else if (mode === "pull-missing") await reply({ kind: "full" });
+        else if (mode === "pull-throws") await send({ id: message.id, error: { code: -32601, message: "Use push diagnostics" } });
+        else await reply({ kind: "full", items: [] });
+        break;
+      case "shutdown": if (mode !== "hang") await reply(null); break;
+      case "exit": if (mode !== "hang") process.exit(0); break;
+      default:
+        if (message.id === "server-request" && !message.method) await send({ id: callbackId, result: message });
+    }
+  }
+}

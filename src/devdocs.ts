@@ -1,4 +1,4 @@
-import {existsSync, readFileSync} from "node:fs";
+import {readFileSync} from "node:fs";
 import {homedir} from "node:os";
 import {join} from "node:path";
 import {atomicWrite} from "./edits.ts";
@@ -22,7 +22,7 @@ async function fetchJson(key: string, url: string, deadline: number): Promise<un
   const path = join(process.env.CODEX_HOME ?? join(homedir(),".codex"), "cache/codex-lsp/devdocs", `${key}.json`);
   let cached: unknown;
   try {
-    const envelope = object(existsSync(path) ? JSON.parse(readFileSync(path,"utf8")) : undefined);
+    const envelope = object(JSON.parse(readFileSync(path,"utf8")));
     cached = envelope.data;
     if (Date.now()/1000 - Number(envelope.fetchedAt) < 86400) return cached;
   } catch { /* Missing or invalid cache is refreshed below. */ }
@@ -58,8 +58,10 @@ export function bestEntry(entries: unknown, symbol: string): {name:string;path:s
     .sort((a,b) => Number(a.name !== query)-Number(b.name !== query) || a.name.length-b.name.length)[0]?.item;
 }
 export function safeDocUrl(slug:string, path:string): string | undefined {
-  if (!/^[a-z0-9_.~+-]+$/i.test(slug) || /^[\\/]/.test(path) || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.split("/").includes("..")) return;
-  return `https://devdocs.io/${slug}/${path}`;
+  if (!/^[a-z0-9_.~+-]+$/i.test(slug) || /^[\\/]/.test(path) || /[\\\u0000-\u001f\u007f]/.test(path) || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.split("/").includes("..")) return;
+  const url = new URL(`https://devdocs.io/${slug}/${path}`);
+  if (!url.pathname.startsWith(`/${slug}/`)) return;
+  return url.href.replaceAll("(", "%28").replaceAll(")", "%29");
 }
 export async function findReference(language: string, symbol: string, timeoutMs = 3000): Promise<string | undefined> {
   const docsets = DOCSETS[language]; if (!docsets || !symbol) return;
@@ -67,7 +69,7 @@ export async function findReference(language: string, symbol: string, timeoutMs 
   const raw = await fetchJson("catalog","https://devdocs.io/docs/docs.json",deadline);
   const catalog = new Map<string,{slug:string;alias?:string;version?:string}>();
   for (const entry of Array.isArray(raw) ? raw : []) {
-    if (typeof object(entry).slug !== "string") continue;
+    if (typeof object(entry).slug !== "string" || !safeDocUrl(String(object(entry).slug), "index.json")) continue;
     const item = entry as {slug:string;alias?:string;version?:string};
     const base = item.slug.split("~")[0], previous = catalog.get(base);
     if (!previous || String(item.version ?? "").localeCompare(String(previous.version ?? ""),undefined,{numeric:true}) > 0) catalog.set(base,item);

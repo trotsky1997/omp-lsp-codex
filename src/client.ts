@@ -23,6 +23,17 @@ interface ServerStatus {
 }
 type Message = LspJsonRpcRequest | LspJsonRpcResponse | LspJsonRpcNotification;
 
+function validDiagnostics(value: unknown): value is Diagnostic[] {
+  const coordinate = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n >= 0;
+  return Array.isArray(value) && value.every((entry) => {
+    const item = object(entry), range = object(item.range), start = object(range.start), end = object(range.end);
+    return typeof item.message === "string" &&
+      [start, end].every((pos) => coordinate(pos.line) && coordinate(pos.character)) &&
+      (Number(end.line) > Number(start.line) || (end.line === start.line && Number(end.character) >= Number(start.character))) &&
+      (item.severity === undefined || (Number.isInteger(item.severity) && Number(item.severity) >= 1 && Number(item.severity) <= 4));
+  });
+}
+
 // Extracted from OMP's async stdio client; the standalone CLI owns one process per invocation.
 export class LspClient {
   static readonly active = new Set<LspClient>();
@@ -40,6 +51,7 @@ export class LspClient {
   #stderr = "";
   #failure?: Error;
   #closed = false;
+  #closing?: Promise<void>;
 
   constructor(
     readonly server: Server,
@@ -199,10 +211,10 @@ export class LspClient {
     const params = object(message.params);
     if (
       message.method === "textDocument/publishDiagnostics" &&
-      typeof params.uri === "string" &&
-      Array.isArray(params.diagnostics)
+      typeof params.uri === "string"
     ) {
-      this.diagnostics.set(params.uri, params.diagnostics as Diagnostic[]);
+      if (validDiagnostics(params.diagnostics)) this.diagnostics.set(params.uri, params.diagnostics);
+      else this.diagnostics.delete(params.uri);
     } else if (message.method === "experimental/serverStatus") {
       this.serverStatus = params as ServerStatus;
     } else if (message.method === "$/progress") {
@@ -347,7 +359,10 @@ export class LspClient {
           "textDocument/diagnostic",
           { textDocument: { uri } },
         );
-        if (report.kind === "full") return { diagnostics: report.items ?? [], verified: ready };
+        if (report.kind === "full")
+          return validDiagnostics(report.items)
+            ? { diagnostics: report.items, verified: ready }
+            : { diagnostics: [], verified: false };
       } catch {
         /* Older servers can advertise pull diagnostics but only publish them. */
       }
@@ -358,27 +373,32 @@ export class LspClient {
       return { diagnostics: [], verified: false };
     }
   }
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    return this.#closing ??= this.#close();
+  }
+  async #close(): Promise<void> {
     this.#closed = true;
-    LspClient.active.delete(this);
-    if (!this.#failure) {
-      try {
-        await this.request("shutdown", null, 1000);
-        await this.notify("exit");
-      } catch {
-        /* Kill below if shutdown fails. */
+    try {
+      if (!this.#failure) {
+        try {
+          await this.request("shutdown", null, 1000);
+          await this.notify("exit");
+        } catch {
+          /* Kill below if shutdown fails. */
+        }
       }
-    }
-    if (this.proc.exitCode === null) {
-      await Promise.race([this.proc.exited, Bun.sleep(200)]);
       if (this.proc.exitCode === null) {
-        this.proc.kill();
         await Promise.race([this.proc.exited, Bun.sleep(200)]);
-        if (this.proc.exitCode === null) this.proc.kill("SIGKILL");
+        if (this.proc.exitCode === null) {
+          this.proc.kill();
+          await Promise.race([this.proc.exited, Bun.sleep(200)]);
+          if (this.proc.exitCode === null) this.proc.kill("SIGKILL");
+        }
+        await this.proc.exited;
       }
-      await this.proc.exited;
+    } finally {
+      this.#fail(new Error("LSP client closed"));
+      LspClient.active.delete(this);
     }
-    this.#fail(new Error("LSP client closed"));
   }
 }
