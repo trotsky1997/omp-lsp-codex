@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileUri, inside, MAX_FILE_BYTES, uriFile } from "./config.ts";
+import { fileUri, insideWorkspace, MAX_FILE_BYTES, uriFile } from "./config.ts";
 import { applyTextEditsToString } from "./omp/text-edits.ts";
 import type { Position, TextEdit, WorkspaceEdit } from "./omp/types.ts";
 
@@ -99,7 +99,7 @@ export async function applyWorkspaceEdit(
     if (!target) throw new Error(`Unsupported edit URI: ${uri}`);
     const path = realpathSync(target),
       info = statSync(path);
-    if (!inside(realpathSync(root), path))
+    if (!insideWorkspace(realpathSync(root), path))
       throw new Error(`Edit is outside the workspace: ${path}`);
     if (!info.isFile() || info.size > MAX_FILE_BYTES)
       throw new Error(`Unsupported edit target: ${path}`);

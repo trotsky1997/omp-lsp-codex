@@ -102,6 +102,11 @@ export function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
+export function insideWorkspace(root: string, path: string): boolean {
+  if (!inside(root, path)) return false;
+  const checkout = gitRoot(dirname(path));
+  return !existsSync(join(checkout, ".git")) || inside(checkout, root);
+}
 export function configPaths(cwd: string): string[] {
   const roots = ancestors(cwd);
   const root = roots.find((path) => existsSync(join(path, ".git"))) ??
@@ -183,8 +188,8 @@ export function loadConfig(cwd: string, builtinsOnly = false): Record<string, Se
   return configs;
 }
 export function serverRoot(cwd: string, markers: string[] = []): string | undefined {
-  return ancestors(cwd).find((root) =>
-    markers.some((marker) => {
+  for (const root of ancestors(cwd)) {
+    if (markers.some((marker) => {
       try {
         return /[*?\[]/.test(marker)
           ? readdirSync(root).some((name) => new Bun.Glob(marker).match(name))
@@ -192,8 +197,9 @@ export function serverRoot(cwd: string, markers: string[] = []): string | undefi
       } catch {
         return false;
       }
-    }),
-  );
+    })) return root;
+    if (existsSync(join(root, ".git"))) break;
+  }
 }
 export function executable(path: string): boolean {
   try {
@@ -282,7 +288,14 @@ export function fileServers(servers: Server[], path: string): Server[] {
     .sort((a, b) => Number(!!a.isLinter) - Number(!!b.isLinter));
 }
 export function resolveFile(value: string, cwd: string): string {
-  const path = realpathSync(resolve(cwd, expandHome(value)));
+  const requested = resolve(cwd, expandHome(value));
+  let path: string;
+  try { path = realpathSync(requested); }
+  catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(String(object(error).code)))
+      throw new Error(`File not found: ${requested}; use rg --files to locate the source, then pass the existing path to --file`);
+    throw error;
+  }
   const info = statSync(path);
   if (!info.isFile()) throw new Error(`Not a regular file: ${path}`);
   if (info.size > MAX_FILE_BYTES) throw new Error(`File exceeds the 16 MiB LSP limit: ${path}`);

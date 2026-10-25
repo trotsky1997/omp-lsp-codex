@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import { run, type Options } from "./commands.ts";
 import { hook } from "./hooks.ts";
 import { LspClient } from "./client.ts";
+import { expandHome } from "./config.ts";
 import { version } from "../package.json";
 
 const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Bun ${Bun.version})
@@ -28,6 +30,7 @@ Commands:
   request                --method METHOD [--file PATH] [--payload JSON] [--apply]
 
 Options: --json, --timeout SECONDS (5–300, default 20), --builtins-only
+  --cwd PATH            Use this project directory for setup, relative paths and --changed
   --limit N             Show at most N results or hover lines (default 50, inspect 10; 0 shows all)
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 --project is a flag without a path; run setup from the intended project directory.
@@ -44,6 +47,7 @@ export function parseOptions(
     allowPositionals: true,
     strict: true,
     options: {
+      cwd: { type: "string" },
       file: { type: "string" },
       line: { type: "string" },
       column: { type: "string" },
@@ -78,12 +82,17 @@ export function parseOptions(
   )
     throw new Error("--line and --column must be positive integers");
   const [command = "", ...languages] = positionals;
+  if (/\s/.test(command))
+    throw new Error("Pass the command and flags as separate arguments; for example: codex-lsp inspect --file path/to/file.ts");
   if (languages.length && !["setup", "hook"].includes(command))
     throw new Error(`Unexpected argument: ${languages[0]}`);
+  if (v.cwd === "") throw new Error("--cwd must name a directory");
+  const context = realpathSync(resolve(cwd, expandHome(v.cwd ?? ".")));
+  if (!statSync(context).isDirectory()) throw new Error("--cwd must be a directory");
   return {
     command,
     languages,
-    cwd: realpathSync(cwd),
+    cwd: context,
     file: v.file,
     line,
     column,

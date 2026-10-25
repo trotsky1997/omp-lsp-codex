@@ -42,13 +42,17 @@ codex-lsp capabilities --file path/to/file.rs
 
 Positions are one-based; columns use UTF-16. Use `--symbol name#2` for a repeated token. File paths are resolved from the target project even when the CLI runs elsewhere. `symbols --query` filters document symbols; workspace queries use the matching language servers and return their errors alongside results.
 
+`--cwd PATH` selects project context for relative paths, setup and changed-file checks. This lets agents run from a neutral directory while analyzing the intended project. On macOS, if Bun stalls before any CLI output while probing a parent directory, use the installed plugin directory as the terminal working directory and pass the project with `--cwd`. Hooks already use that startup pattern.
+
 Start with `status --file` for quick discovery. `inspect` shares one server session across hover, definition, references, matching file symbols and diagnostics, reducing repeated cold starts. It defaults to 10 results or hover lines per section; `--limit` changes all sections. JSON `results` retains individual errors and unsupported capabilities, with `failedSections` explaining a nonzero exit. Diagnostic errors cause exit 1 with navigation results preserved. Add `--new-name NAME` for a rename preview; inspect always runs read-only.
 
 `--json` emits one JSON object on success and failure. Check the exit code and `success`; navigation also includes `found`, and diagnostics includes `verified`. Empty or incomplete diagnostics fail verification. Existing type errors remain visible while navigation is available.
 
 Navigation lists, symbols, code-actions, diagnostics and rename previews show at most 50 results by default; hover shows at most 50 lines. Use `--limit N` for a smaller preview, or `--limit 0 --json > result.json` for complete output. These JSON results include `total`, `shown`, and `truncated`; diagnostics also include full severity `counts`. Truncated rename previews omit the complete edit object and set `workspaceEditOmitted`. `--apply` always processes the full edit set. Raw `request` responses remain complete. Empty document-symbol searches suggest a scoped workspace search; wrong-line symbol errors suggest nearby matching lines before starting a server.
 
-`rename`, `rename-file` and `code-actions` preview changes. Add `--apply` to write them. Rename previews include ranges, replacements and the raw workspace edit. Empty symbol renames fail. Edits stay within the server's workspace, validate ranges and overlaps before writing, and roll back written files if an application fails. Resource operations returned inside workspace edits are rejected.
+`rename`, `rename-file` and `code-actions` preview changes. Add `--apply` to write them. Rename previews include ranges, replacements and the raw workspace edit. Empty symbol renames fail. Edits stay within the Git checkout containing the language project, so cross-package renames work in monorepos. Outside Git, the matched project root is the edit boundary. Nested repositories and symlinks leaving that boundary remain excluded. Ranges, document versions and snapshots are validated before writing; write failures trigger rollback. Resource operations returned inside workspace edits are rejected.
+
+Applied edits report `verification: "pending"` with a hint to run project checks. Language servers can omit imports or re-exports; use diagnostics and code-actions to finish the change, then rerun the relevant build/tests.
 
 Raw requests require `--apply` unless the method is read-only. `textDocument/codeAction` is read-only and returns suggestions; use `--payload` to supply its range and diagnostics context. Applying a selected code action can execute its server command.
 

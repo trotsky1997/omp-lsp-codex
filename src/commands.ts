@@ -9,6 +9,7 @@ import {
   fileUri,
   gitRoot,
   inside,
+  insideWorkspace,
   languageId,
   loadConfig,
   matchesFile,
@@ -69,6 +70,10 @@ export interface Result {
 function outputInfo(total: number, limit: number) {
   const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
   return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
+}
+const VERIFY_EDITS = "Project verification pending. Run relevant build/tests; use code-actions for missing imports or re-exports if checks fail.";
+function editVerification(applied: boolean, hint?: string) {
+  return applied ? { verification: "pending", hint: [hint, VERIFY_EDITS].filter(Boolean).join(" ") } : {};
 }
 const READ_ONLY = new Set([
   "textDocument/definition",
@@ -379,8 +384,9 @@ async function rename(args: Options, shared?: FileContext): Promise<Result> {
         ...summary,
         edits,
         ...(!args.apply ? summary.truncated ? { workspaceEditOmitted: true } : { workspaceEdit: edit } : {}),
+        ...editVerification(args.apply, summary.hint),
       },
-      human: [`${args.apply ? "Applied rename" : "Rename preview"}:\n${edits.join("\n")}`, summary.hint].filter(Boolean).join("\n"),
+      human: [`${args.apply ? "Applied rename" : "Rename preview"}:\n${edits.join("\n")}`, summary.hint, args.apply ? VERIFY_EDITS : undefined].filter(Boolean).join("\n"),
     };
   } finally {
     if (!shared) await client.close();
@@ -458,8 +464,8 @@ async function codeActions(args: Options): Promise<Result> {
       throw new Error("Selected code action has no edit or command");
     if (editFailure !== undefined) throw editFailure;
     return {
-      data: { success: true, applied: true, server: server.name, title: chosen.title },
-      human: `Applied ${chosen.title}`,
+      data: { success: true, applied: true, server: server.name, title: chosen.title, ...editVerification(true) },
+      human: `Applied ${chosen.title}\n${VERIFY_EDITS}`,
     };
   } catch (error) {
     if (edited) throw new Error(`Code action failed after applying edits: ${error}`);
@@ -575,7 +581,7 @@ function setup(args: Options): Result {
       .filter(Boolean);
   if (!languages.length) throw new Error("Provide languages, such as codex-lsp setup rust python");
   if (args.project && languages.some((name) => name === "." || name === ".." || /[\\/]/.test(name) && !Object.hasOwn(configs, name)))
-    throw new Error("--project takes no path; run from the project directory, for example: codex-lsp setup python --project");
+    throw new Error("--project takes no path; select the project with --cwd PATH, for example: codex-lsp --cwd PATH setup python --project");
   const selected: Record<string, string> = {},
     missing: string[] = [];
   for (const language of languages) {
@@ -792,8 +798,12 @@ async function inspect(args: Options): Promise<Result> {
       }
     }
     const success = !failedSections.length;
+    const diagnostic = object(results.diagnostics);
+    const hint = diagnostic.verified === true && diagnostic.hasErrors === true
+      ? `Diagnostics verified: ${object(diagnostic.counts).errors} project code error(s). Navigation results remain available; see results.diagnostics.checked for locations.` : undefined;
+    if (hint) human.unshift(hint);
     if (!success) human.unshift(`Inspection has issues in: ${failedSections.join(", ")}. See each section below.`);
-    return { data: { success, applied: false, server: context.server.name, failedSections, results }, human: human.join("\n\n"), code: success ? 0 : 1 };
+    return { data: { success, applied: false, server: context.server.name, failedSections, ...(hint ? { hint } : {}), results }, human: human.join("\n\n"), code: success ? 0 : 1 };
   } finally { await context.client.close(); }
 }
 
@@ -825,8 +835,8 @@ async function renameFile(args: Options): Promise<Result> {
       }
     }
     if (args.apply) {
-      const root = servers[0]?.root ?? gitRoot(dirname(source));
-      if (!inside(realpathSync(root), source) || !inside(realpathSync(root), destination))
+      const root = gitRoot(servers[0]?.root ?? dirname(source));
+      if (!insideWorkspace(realpathSync(root), source) || !insideWorkspace(realpathSync(root), destination))
         throw new Error("File rename must stay inside the workspace");
       moveNoReplace(source, destination);
       try {
@@ -877,8 +887,9 @@ async function renameFile(args: Options): Promise<Result> {
         ...(!args.apply
           ? summary.truncated ? { workspaceEditOmitted: true } : { workspaceEdits: clients.map((x) => ({ server: x.server.name, edit: x.edit })) }
           : {}),
+        ...editVerification(args.apply, summary.hint),
       },
-      human: [`${args.apply ? "Renamed" : "Rename preview"}: ${source} → ${destination}\n${edits.flat().join("\n")}`, summary.hint].filter(Boolean).join("\n"),
+      human: [`${args.apply ? "Renamed" : "Rename preview"}: ${source} → ${destination}\n${edits.flat().join("\n")}`, summary.hint, args.apply ? VERIFY_EDITS : undefined].filter(Boolean).join("\n"),
     };
   } finally {
     for (const { client } of clients) await client.close();
@@ -927,8 +938,8 @@ async function request(args: Options): Promise<Result> {
       applied = (await client.edit(result as WorkspaceEdit)) || applied;
     }
     return {
-      data: { success: true, server: server.name, method: args.method, applied, result },
-      human: JSON.stringify(result, null, 2),
+      data: { success: true, server: server.name, method: args.method, applied, result, ...editVerification(applied) },
+      human: [JSON.stringify(result, null, 2), applied ? VERIFY_EDITS : undefined].filter(Boolean).join("\n"),
     };
   } catch (error) {
     if (applied) throw new Error(`Raw request failed after applying edits: ${error}`);
@@ -940,8 +951,13 @@ async function request(args: Options): Promise<Result> {
 
 export async function run(args: Options): Promise<Result> {
   const navigation = Object.hasOwn(NAVIGATION, args.command);
+  let requestPosition = false;
+  if (args.command === "request" && POSITION_METHODS.has(args.method ?? "")) {
+    const payload: unknown = args.payload ? JSON.parse(args.payload) : {};
+    requestPosition = !!payload && typeof payload === "object" && !Array.isArray(payload) && !("position" in payload);
+  }
   if (args.file && (navigation || ["inspect", "rename", "code-actions"].includes(args.command) ||
-      (args.command === "request" && !args.payload && POSITION_METHODS.has(args.method ?? "")))) {
+      requestPosition)) {
     const path = resolveFile(args.file, args.cwd);
     await position(path, readText(path), args);
   }

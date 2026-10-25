@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { parseOptions, main } from "../src/cli.ts";
 import { hook } from "../src/hooks.ts";
+import { resolve } from "node:path";
 import { cleanWorkspaces, isolateGlobalConfig, range, workspace } from "./fixtures/workspace.ts";
 
 let restoreConfig: () => void;
@@ -50,7 +51,7 @@ test.each([false, true])("hooks: clean checks allow completion for Claude=%s", a
   instrument(); await hook(args());
   expect(decoded()).toEqual(claude ? [] : [{ continue: true }]);
   const [command, options] = calls[0] as [string[], { timeout: number }];
-  expect(command.slice(2)).toEqual(["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--limit", "0", "--json"]); expect(options.timeout).toBe(110000);
+  expect(command.slice(2)).toEqual(["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--limit", "0", "--json", "--cwd", args().cwd]); expect(options.timeout).toBe(110000);
 });
 test.each([false, true])("hooks: recursion guard never spawns for Claude=%s", async (claude) => {
   if (claude) process.env.CLAUDE_PLUGIN_ROOT = "/fixture/plugin"; else delete process.env.CLAUDE_PLUGIN_ROOT;
@@ -61,11 +62,16 @@ test("hooks: session-start supplies bounded context and honors the event cwd", a
   event = { cwd: "/fixture/workspace" }; result = { servers: Array.from({ length: 15 }, (_, i) => ({ name: `server-${i}` })) }; instrument();
   await hook(args("session-start"));
   const response = decoded()[0]; expect(response.hookSpecificOutput.hookEventName).toBe("SessionStart"); expect(response.hookSpecificOutput.additionalContext).toContain("server-11"); expect(response.hookSpecificOutput.additionalContext).not.toContain("server-12");
-  expect(calls[0]?.[1]).toMatchObject({ cwd: "/fixture/workspace", timeout: 8000 });
+  expect(calls[0]?.[1]).toMatchObject({ cwd: resolve(import.meta.dir, "../src"), timeout: 8000 });
+  expect((calls[0]?.[0] as string[]).slice(-2)).toEqual(["--cwd", "/fixture/workspace"]);
 });
 test("hooks: verified errors block with bounded, actionable diagnostics", async () => {
   result = { success: false, verified: true, hasErrors: true, checked: [{ file: "source.fixture", diagnostics: Array.from({ length: 15 }, (_, i) => ({ message: `error ${i}`, range, severity: i === 14 ? 2 : 1 })) }] }; exitCode = 1; instrument(); await hook(args());
   expect(decoded()[0]).toMatchObject({ decision: "block" }); expect(decoded()[0].reason).toContain("source.fixture:1: error 0"); expect(decoded()[0].reason).toContain("and 2 more");
+});
+test("hooks: CLI context errors retain their actionable detail", async () => {
+  result = { success: false, error: "--cwd must name a directory" }; exitCode = 2; instrument();
+  await hook(args()); expect(decoded()[0].systemMessage).toContain("--cwd must name a directory");
 });
 test.each(["unverified", "nonzero", "empty", "invalid JSON", "spawn failure"])("hooks: %s cannot grant a verified completion", async (fault) => {
   result = fault === "empty" ? "" : fault === "invalid JSON" ? "{" : fault === "unverified" ? { success: false, verified: false } : { success: true };

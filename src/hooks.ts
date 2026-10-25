@@ -21,9 +21,9 @@ export async function hook(args: Options): Promise<void> {
       : ["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--limit", "0", "--json"];
   try {
     const proc = Bun.spawn(
-      [process.execPath, join(dirname(import.meta.path), "cli.ts"), ...command],
+      [process.execPath, join(dirname(import.meta.path), "cli.ts"), ...command, "--cwd", typeof event.cwd === "string" ? event.cwd : args.cwd],
       {
-        cwd: typeof event.cwd === "string" ? event.cwd : args.cwd,
+        cwd: dirname(import.meta.path),
         stdout: "pipe",
         stderr: "pipe",
         timeout: kind === "session-start" ? 8000 : 110000,
@@ -39,7 +39,7 @@ export async function hook(args: Options): Promise<void> {
       throw new Error(stderr.trim() || "LSP check timed out or produced no result");
     const data = object(JSON.parse(stdout));
     if (code !== 0 && !(kind === "stop" && code === 1 && data.success === false))
-      throw new Error(stderr.trim() || `LSP check exited with code ${code}`);
+      throw new Error(typeof data.error === "string" ? data.error : stderr.trim() || `LSP check exited with code ${code}`);
     if (kind === "session-start") {
       const servers = Array.isArray(data.servers) ? data.servers : [];
       if (servers.length)

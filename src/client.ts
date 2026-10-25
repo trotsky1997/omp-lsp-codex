@@ -9,7 +9,7 @@ import type {
   LspJsonRpcResponse,
   WorkspaceEdit,
 } from "./omp/types.ts";
-import { fileUri, languageId, object, readText, resolveFile, uriFile, type ObjectValue, type Server } from "./config.ts";
+import { fileUri, gitRoot, languageId, object, readText, resolveFile, uriFile, type ObjectValue, type Server } from "./config.ts";
 import { applyWorkspaceEdit, type DocumentState } from "./edits.ts";
 import { version } from "../package.json";
 
@@ -136,7 +136,7 @@ export class LspClient {
       () => {
         this.#pending.delete(id);
         void this.notify("$/cancelRequest", { id }).catch(() => {});
-        reject(new Error(`LSP request ${method} timed out after ${Math.round(timeoutMs / 1000)}s`));
+        reject(new Error(`LSP request ${method} timed out after ${timeoutMs / 1000}s`));
       },
       Math.max(1, timeoutMs),
     );
@@ -308,7 +308,9 @@ export class LspClient {
     const timer = setTimeout(
       () => {
         cleanup();
-        reject(new Error(`Timed out waiting for ${this.server.name} ${label}`));
+        const seconds = Math.min(300, Math.max(120, Math.ceil(this.timeoutMs / 1000) * 2));
+        const recovery = this.timeoutMs < 300000 ? `retry with --timeout ${seconds}` : "check project dependencies and language-server health";
+        reject(new Error(`Timed out waiting for ${this.server.name} ${label}; ${recovery}`));
       },
       Math.max(1, timeoutMs),
     );
@@ -333,7 +335,7 @@ export class LspClient {
   }
   async edit(edit: WorkspaceEdit): Promise<boolean> {
     if (!this.allowApply) throw new Error("This invocation is read-only");
-    const updated = await applyWorkspaceEdit(edit, this.server.root, this.documents);
+    const updated = await applyWorkspaceEdit(edit, gitRoot(this.server.root), this.documents);
     try {
       for (const [uri, text] of updated) {
         const document = this.documents.get(uri);
