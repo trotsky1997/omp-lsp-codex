@@ -17,8 +17,8 @@ export async function hook(args: Options): Promise<void> {
   }
   const command =
     kind === "session-start"
-      ? ["status", "--builtins-only", "--global-bins-only", "--json"]
-      : ["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--limit", "0", "--json"];
+      ? ["status", "--global-config-only", "--global-bins-only", "--json"]
+      : ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "0", "--json"];
   try {
     const proc = Bun.spawn(
       [process.execPath, join(dirname(import.meta.path), "cli.ts"), ...command, "--cwd", typeof event.cwd === "string" ? event.cwd : args.cwd],
@@ -74,14 +74,19 @@ export async function hook(args: Options): Promise<void> {
           reason: `LSP found errors in changed files. Fix them, or explain why they are expected.\n${issues.slice(0, 12).join("\n")}${issues.length > 12 ? `\n... and ${issues.length - 12} more` : ""}`,
         }),
       );
-    } else if (data.success !== true)
+    } else if (data.success !== true) {
+      const reasons = (Array.isArray(data.checked) ? data.checked : []).flatMap((file) => {
+        const row = object(file);
+        return (Array.isArray(row.errors) ? row.errors : [])
+          .filter((error) => typeof error === "string")
+          .map((error) => `${row.file}: ${error}`.slice(0, 300));
+      }).slice(0, 3);
       console.log(
         JSON.stringify({
-          systemMessage:
-            "LSP diagnostics could not verify every changed file; run codex-lsp diagnostics --changed to inspect the result.",
+          systemMessage: ["LSP diagnostics could not verify every changed file; run codex-lsp --cwd <project-root> diagnostics --changed to inspect the result.", ...reasons].join("\n"),
         }),
       );
-    else allow();
+    } else allow();
   } catch (error) {
     if (kind === "stop")
       console.log(JSON.stringify({ systemMessage: `LSP diagnostics could not run: ${error}` }));

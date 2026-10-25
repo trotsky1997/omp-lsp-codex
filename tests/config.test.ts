@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ancestors, availableServers, executable, fileServers, gitRoot, languageId, loadConfig, matchesFile, MAX_FILE_BYTES, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, workspaceSource } from "../src/config.ts";
+import { ancestors, availableServers, configPaths, executable, fileServers, gitRoot, languageId, loadConfig, matchesFile, MAX_FILE_BYTES, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, workspaceSource } from "../src/config.ts";
 import { cleanWorkspaces, isolateGlobalConfig, setGlobalServers, workspace } from "./fixtures/workspace.ts";
 
 let restoreConfig: () => void;
@@ -20,7 +20,16 @@ test("config: project overrides inherit builtins, preserve user overrides, and n
   expect(first["typescript-language-server"].initOptions?.tsserver).toEqual({ useSyntaxServer: "auto", fallbackPath: "custom" });
   expect(second["typescript-language-server"].initOptions?.tsserver).toEqual({ useSyntaxServer: "never" });
   first["typescript-language-server"].args!.push("mutated");
-  expect(loadConfig(w.root, true)["typescript-language-server"].args).toEqual(["--stdio"]);
+  expect(loadConfig(w.root, true)["typescript-language-server"].args).toEqual(["--stdio", "--global-fixture"]);
+  expect(loadConfig(w.root)["typescript-language-server"].args).toEqual(["--stdio", "--global-fixture"]);
+});
+test("config: hook scope preserves user overrides without reading malformed project configuration", () => {
+  const w = workspace();
+  setGlobalServers({ "typescript-language-server": { command: process.execPath, args: ["--global-server"], settings: { selected: "user" } } });
+  writeFileSync(w.configPath, "{ malformed project configuration");
+  expect(configPaths(w.root, true)).toHaveLength(1); expect(configPaths(w.root, true)).not.toContain(w.configPath);
+  expect(loadConfig(w.root, true)["typescript-language-server"]).toMatchObject({ command: process.execPath, args: ["--global-server"], settings: { selected: "user" } });
+  expect(() => loadConfig(w.root)).toThrow(w.configPath);
 });
 test.each([
   { command: "" }, { command: 5 }, { args: "--stdio" }, { args: [1] }, { fileTypes: null }, { rootMarkers: [false] },

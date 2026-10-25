@@ -37,7 +37,7 @@ test.each(["NaN", "Infinity", "oops"])("CLI: timeout %s is rejected", (timeout) 
 test.each(["0", "-1", "1.5", "NaN"])("CLI: invalid line/column %s is rejected", (value) => { for (const flag of ["--line", "--column"]) expect(() => parseOptions(["hover", `${flag}=${value}`])).toThrow("positive integers"); });
 test("CLI: clamps timeouts, parses all flags and validates unexpected arguments", () => {
   expect(parseOptions(["status", "--timeout", "0"]).timeout).toBe(5000); expect(parseOptions(["status", "--timeout", "999"]).timeout).toBe(300000);
-  expect(parseOptions(["setup", "rust", "python", "--project", "--json", "--apply", "--changed", "--workspace", "--builtins-only", "--global-bins-only"])).toMatchObject({ languages: ["rust", "python"], project: true, json: true, apply: true, changed: true, workspace: true, builtinsOnly: true, globalBinsOnly: true });
+  expect(parseOptions(["setup", "rust", "python", "--project", "--json", "--apply", "--changed", "--workspace", "--global-config-only", "--global-bins-only"])).toMatchObject({ languages: ["rust", "python"], project: true, json: true, apply: true, changed: true, workspace: true, globalConfigOnly: true, globalBinsOnly: true });
   expect(() => parseOptions(["hover", "extra"])).toThrow("Unexpected argument"); expect(() => parseOptions(["--unknown"])).toThrow();
 });
 test("CLI: help, version, JSON and human errors have the right exit codes", async () => {
@@ -51,7 +51,7 @@ test.each([false, true])("hooks: clean checks allow completion for Claude=%s", a
   instrument(); await hook(args());
   expect(decoded()).toEqual(claude ? [] : [{ continue: true }]);
   const [command, options] = calls[0] as [string[], { timeout: number }];
-  expect(command.slice(2)).toEqual(["diagnostics", "--changed", "--builtins-only", "--global-bins-only", "--limit", "0", "--json", "--cwd", args().cwd]); expect(options.timeout).toBe(110000);
+  expect(command.slice(2)).toEqual(["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "0", "--json", "--cwd", args().cwd]); expect(options.timeout).toBe(110000);
 });
 test.each([false, true])("hooks: recursion guard never spawns for Claude=%s", async (claude) => {
   if (claude) process.env.CLAUDE_PLUGIN_ROOT = "/fixture/plugin"; else delete process.env.CLAUDE_PLUGIN_ROOT;
@@ -72,6 +72,16 @@ test("hooks: verified errors block with bounded, actionable diagnostics", async 
 test("hooks: CLI context errors retain their actionable detail", async () => {
   result = { success: false, error: "--cwd must name a directory" }; exitCode = 2; instrument();
   await hook(args()); expect(decoded()[0].systemMessage).toContain("--cwd must name a directory");
+});
+test("hooks: unverified files retain bounded recovery reasons and project context guidance", async () => {
+  result = { success: false, verified: false, checked: [
+    { file: "config.json", errors: ["No available language server; run codex-lsp setup json"] },
+    { file: "source.fixture", errors: Array.from({ length: 10 }, () => "injected server failure " + "x".repeat(2000)) },
+  ] }; exitCode = 1; instrument(); await hook(args());
+  const message = String(decoded()[0].systemMessage);
+  expect(message).toContain("config.json: No available language server"); expect(message).toContain("setup json");
+  expect(message).toContain("--cwd <project-root>"); expect(message.length).toBeLessThan(1100);
+  expect(decoded()[0].decision).toBeUndefined();
 });
 test.each(["unverified", "nonzero", "empty", "invalid JSON", "spawn failure"])("hooks: %s cannot grant a verified completion", async (fault) => {
   result = fault === "empty" ? "" : fault === "invalid JSON" ? "{" : fault === "unverified" ? { success: false, verified: false } : { success: true };

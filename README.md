@@ -48,6 +48,8 @@ Start with `status --file` for quick discovery. `inspect` shares one server sess
 
 `--json` emits one JSON object on success and failure. Check the exit code and `success`; navigation also includes `found`, and diagnostics includes `verified`. Empty or incomplete diagnostics fail verification. Existing type errors remain visible while navigation is available.
 
+`diagnostics --changed` includes untracked files. Run it with `--cwd <project-root>` when starting from a neutral directory, and keep trial logs outside the checkout. Files without a matching available server remain unverified and include setup guidance; Git failures include the command, project directory and bounded stderr detail.
+
 Navigation lists, symbols, code-actions, diagnostics and rename previews show at most 50 results by default; hover shows at most 50 lines. Use `--limit N` for a smaller preview, or `--limit 0 --json > result.json` for complete output. These JSON results include `total`, `shown`, and `truncated`; diagnostics also include full severity `counts`. Truncated rename previews omit the complete edit object and set `workspaceEditOmitted`. `--apply` always processes the full edit set. Raw `request` responses remain complete. Empty document-symbol searches suggest a scoped workspace search; wrong-line symbol errors suggest nearby matching lines before starting a server.
 
 `rename`, `rename-file` and `code-actions` preview changes. Add `--apply` to write them. Rename previews include ranges, replacements and the raw workspace edit. Empty symbol renames fail. Edits stay within the Git checkout containing the language project, so cross-package renames work in monorepos. Outside Git, the matched project root is the edit boundary. Nested repositories and symlinks leaving that boundary remain excluded. Ranges, document versions and snapshots are validated before writing; write failures trigger rollback. Resource operations returned inside workspace edits are rejected.
@@ -110,7 +112,7 @@ The skill is `/codex-lsp:codex-lsp`. Restart Claude Code or run `/reload-plugins
 
 ## Hooks and scope
 
-SessionStart reports available servers. Stop checks changed files using built-in definitions and globally resolved executables, without running project-local server commands or applying edits. Verified errors ask the agent to continue; unavailable diagnostics are reported without blocking the turn. Both hooks invoke the same TypeScript CLI through Bun.
+SessionStart reports available servers. Stop checks changed files using built-in definitions plus the user's global `~/.codex/lsp.json`, keeping the user's chosen language server and settings. Hooks ignore project configuration, exclude executables resolved inside the project, and never apply edits. `--global-config-only --global-bins-only` selects this scope for a manual check. Verified errors ask the agent to continue; unavailable diagnostics include bounded recovery reasons without blocking the turn. Both hooks invoke the same TypeScript CLI through Bun.
 
 Each invocation owns and closes its language-server processes. This extraction excludes OMP's UI, agent runtime, persistent mux and custom linter adapters. Workspace-symbol coverage depends on each server's indexing. Language servers and project dependencies are installed separately.
 

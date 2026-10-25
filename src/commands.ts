@@ -59,7 +59,7 @@ export interface Options {
   workspace: boolean;
   apply: boolean;
   project: boolean;
-  builtinsOnly: boolean;
+  globalConfigOnly: boolean;
   globalBinsOnly: boolean;
 }
 export interface Result {
@@ -117,7 +117,7 @@ async function fileContext(args: Options, semantic = true): Promise<FileContext>
   const path = resolveFile(args.file, args.cwd);
   let server = fileServers(
     availableServers(
-      loadConfig(dirname(path), args.builtinsOnly),
+      loadConfig(dirname(path), args.globalConfigOnly),
       dirname(path),
       args.globalBinsOnly,
     ),
@@ -318,7 +318,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
   if (!args.query) throw new Error("--query is required with --workspace");
   const path = args.file ? resolveFile(args.file, args.cwd) : undefined,
     cwd = path ? dirname(path) : args.cwd;
-  let servers = availableServers(loadConfig(cwd, args.builtinsOnly), cwd, args.globalBinsOnly);
+  let servers = availableServers(loadConfig(cwd, args.globalConfigOnly), cwd, args.globalBinsOnly);
   if (path) servers = fileServers(servers, path);
   const items: ObjectValue[] = [],
     used: string[] = [],
@@ -479,7 +479,7 @@ export function status(args: Options): Result {
   const path = args.file ? resolveFile(args.file, args.cwd) : undefined,
     cwd = path ? dirname(path) : args.cwd;
   const available = availableServers(
-    loadConfig(cwd, args.builtinsOnly),
+    loadConfig(cwd, args.globalConfigOnly),
     cwd,
     args.globalBinsOnly,
   );
@@ -502,14 +502,14 @@ export function status(args: Options): Result {
 async function doctor(args: Options): Promise<Result> {
   const path = args.file ? resolveFile(args.file, args.cwd) : undefined,
     cwd = path ? dirname(path) : args.cwd;
-  let configs = loadConfig(cwd);
+  let configs = loadConfig(cwd, args.globalConfigOnly);
   if (path)
     configs = Object.fromEntries(
       Object.entries(configs).filter(([, config]) => matchesFile(config, path)),
     );
   const servers: ObjectValue[] = [],
     issues: ObjectValue[] = [];
-  for (const server of availableServers(configs, cwd)) {
+  for (const server of availableServers(configs, cwd, args.globalBinsOnly)) {
     let client: LspClient | undefined;
     const row: ObjectValue = {
       name: server.name,
@@ -535,12 +535,12 @@ async function doctor(args: Options): Promise<Result> {
     }
     servers.push(row);
   }
-  for (const file of configPaths(cwd))
+  for (const file of configPaths(cwd, args.globalConfigOnly))
     for (const name of Object.keys(readOverrides(file))) {
       const config = configs[name];
       if (!config || config.disabled) continue;
       const root = serverRoot(cwd, config.rootMarkers);
-      if (!root || resolveCommand(config.command, root)) continue;
+      if (!root || resolveCommand(config.command, root, args.globalBinsOnly)) continue;
       const message = `Executable ${config.command} is missing; run codex-lsp setup ${name} for install guidance`;
       if (servers.some((row) => row.name === name)) continue;
       servers.push({ name, status: "missing", command: config.command, root, message });
@@ -556,7 +556,7 @@ async function doctor(args: Options): Promise<Result> {
     data: {
       success,
       runtime: { version, bun: Bun.version, executable: process.execPath },
-      configFiles: configPaths(cwd).filter(existsSync),
+      configFiles: configPaths(cwd, args.globalConfigOnly).filter(existsSync),
       servers,
       issues,
     },
@@ -574,7 +574,7 @@ async function doctor(args: Options): Promise<Result> {
 }
 
 function setup(args: Options): Result {
-  const configs = loadConfig(args.cwd),
+  const configs = loadConfig(args.cwd, args.globalConfigOnly),
     languages = args.languages
       .flatMap((x) => x.split(/[,，]/))
       .map((x) => x.trim())
@@ -648,10 +648,12 @@ export async function changedFiles(cwd: string): Promise<string[]> {
   ]) {
     const proc = Bun.spawn(["git", "-C", root, ...args], {
       stdout: "pipe",
-      stderr: "ignore",
+      stderr: "pipe",
       timeout: 5000,
     });
-    const output = await new Response(proc.stdout).text();
+    const [output, stderr] = await Promise.all([
+      new Response(proc.stdout).text(), new Response(proc.stderr).text(),
+    ]);
     if (await proc.exited) {
       if (args.at(-1) === "HEAD") {
         const head = Bun.spawn(["git", "-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], {
@@ -660,7 +662,7 @@ export async function changedFiles(cwd: string): Promise<string[]> {
         // Only an unborn HEAD may fail; other Git failures must remain visible.
         if (await head.exited === 1) continue;
       }
-      throw new Error("Git could not enumerate changed files; inspect the repository or use --file");
+      throw new Error(`Git ${args.join(" ")} failed in ${root}${stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : ""}. Select the project with --cwd <project-root> diagnostics --changed, or use diagnostics --file <source-file>`);
     }
     for (const name of output.split("\0").filter(Boolean)) {
       let path: string, info: ReturnType<typeof statSync>;
@@ -693,13 +695,16 @@ export async function diagnostics(args: Options, shared?: FileContext): Promise<
   for (const path of paths) {
     const servers = fileServers(
       availableServers(
-        loadConfig(dirname(path), args.builtinsOnly),
+        loadConfig(dirname(path), args.globalConfigOnly),
         dirname(path),
         args.globalBinsOnly,
       ),
       path,
     );
-    records.set(path, { file: path, diagnostics: [], verified: !!servers.length, errors: [] });
+    records.set(path, {
+      file: path, diagnostics: [], verified: !!servers.length,
+      errors: servers.length ? [] : ["No available language server matches this file. Run codex-lsp status --file <path>, then codex-lsp setup <language> for installation and configuration guidance; use diagnostics --file <source-file> to check an individual supported file."],
+    });
     for (const server of servers) {
       const key = `${server.name}\0${server.root}`;
       if (!groups.has(key)) groups.set(key, { server, files: [] });
@@ -815,7 +820,7 @@ async function renameFile(args: Options): Promise<Result> {
   if (source === destination || existsSync(destination))
     throw new Error(`Destination already exists or matches source: ${destination}`);
   const servers = fileServers(
-    availableServers(loadConfig(dirname(source), args.builtinsOnly), dirname(source)),
+    availableServers(loadConfig(dirname(source), args.globalConfigOnly), dirname(source), args.globalBinsOnly),
     source,
   ).filter((x) => !x.isLinter);
   const pairs = { files: [{ oldUri: fileUri(source), newUri: fileUri(destination) }] };
@@ -924,7 +929,7 @@ async function request(args: Options): Promise<Result> {
           };
       }
     } else {
-      const servers = availableServers(loadConfig(args.cwd, args.builtinsOnly), args.cwd);
+      const servers = availableServers(loadConfig(args.cwd, args.globalConfigOnly), args.cwd, args.globalBinsOnly);
       server = servers.find((x) => !x.isLinter) ?? servers[0];
       if (!server) throw new Error("No available language server for this workspace");
       client = await LspClient.start(server, args.timeout, args.apply);
@@ -986,7 +991,7 @@ export async function run(args: Options): Promise<Result> {
     case "capabilities": {
       const path = args.file ? resolveFile(args.file, args.cwd) : undefined,
         cwd = path ? dirname(path) : args.cwd;
-      const all = availableServers(loadConfig(cwd, args.builtinsOnly), cwd),
+      const all = availableServers(loadConfig(cwd, args.globalConfigOnly), cwd, args.globalBinsOnly),
         servers = path ? fileServers(all, path) : all;
       if (!servers.length) throw new Error("No available language server");
       const results: ObjectValue[] = [];

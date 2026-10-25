@@ -29,7 +29,7 @@ Commands:
   capabilities           [--file PATH]
   request                --method METHOD [--file PATH] [--payload JSON] [--apply]
 
-Options: --json, --timeout SECONDS (5–300, default 20), --builtins-only
+Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --cwd PATH            Use this project directory for setup, relative paths and --changed
   --limit N             Show at most N results or hover lines (default 50, inspect 10; 0 shows all)
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
@@ -63,7 +63,7 @@ export function parseOptions(
       workspace: { type: "boolean" },
       apply: { type: "boolean" },
       project: { type: "boolean" },
-      "builtins-only": { type: "boolean" },
+      "global-config-only": { type: "boolean" },
       "global-bins-only": { type: "boolean" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean" },
@@ -108,7 +108,7 @@ export function parseOptions(
     workspace: !!v.workspace,
     apply: !!v.apply,
     project: !!v.project,
-    builtinsOnly: !!v["builtins-only"],
+    globalConfigOnly: !!v["global-config-only"],
     globalBinsOnly: !!v["global-bins-only"],
     help: !!v.help,
     version: !!v.version,

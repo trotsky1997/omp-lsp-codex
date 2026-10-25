@@ -107,11 +107,13 @@ export function insideWorkspace(root: string, path: string): boolean {
   const checkout = gitRoot(dirname(path));
   return !existsSync(join(checkout, ".git")) || inside(checkout, root);
 }
-export function configPaths(cwd: string): string[] {
+export function configPaths(cwd: string, globalOnly = false): string[] {
+  const global = join(homedir(), ".codex/lsp.json");
+  if (globalOnly) return [global];
   const roots = ancestors(cwd);
   const root = roots.find((path) => existsSync(join(path, ".git"))) ??
     roots.find((path) => path !== homedir() && existsSync(join(path, ".codex/lsp.json"))) ?? cwd;
-  return [join(homedir(), ".codex/lsp.json"), join(root, ".codex/lsp.json")];
+  return [global, join(root, ".codex/lsp.json")];
 }
 export function readOverrides(path: string): Record<string, ServerConfig> {
   if (!existsSync(path)) return {};
@@ -129,13 +131,12 @@ export function readOverrides(path: string): Record<string, ServerConfig> {
   }
   return entries as Record<string, ServerConfig>;
 }
-export function loadConfig(cwd: string, builtinsOnly = false): Record<string, ServerConfig> {
+export function loadConfig(cwd: string, globalConfigOnly = false): Record<string, ServerConfig> {
   const configs: Record<string, ServerConfig> = Object.assign(Object.create(null), structuredClone(defaults));
-  if (!builtinsOnly)
-    for (const path of configPaths(cwd)) {
-      for (const [name, override] of Object.entries(readOverrides(path)))
-        configs[name] = { ...configs[name], ...override };
-    }
+  for (const path of configPaths(cwd, globalConfigOnly)) {
+    for (const [name, override] of Object.entries(readOverrides(path)))
+      configs[name] = { ...configs[name], ...override };
+  }
   for (const [name, config] of Object.entries(configs)) {
     if (typeof config.command !== "string" || !config.command.trim())
       throw new Error(`LSP server ${name} needs a command`);

@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { LspClient } from "../src/client.ts";
 import { parseOptions } from "../src/cli.ts";
-import { run } from "../src/commands.ts";
+import { changedFiles, run } from "../src/commands.ts";
 import { fileUri, object, serverRoot } from "../src/config.ts";
-import { cleanWorkspaces, isolateGlobalConfig, range, workspace } from "./fixtures/workspace.ts";
+import { cleanWorkspaces, isolateGlobalConfig, range, setGlobalServers, workspace } from "./fixtures/workspace.ts";
 
 let restore: () => void;
 beforeAll(() => { restore = isolateGlobalConfig(); });
@@ -169,4 +169,66 @@ test("inspect: verified code errors have an explicit explanation beside the aggr
   const result = await run(w.args("inspect"));
   expect(result.data).toMatchObject({ success: false, failedSections: ["diagnostics"], results: { diagnostics: { verified: true, hasErrors: true } } });
   expect(String(result.data.hint)).toContain("project code"); expect(result.human).toContain("verified");
+});
+test.each(["json", "sh", "unsupported"])("diagnostics: unavailable %s servers explain recovery without claiming verification", async extension => {
+  const w = workspace(), file = join(w.root, `missing server.${extension}`);
+  fs.writeFileSync(file, "");
+  const result = await run({ ...w.args("diagnostics"), file });
+  expect(result.code).toBe(1); expect(result.data).toMatchObject({ success: false, verified: false, hasErrors: false });
+  const record = (result.data.checked as { errors: string[] }[])[0];
+  expect(record.errors).toHaveLength(1); expect(record.errors[0]).toContain("setup <language>");
+  expect(result.human).toContain("No available language server"); expect(LspClient.active.size).toBe(0);
+});
+test("changed diagnostics: untracked helpers have explicit errors alongside verified source", async () => {
+  const w = workspace(); fs.rmSync(join(w.root, ".git"), { recursive: true });
+  expect(Bun.spawnSync(["git", "-C", w.root, "init", "-q"]).exitCode).toBe(0);
+  fs.writeFileSync(join(w.root, ".gitignore"), "*\n!*.fixture\n!missing.json\n!record.sh\n");
+  fs.writeFileSync(join(w.root, "missing.json"), "{}"); fs.writeFileSync(join(w.root, "record.sh"), "");
+  const result = await run({ ...w.args("diagnostics"), file: undefined, changed: true });
+  expect(result.code).toBe(1); expect(result.data).toMatchObject({ success: false, verified: false, hasErrors: false });
+  const checked = result.data.checked as { file: string; verified: boolean; errors: string[] }[];
+  expect(checked).toHaveLength(3); expect(checked.find(x => x.file === w.file)).toMatchObject({ verified: true, errors: [] });
+  for (const record of checked.filter(x => x.file !== w.file)) {
+    expect(record.verified).toBe(false); expect(record.errors[0]).toContain("No available language server");
+  }
+});
+test("changed diagnostics: a neutral directory identifies its Git context and the cwd fix", async () => {
+  const w = workspace(); fs.rmSync(join(w.root, ".git"), { recursive: true });
+  const failure = await changedFiles(w.root).catch(error => error);
+  expect(failure).toBeInstanceOf(Error); expect(failure.message).toContain(w.root);
+  expect(failure.message).toContain("--cwd <project-root> diagnostics --changed");
+  expect(failure.message).toContain("--file <source-file>");
+});
+test.each(["diff", "ls-files"])("Git failure: %s drains stderr, bounds detail and rejects partial file lists", async stage => {
+  const w = workspace(), realSpawn = Bun.spawn, children: ReturnType<typeof Bun.spawn>[] = [];
+  const instrument = spyOn(Bun, "spawn").mockImplementation(((...call: unknown[]) => {
+    const argv = call[0];
+    if (!Array.isArray(argv) || argv[0] !== "git") return Reflect.apply(realSpawn, Bun, call);
+    const fail = argv[3] === stage;
+    const script = fail
+      ? 'process.stdout.write("source.fixture\\0"); process.stderr.write("x".repeat(131072) + "\\nfixture Git permission denied"); process.exit(7)'
+      : 'process.exit(0)';
+    const proc = Reflect.apply(realSpawn, Bun, [[process.execPath, "-e", script], call[1]]);
+    children.push(proc); return proc;
+  }) as typeof Bun.spawn);
+  try {
+    const failure = await changedFiles(w.root).catch(error => error);
+    expect(failure).toBeInstanceOf(Error); expect(failure.message).toContain(`Git ${stage}`);
+    expect(failure.message).toContain(w.root); expect(failure.message).toContain("fixture Git permission denied");
+    expect(failure.message).toContain("--cwd"); expect(failure.message.length).toBeLessThan(1500);
+    for (const proc of children) expect(proc.exitCode).not.toBeNull();
+  } finally { instrument.mockRestore(); }
+});
+test.each(["executable override", "malformed configuration"])("hook scope: user-selected server survives project %s", async fault => {
+  const w = workspace(), marker = join(w.root, "project-command-executed");
+  const trusted = structuredClone(w.configs); trusted.fixture.settings = { fixture: { selected: "user" } };
+  setGlobalServers(trusted);
+  fs.writeFileSync(w.configPath, fault === "malformed configuration" ? "{ malformed" : JSON.stringify({ servers: {
+    fixture: { command: process.execPath, args: ["-e", `await Bun.write(${JSON.stringify(marker)}, "untrusted"); process.exit(17)`] },
+  } }));
+  const result = await run(w.args("diagnostics", "--global-config-only", "--global-bins-only"));
+  expect(result.data).toMatchObject({ success: true, verified: true, hasErrors: false });
+  expect(fs.existsSync(marker)).toBe(false);
+  const settings = object(w.events().find(event => event.method === "workspace/didChangeConfiguration")?.params).settings;
+  expect(settings).toEqual({ fixture: { selected: "user" } });
 });
