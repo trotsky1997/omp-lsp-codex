@@ -118,3 +118,22 @@ test.each(["chmod", "unlink"])("file moves: %s failure preserves the source and 
     expect(fs.readFileSync(first, "utf8")).toBe("hello\n"); expect(fs.existsSync(second)).toBe(false);
   } finally { chmod.mockRestore(); unlink.mockRestore(); }
 });
+test.each(["write", "fsync", "mode"])("atomic write: %s failure leaves the original intact and removes partial temporary files", (operation) => {
+  const { root, first } = fixture(), write = fs.writeFileSync, fsync = fs.fsyncSync, mode = fs.fchmodSync;
+  const writeFault = spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
+    if (operation === "write" && typeof file === "number") { write(file, "partial"); throw new Error("injected write failure"); }
+    write(file, data, options);
+  }) as typeof fs.writeFileSync);
+  const syncFault = spyOn(fs, "fsyncSync").mockImplementation((fd) => { if (operation === "fsync") throw new Error("injected fsync failure"); fsync(fd); });
+  const modeFault = spyOn(fs, "fchmodSync").mockImplementation((fd, value) => { if (operation === "mode") throw new Error("injected mode failure"); mode(fd, value); });
+  try {
+    expect(() => atomicWrite(first, Buffer.from("new contents"))).toThrow(`injected ${operation} failure`);
+    expect(fs.readFileSync(first, "utf8")).toBe("hello\n"); expect(fs.readdirSync(root).sort()).toEqual(["first.txt", "second.txt"]);
+  } finally { writeFault.mockRestore(); syncFault.mockRestore(); modeFault.mockRestore(); }
+});
+test("workspace edit: no-op changes never replace files", async () => {
+  const { root, first, edit } = fixture();
+  renameFault = () => { throw new Error("No-op must not write"); };
+  expect((await applyWorkspaceEdit({ changes: { [fileUri(first)]: [{ ...edit, newText: "hello" }] } }, root)).size).toBe(0);
+  expect(fs.readFileSync(first, "utf8")).toBe("hello\n");
+});

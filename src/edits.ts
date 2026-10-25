@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { inside, MAX_FILE_BYTES, uriFile } from "./config.ts";
+import { fileUri, inside, MAX_FILE_BYTES, uriFile } from "./config.ts";
 import { applyTextEditsToString } from "./omp/text-edits.ts";
 import type { Position, TextEdit, WorkspaceEdit } from "./omp/types.ts";
 
@@ -78,7 +78,20 @@ function validatePosition(lines: string[], pos: Position): void {
   const unit = lines[pos.line].charCodeAt(pos.character);
   if (unit >= 0xdc00 && unit <= 0xdfff) throw new Error("LSP edit splits a UTF-16 surrogate pair");
 }
-export async function applyWorkspaceEdit(edit: WorkspaceEdit, root: string): Promise<void> {
+export interface DocumentState { text: string; version: number }
+
+export async function applyWorkspaceEdit(
+  edit: WorkspaceEdit,
+  root: string,
+  documents?: ReadonlyMap<string, DocumentState>,
+): Promise<Map<string, string>> {
+  for (const change of edit.documentChanges ?? []) {
+    if (!("textDocument" in change)) continue;
+    const { uri, version } = change.textDocument;
+    if (version !== undefined && version !== null &&
+        (!Number.isInteger(version) || documents?.get(uri)?.version !== version))
+      throw new Error(`LSP edit version does not match the analyzed document: ${uri}`);
+  }
   const planned: { path: string; original: Buffer; updated: Buffer }[] = [];
   for (const [uri, edits] of textChanges(edit)) {
     const target = uriFile(uri);
@@ -91,6 +104,9 @@ export async function applyWorkspaceEdit(edit: WorkspaceEdit, root: string): Pro
       throw new Error(`Unsupported edit target: ${path}`);
     const original = readFileSync(path),
       text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(original);
+    const document = documents?.get(fileUri(path));
+    if (document && document.text !== text)
+      throw new Error(`File changed since LSP analysis: ${path}`);
     const lines = text.split("\n");
     for (const item of edits) {
       validatePosition(lines, item.range?.start);
@@ -103,7 +119,8 @@ export async function applyWorkspaceEdit(edit: WorkspaceEdit, root: string): Pro
       )
         throw new Error("Invalid LSP text edit");
     }
-    planned.push({ path, original, updated: Buffer.from(applyTextEditsToString(text, edits)) });
+    const updated = Buffer.from(applyTextEditsToString(text, edits));
+    if (!original.equals(updated)) planned.push({ path, original, updated });
   }
   const written: typeof planned = [];
   try {
@@ -127,6 +144,7 @@ export async function applyWorkspaceEdit(edit: WorkspaceEdit, root: string): Pro
     if (failures.length) throw new Error(`${error}; rollback failed for ${failures.join(", ")}`);
     throw error;
   }
+  return new Map(planned.map(({ path, updated }) => [fileUri(path), updated.toString("utf8")]));
 }
 export function moveNoReplace(source: string, destination: string): void {
   let created = false;

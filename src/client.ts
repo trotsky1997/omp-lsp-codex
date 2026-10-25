@@ -9,7 +9,8 @@ import type {
   LspJsonRpcResponse,
   WorkspaceEdit,
 } from "./omp/types.ts";
-import { fileUri, languageId, object, readText, type ObjectValue, type Server } from "./config.ts";
+import { fileUri, languageId, object, readText, resolveFile, uriFile, type ObjectValue, type Server } from "./config.ts";
+import { applyWorkspaceEdit, type DocumentState } from "./edits.ts";
 import { version } from "../package.json";
 
 interface Pending {
@@ -39,6 +40,7 @@ export class LspClient {
   static readonly active = new Set<LspClient>();
   readonly proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   readonly diagnostics = new Map<string, Diagnostic[]>();
+  readonly documents = new Map<string, DocumentState>();
   readonly progress = new Set<string>();
   readonly progressSeen = new Set<string>();
   capabilities: ObjectValue = {};
@@ -215,6 +217,13 @@ export class LspClient {
       message.method === "textDocument/publishDiagnostics" &&
       typeof params.uri === "string"
     ) {
+      if (params.version !== undefined) {
+        if (!Number.isInteger(params.version) || Number(params.version) < 0) {
+          this.diagnostics.delete(params.uri);
+          return;
+        }
+        if (this.documents.has(params.uri) && this.documents.get(params.uri)!.version !== params.version) return;
+      }
       if (validDiagnostics(params.diagnostics)) this.diagnostics.set(params.uri, params.diagnostics);
       else this.diagnostics.delete(params.uri);
     } else if (message.method === "experimental/serverStatus") {
@@ -313,12 +322,39 @@ export class LspClient {
   }
 
   async open(path: string): Promise<{ uri: string; text: string }> {
+    path = resolveFile(path, this.server.root);
     const text = readText(path),
       uri = fileUri(path);
+    this.documents.set(uri, { text, version: 1 });
     await this.notify("textDocument/didOpen", {
       textDocument: { uri, languageId: languageId(this.server, path), version: 1, text },
     });
     return { uri, text };
+  }
+  async edit(edit: WorkspaceEdit): Promise<boolean> {
+    if (!this.allowApply) throw new Error("This invocation is read-only");
+    const updated = await applyWorkspaceEdit(edit, this.server.root, this.documents);
+    try {
+      for (const [uri, text] of updated) {
+        const document = this.documents.get(uri);
+        if (!document) continue;
+        const version = document.version + 1;
+        this.documents.set(uri, { text, version });
+        this.diagnostics.delete(uri);
+        const sync = this.capabilities.textDocumentSync;
+        const incremental = (typeof sync === "number" ? sync : object(sync).change) === 2;
+        const lines = document.text.split("\n");
+        await this.notify("textDocument/didChange", {
+          textDocument: { uri, version }, contentChanges: [{
+            ...(incremental ? { range: { start: { line: 0, character: 0 }, end: { line: lines.length - 1, character: lines.at(-1)!.length } } } : {}),
+            text,
+          }],
+        });
+      }
+    } catch (error) {
+      throw new Error(`Edits applied, but LSP synchronization failed: ${error}`);
+    }
+    return updated.size > 0;
   }
   async waitDiagnostics(uri: string, timeoutMs = this.timeoutMs): Promise<Diagnostic[]> {
     await this.#waitUntil(() => this.diagnostics.has(uri), timeoutMs, "file analysis");
@@ -348,6 +384,13 @@ export class LspClient {
     return false;
   }
   async getDiagnostics(uri: string): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
+    const result = await this.#collectDiagnostics(uri), document = this.documents.get(uri);
+    if (result.verified && document &&
+        readText(resolveFile(uriFile(uri)!, this.server.root)) !== document.text)
+      return { diagnostics: [], verified: false };
+    return result;
+  }
+  async #collectDiagnostics(uri: string): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
     let ready = true;
     if (this.server.name === "rust-analyzer") {
       await this.waitWorkspace();

@@ -339,7 +339,7 @@ async function rename(args: Options): Promise<Result> {
         "The language server returned no rename edits; try the symbol's declaration or check rename support",
       );
     const edits = editSummary(edit);
-    if (args.apply) await applyWorkspaceEdit(edit, server.root);
+    if (args.apply) await client.edit(edit);
     return {
       data: {
         success: true,
@@ -357,6 +357,8 @@ async function rename(args: Options): Promise<Result> {
 
 async function codeActions(args: Options): Promise<Result> {
   const { server, path, client, uri, text } = await fileContext(args);
+  let edited = false;
+  let editFailure: unknown;
   try {
     const pos = await position(path, text, args);
     let diagnostics = client.diagnostics.get(uri) ?? [];
@@ -392,8 +394,16 @@ async function codeActions(args: Options): Promise<Result> {
     if (!("edit" in chosen) && !("command" in chosen) && client.capabilities.codeActionProvider)
       chosen = await client.request<CodeAction>("codeAction/resolve", chosen);
     if ("disabled" in chosen && chosen.disabled) throw new Error(chosen.disabled.reason);
-    client.applyEdit = (edit) => applyWorkspaceEdit(edit, server.root);
-    if ("edit" in chosen && chosen.edit) await applyWorkspaceEdit(chosen.edit, server.root);
+    client.applyEdit = async (edit) => {
+      try {
+        edited = (await client.edit(edit)) || edited;
+        editFailure = undefined;
+      } catch (error) {
+        editFailure = error;
+        throw error;
+      }
+    };
+    if ("edit" in chosen && chosen.edit) await client.applyEdit(chosen.edit);
     if (typeof chosen.command === "string")
       await client.request("workspace/executeCommand", {
         command: chosen.command,
@@ -406,10 +416,14 @@ async function codeActions(args: Options): Promise<Result> {
       });
     else if (!("edit" in chosen) || !chosen.edit)
       throw new Error("Selected code action has no edit or command");
+    if (editFailure !== undefined) throw editFailure;
     return {
       data: { success: true, applied: true, server: server.name, title: chosen.title },
       human: `Applied ${chosen.title}`,
     };
+  } catch (error) {
+    if (edited) throw new Error(`Code action failed after applying edits: ${error}`);
+    throw error;
   } finally {
     await client.close();
   }
@@ -728,18 +742,34 @@ async function renameFile(args: Options): Promise<Result> {
         throw new Error("File rename must stay inside the workspace");
       moveNoReplace(source, destination);
       try {
-        const combined: WorkspaceEdit = { changes: {} };
-        for (const { edit } of clients)
-          for (const [uri, edits] of textChanges(
-            remapEdit(edit, fileUri(source), fileUri(destination)),
-          ))
+        const combined: WorkspaceEdit = { changes: {}, documentChanges: [] };
+        const documents = new Map<string, { text: string; version: number }>();
+        for (const { client, edit } of clients) {
+          const remapped = remapEdit(edit, fileUri(source), fileUri(destination));
+          for (const [uri, edits] of Object.entries(remapped.changes ?? {}))
             combined.changes![uri] = [...(combined.changes![uri] ?? []), ...edits];
-        await applyWorkspaceEdit(combined, root);
+          combined.documentChanges!.push(...(remapped.documentChanges ?? []));
+          for (const [uri, document] of client.documents) {
+            const target = uri === fileUri(source) ? fileUri(destination) : uri;
+            if (documents.has(target) && documents.get(target)!.text !== document.text)
+              throw new Error(`File changed since LSP analysis: ${source}`);
+            documents.set(target, document);
+          }
+        }
+        await applyWorkspaceEdit(combined, root, documents);
       } catch (error) {
-        moveNoReplace(destination, source);
+        try {
+          moveNoReplace(destination, source);
+        } catch (rollbackError) {
+          throw new Error(`${error}; file rename rollback failed (${destination} → ${source}): ${rollbackError}`);
+        }
         throw error;
       }
-      for (const { client } of clients) await client.notify("workspace/didRenameFiles", pairs);
+      try {
+        for (const { client } of clients) await client.notify("workspace/didRenameFiles", pairs);
+      } catch (error) {
+        throw new Error(`File renamed and edits applied, but LSP notification failed (${source} → ${destination}): ${error}`);
+      }
     }
     const edits = clients.map((x) => editSummary(x.edit));
     return {
@@ -767,6 +797,7 @@ async function request(args: Options): Promise<Result> {
   let client: LspClient | undefined,
     server: Server,
     params: unknown = args.payload ? JSON.parse(args.payload) : {};
+  let applied = false;
   try {
     if (args.file) {
       const context = await fileContext(args);
@@ -791,21 +822,21 @@ async function request(args: Options): Promise<Result> {
       if (!server) throw new Error("No available language server for this workspace");
       client = await LspClient.start(server, args.timeout, args.apply);
     }
-    let applied = false;
     if (args.apply)
       client.applyEdit = async (edit) => {
-        await applyWorkspaceEdit(edit, server.root);
-        applied = true;
+        applied = (await client!.edit(edit)) || applied;
       };
     const result = await client.request(args.method, params);
     if (args.apply && (object(result).changes || object(result).documentChanges)) {
-      await applyWorkspaceEdit(result as WorkspaceEdit, server.root);
-      applied = true;
+      applied = (await client.edit(result as WorkspaceEdit)) || applied;
     }
     return {
       data: { success: true, server: server.name, method: args.method, applied, result },
       human: JSON.stringify(result, null, 2),
     };
+  } catch (error) {
+    if (applied) throw new Error(`Raw request failed after applying edits: ${error}`);
+    throw error;
   } finally {
     await client?.close();
   }

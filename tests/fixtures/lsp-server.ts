@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, fstatSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { encodeMessageFrame, MessageFramer } from "../../src/omp/message-framing.ts";
 import { object } from "../../src/config.ts";
 
@@ -20,6 +20,7 @@ const send = async (message: Record<string, unknown>) => {
 if (mode === "hang") { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }
 const queued: Record<string, unknown>[] = [];
 let callbackId: unknown;
+let callbackMethod: string | undefined;
 let lateId: unknown;
 const framer = new MessageFramer(Buffer.alloc(0));
 for await (const chunk of Bun.stdin.stream()) {
@@ -36,8 +37,9 @@ for await (const chunk of Bun.stdin.stream()) {
         break;
       case "textDocument/didOpen":
         if (mode === "scenario") {
+          if (scenario.afterOpen) writeFileSync(scenario.afterOpen.file, scenario.afterOpen.text);
           if (scenario.diagnostics !== false)
-            await send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [] } });
+            await send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [], ...("diagnosticVersion" in scenario ? { version: scenario.diagnosticVersion } : {}) } });
           if (scenario.serverStatus) await send({ method: "experimental/serverStatus", params: scenario.serverStatus });
           for (const progress of scenario.progress ?? []) await send({ method: "$/progress", params: progress });
         }
@@ -85,12 +87,18 @@ for await (const chunk of Bun.stdin.stream()) {
       case "shutdown": if (mode !== "hang") await reply(null); break;
       case "exit": if (mode !== "hang") process.exit(0); break;
       default:
-        if (message.id === "server-request" && !message.method) await send({ id: callbackId, result: message });
+        if (message.id === "server-request" && !message.method) {
+          const error = callbackMethod ? scenario.errors?.[callbackMethod] : undefined;
+          await send(error ? { id: callbackId, error } : { id: callbackId, result: message });
+        }
         else if (mode === "scenario" && message.id !== undefined) {
           const method = String(message.method), count = calls.get(method) ?? 0;
           calls.set(method, count + 1);
+          const mutation = scenario.beforeResponse?.[method];
+          if (mutation) writeFileSync(mutation.file, mutation.text);
           if (scenario.callbacks?.[method]) {
             callbackId = message.id;
+            callbackMethod = method;
             await send({ id: "server-request", ...scenario.callbacks[method] });
           } else if (count < (scenario.contentModified?.[method] ?? 0))
             await send({ id: message.id, error: { code: -32801, message: "Content Modified" } });
