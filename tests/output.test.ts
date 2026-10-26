@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, test, mock } from "node:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { LspClient } from "../src/client.ts";
-import { parseOptions } from "../src/cli.ts";
+import { main, parseOptions } from "../src/cli.ts";
 import { run } from "../src/commands.ts";
 import { fileUri, object } from "../src/config.ts";
 import { cleanWorkspaces, isolateGlobalConfig, range, workspace } from "./fixtures/workspace.ts";
@@ -56,6 +57,62 @@ test("output: inspect retains verified code errors alongside a bounded hover", a
   assert.strictEqual(result.code, 1); assert.partialDeepStrictEqual(result.data, { success: false, failedSections: ["diagnostics"] });
   assert.strictEqual(object(object(result.data.results).hover).truncated, true); assert.ok((result.human).includes("existing code error"));
   assert.ok(result.human.length < 7500); assert.strictEqual((result.human.split("Root:")).length, 2);
+});
+test("output: diagnostics bound provider text and opaque metadata without changing verification", async () => {
+  const diagnostics = [
+    { range, severity: 1, message: "x".repeat(2999) + "😀" + "x".repeat(100000), source: "fixture", data: "opaque".repeat(50000), relatedInformation: [{ location: { uri: "file:///related.fixture", range }, message: "related".repeat(30000) }] },
+    { range, severity: 2, message: "a separate warning" },
+  ];
+  const w = workspace({ diagnostics }), result = await run(w.args("diagnostics"));
+  assert.strictEqual(result.code, 1);
+  assert.partialDeepStrictEqual(result.data, { success: false, verified: true, hasErrors: true, total: 2, shown: 2, truncated: true, textTruncated: true, detailsOmitted: true, counts: { errors: 1, warnings: 1 } });
+  const shown = (result.data.checked as { diagnostics: typeof diagnostics }[])[0].diagnostics;
+  assert.strictEqual(shown[0].message, "x".repeat(2999)); assert.strictEqual(shown[1].message, diagnostics[1].message);
+  assert.strictEqual(Buffer.from(shown[0].message).toString("utf8"), shown[0].message);
+  assert.ok(JSON.stringify(result.data).length < 8000); assert.ok(result.human.length < 7000); assert.ok(String(result.data.hint).includes("--limit 0"));
+  assert.deepStrictEqual((await run(w.args("diagnostics", "--limit", "0"))).data.checked, [{ file: w.file, diagnostics, verified: true, errors: [], diagnosticCount: 2 }]);
+});
+test("output: compact diagnostics retain small related locations", async () => {
+  const w = workspace(), diagnostic = { range, message: "type mismatch", relatedInformation: Array.from({ length: 4 }, (_, index) => ({ location: { uri: w.uri, range }, message: `declared here ${index}` })) };
+  w.setScenario({ diagnostics: [diagnostic] });
+  const result = await run(w.args("diagnostics"));
+  assert.deepStrictEqual((result.data.checked as { diagnostics: unknown[] }[])[0].diagnostics, [diagnostic]); assert.strictEqual(result.data.detailsOmitted, undefined);
+});
+test("output: compact diagnostics tolerate malformed optional provider metadata", async () => {
+  const w = workspace({ diagnostics: [{ range: { ...range, providerData: "x".repeat(200000) }, message: "type mismatch", source: { invalid: true }, code: [], data: "x".repeat(200000) }] });
+  const result = await run(w.args("diagnostics"));
+  assert.strictEqual(result.code, 1); assert.strictEqual(result.data.verified, true); assert.strictEqual(result.data.detailsOmitted, true);
+  const diagnostic = (result.data.checked as { diagnostics: { source?: unknown; code?: unknown; message: string }[] }[])[0].diagnostics[0];
+  assert.strictEqual(diagnostic.source, undefined); assert.strictEqual(diagnostic.code, undefined); assert.strictEqual(diagnostic.message, "type mismatch");
+  assert.ok(JSON.stringify(result.data).length < 2000);
+});
+test("output: changed-file diagnostic limits prioritize a later file's error over earlier warnings", async () => {
+  const w = workspace({ diagnostics: [{ range, severity: 2, message: "first warning" }, { range, severity: 2, message: "second warning" }] }), other = join(w.root, "z.other"), scenario = join(w.root, "errors.json");
+  rmSync(join(w.root, ".git"), { recursive: true }); assert.strictEqual(spawnSync("git", ["-C", w.root, "init", "-q"]).status, 0);
+  writeFileSync(join(w.root, ".gitignore"), "*\n!*.fixture\n!*.other\n"); writeFileSync(other, "value = 1\n");
+  writeFileSync(scenario, JSON.stringify({ diagnostics: [{ range, severity: 1, message: "late error" }] }));
+  w.configs.secondary = { ...w.configs.fixture, fileTypes: [".other"], args: [...w.configs.fixture.args!.slice(0, -1), scenario] }; w.saveConfig();
+  const result = await run({ ...w.args("diagnostics", "--limit", "1"), file: undefined, changed: true });
+  assert.strictEqual(result.code, 1); assert.partialDeepStrictEqual(result.data, { verified: true, hasErrors: true, total: 3, shown: 1, counts: { errors: 1, warnings: 2 } });
+  const checked = result.data.checked as { file: string; diagnostics: { message: string }[] }[];
+  assert.deepStrictEqual(checked.find(row => row.file === w.file)?.diagnostics, []); assert.strictEqual(checked.find(row => row.file === other)?.diagnostics[0].message, "late error");
+});
+test("output: RPC failures stay bounded in CLI and inspect with an explicit full-output escape", async () => {
+  const message = "server failure: " + "x".repeat(100000), w = workspace({ errors: { "textDocument/hover": { code: -32603, message } } });
+  const output: string[] = [], log = mock.method(console, "log", (value: unknown) => output.push(String(value))), error = mock.method(console, "error", (value: unknown) => output.push(String(value)));
+  try {
+    for (const flags of [[], ["--json"], ["--json", "--limit=0"]]) {
+      assert.strictEqual(await main(["hover", "--file", w.file, ...flags]), 2);
+      const text = output.pop()!;
+      if (flags.includes("--limit=0")) assert.ok(JSON.parse(text).error.includes(message));
+      else { assert.ok(text.length < 6500); assert.ok(text.includes("--limit 0")); if (flags.length) assert.strictEqual(JSON.parse(text).errorTruncated, true); }
+    }
+  } finally { log.mock.restore(); error.mock.restore(); }
+  const result = await run(w.args("inspect"));
+  assert.strictEqual(result.code, 1); assert.partialDeepStrictEqual(object(object(result.data.results).hover), { success: false, errorTruncated: true }); assert.ok(result.human.length < 8000);
+  w.setScenario({ capabilities: { workspaceSymbolProvider: true }, errors: { "workspace/symbol": { code: -32603, message } } });
+  const symbols = await run(w.args("symbols", "--workspace", "--query", "value"));
+  assert.strictEqual(symbols.code, 1); assert.ok(symbols.human.length < 6500); assert.partialDeepStrictEqual((symbols.data.errors as unknown[])[0], { success: false, errorTruncated: true });
 });
 test("signature-help: active overload and UTF-16 parameter offsets survive compact output", async () => {
   const w = workspace(), label = "call(😀value: string, count: number): boolean", start = label.indexOf("count");

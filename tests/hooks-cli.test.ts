@@ -63,7 +63,7 @@ for (const [caseIndex, caseValue] of ([false, true]).entries()) {
   assert.deepStrictEqual(decoded(), claude ? [] : [{ continue: true }]);
   const [file, command, options] = calls[0] as [string, string[], { timeout: number; cwd: string }];
   assert.strictEqual(file, process.execPath);
-  assert.deepStrictEqual(command.slice(1), ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "0", "--json", "--cwd", args().cwd]); assert.strictEqual(options.timeout, 110000);
+  assert.deepStrictEqual(command.slice(1), ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "12", "--json", "--cwd", args().cwd]); assert.strictEqual(options.timeout, 110000);
 };
   test("hooks: clean checks allow completion for Claude=%s".replaceAll(/%s|%j|%#/g, token => token === "%#" ? String(caseIndex) : token === "%j" ? JSON.stringify(caseValue) ?? String(caseValue) : String(caseValue)), () => runCase(caseValue));
 };
@@ -85,6 +85,19 @@ test("hooks: session-start supplies bounded context and honors the event cwd", a
 test("hooks: verified errors block with bounded, actionable diagnostics", async () => {
   result = { success: false, verified: true, hasErrors: true, checked: [{ file: "source.fixture", diagnostics: Array.from({ length: 15 }, (_, i) => ({ message: `error ${i}`, range, severity: i === 14 ? 2 : 1 })) }] }; exitCode = 1; instrument(); await hook(args());
   assert.partialDeepStrictEqual(decoded()[0], { decision: "block" }); assert.ok((decoded()[0].reason).includes("source.fixture:1: error 0")); assert.ok((decoded()[0].reason).includes("and 2 more"));
+});
+test("hooks: huge provider messages and recovery errors have a fixed output budget", async () => {
+  result = { success: false, verified: true, hasErrors: true, counts: { errors: 2 }, checked: [{ file: "source.fixture", diagnostics: [
+    { message: "x".repeat(200000), range, severity: 1 }, { message: "second error", range, severity: 1 },
+  ] }] }; exitCode = 1; instrument(); await hook(args());
+  assert.strictEqual(decoded()[0].decision, "block"); assert.ok(output[0].length < 7000); assert.ok(decoded()[0].reason.includes("second error")); assert.ok(decoded()[0].reason.includes("diagnostics --changed"));
+  output.length = 0; result = { success: false, error: "context failure " + "x".repeat(200000) }; exitCode = 2; await hook(args());
+  assert.ok(output[0].length < 7000); assert.ok(decoded()[0].systemMessage.includes("context failure")); assert.strictEqual(decoded()[0].continue, undefined);
+});
+test("hooks: compact child output still reports the full error count", async () => {
+  result = { success: false, verified: true, hasErrors: true, truncated: true, counts: { errors: 100 }, checked: [{ file: "source.fixture", diagnostics: Array.from({ length: 12 }, (_, i) => ({ message: `error ${i}`, range, severity: 1 })) }] };
+  exitCode = 1; instrument(); await hook(args());
+  assert.strictEqual(decoded()[0].decision, "block"); assert.ok(decoded()[0].reason.includes("and 88 more")); assert.ok(decoded()[0].reason.includes("--limit 0")); assert.ok(output[0].length < 1500);
 });
 test("hooks: CLI context errors retain their actionable detail", async () => {
   result = { success: false, error: "--cwd must name a directory" }; exitCode = 2; instrument();

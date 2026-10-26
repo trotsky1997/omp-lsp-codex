@@ -42,6 +42,7 @@ import { findReference, symbolAt } from "./devdocs.ts";
 import { resolveSymbolColumn } from "./omp/symbol-column.ts";
 import type { CodeAction, Command, Diagnostic, Position, WorkspaceEdit } from "./omp/types.ts";
 import { version } from "./version.ts";
+import { failure, textPrefix } from "./output.ts";
 
 export interface Options {
   command: string;
@@ -73,11 +74,6 @@ export interface Result {
 function outputInfo(total: number, limit: number) {
   const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
   return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
-}
-function textPrefix(text: string, maximum: number): string {
-  let end = Math.min(text.length, maximum);
-  if (end < text.length && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
-  return text.slice(0, Math.max(0, end));
 }
 function locationLines(items: ObjectValue[], root: string, named = false): string[] {
   const groups = new Map<string, string[]>();
@@ -400,7 +396,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
       items.push(...formatSymbols(await client.request("workspace/symbol", { query: args.query })));
       used.push(server.name);
     } catch (error) {
-      errors.push({ server: server.name, error: String(error) });
+      errors.push({ server: server.name, ...failure(error, args.limit) });
     } finally {
       await client?.close();
     }
@@ -416,7 +412,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
     human:
       [
         ...(selected.length ? [`Root: ${gitRoot(cwd)}`, ...locationLines(selected, gitRoot(cwd), true)] : []),
-        ...errors.map((x) => `ERROR ${x.server}: ${x.error}`),
+        ...errors.map((x) => [`ERROR ${x.server}: ${x.error}`, x.hint].filter(Boolean).join("\n")),
         summary.hint,
       ].filter(Boolean).join("\n") || "No symbols found",
   };
@@ -818,13 +814,37 @@ export async function diagnostics(args: Options, shared?: FileContext): Promise<
   const all = checked.flatMap((record) => record.diagnostics), summary = outputInfo(all.length, args.limit);
   const counts = { errors: 0, warnings: 0, information: 0, hints: 0 };
   for (const diagnostic of all) counts[(["errors", "warnings", "information", "hints"] as const)[(diagnostic.severity ?? 1) - 1]]++;
-  let remaining = summary.shown;
+  const selected = new Map<typeof checked[number], Diagnostic[]>();
+  if (args.limit) {
+    const ranked = checked.flatMap(record => record.diagnostics.map(diagnostic => ({ record, diagnostic })))
+      .sort((a, b) => (a.diagnostic.severity ?? 1) - (b.diagnostic.severity ?? 1));
+    for (const { record, diagnostic } of ranked.slice(0, summary.shown)) {
+      if (!selected.has(record)) selected.set(record, []);
+      selected.get(record)!.push(diagnostic);
+    }
+  }
+  const content = args.limit ? [...[...selected.values()].flat().map(diagnostic => JSON.stringify(diagnostic)), ...checked.flatMap(record => record.errors)] : [];
+  const maximum = content.reduce((sum, text) => sum + text.length, 0) > 6000 ? Math.floor(6000 / content.length) : Infinity;
+  let textTruncated = false, detailsOmitted = false;
+  const preview = (text: string) => { const shown = textPrefix(text, maximum); textTruncated ||= shown.length < text.length; return shown; };
   const visible = checked.map((record) => {
-    const diagnostics = record.diagnostics.slice(0, remaining); remaining -= diagnostics.length;
-    return { ...record, diagnosticCount: record.diagnostics.length, diagnostics };
+    const diagnostics = (args.limit ? selected.get(record) ?? [] : record.diagnostics).map(diagnostic => {
+      if (!Number.isFinite(maximum)) return diagnostic;
+      const message = preview(diagnostic.message);
+      if (JSON.stringify(diagnostic).length - JSON.stringify(diagnostic.message).length <= 512) return { ...diagnostic, message };
+      detailsOmitted = true;
+      const { start, end } = diagnostic.range;
+      return { range: { start: { line: start.line, character: start.character }, end: { line: end.line, character: end.character } }, severity: diagnostic.severity, code: typeof diagnostic.code === "string" ? textPrefix(diagnostic.code, 128) : typeof diagnostic.code === "number" ? diagnostic.code : undefined,
+        source: typeof diagnostic.source === "string" ? textPrefix(diagnostic.source, 128) : undefined, message };
+    });
+    return { ...record, errors: record.errors.map(preview), diagnosticCount: record.diagnostics.length, diagnostics };
   });
+  if (textTruncated || detailsOmitted) {
+    summary.truncated = true;
+    summary.hint = "Diagnostic text or metadata clipped; use --limit 0 --json for complete output. Counts and verification cover all diagnostics.";
+  }
   return {
-    data: { success, verified, hasErrors, ...summary, counts, checked: visible, ...(configurationChecks.length ? { configurationChecks } : {}) },
+    data: { success, verified, hasErrors, ...summary, counts, checked: visible, ...(textTruncated ? { textTruncated: true } : {}), ...(detailsOmitted ? { detailsOmitted: true } : {}), ...(configurationChecks.length ? { configurationChecks } : {}) },
     code: success ? 0 : 1,
     human: [checked.length
       ? [`${all.length} diagnostic(s): ${counts.errors} error(s), ${counts.warnings} warning(s), ${counts.information} information, ${counts.hints} hint(s)`, ...visible
@@ -870,9 +890,9 @@ async function inspect(args: Options): Promise<Result> {
         human.push(`${command}:\n${result.human}`);
       } catch (error) {
         failedSections.push(command);
-        const message = error instanceof Error ? error.message : String(error);
-        results[command] = { success: false, error: message };
-        human.push(`${command}: ERROR ${message}`);
+        const result = failure(error, args.limit);
+        results[command] = result;
+        human.push([`${command}: ERROR ${result.error}`, result.hint].filter(Boolean).join("\n"));
       }
     }
     const success = !failedSections.length;

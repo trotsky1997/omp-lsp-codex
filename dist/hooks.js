@@ -2,6 +2,7 @@ import { join } from "node:path";
 import childProcess from "node:child_process";
 import { json } from "node:stream/consumers";
 import { object } from "./config.js";
+import { failure, textPrefix } from "./output.js";
 export async function hook(args) {
     const event = object(await json(process.stdin));
     const kind = args.languages[0];
@@ -18,7 +19,7 @@ export async function hook(args) {
     }
     const command = kind === "session-start"
         ? ["status", "--global-config-only", "--global-bins-only", "--json"]
-        : ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "0", "--json"];
+        : ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "12", "--json"];
     try {
         const { stdout, stderr, code } = await new Promise((resolve, reject) => {
             childProcess.execFile(process.execPath, [join(import.meta.dirname, "cli.js"), ...command, "--cwd", typeof event.cwd === "string" ? event.cwd : args.cwd], { cwd: args.cwd, encoding: "utf8", timeout: kind === "session-start" ? 8000 : 110000, killSignal: "SIGTERM", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
@@ -57,9 +58,12 @@ export async function hook(args) {
                     if ((item.severity ?? 1) === 1)
                         issues.push(`${object(file).file}:${Number(object(object(item.range).start).line ?? 0) + 1}: ${item.message}`);
                 }
+            const shown = issues.slice(0, 12), maximum = Math.floor(6000 / Math.max(1, shown.length));
+            const total = Math.max(issues.length, Number(object(data.counts).errors) || 0);
+            const clipped = shown.some(issue => issue.length > maximum);
             console.log(JSON.stringify({
                 decision: "block",
-                reason: `LSP found errors in changed files. Fix them, or explain why they are expected.\n${issues.slice(0, 12).join("\n")}${issues.length > 12 ? `\n... and ${issues.length - 12} more` : ""}`,
+                reason: `LSP found errors in changed files. Fix them, or explain why they are expected.\n${shown.map(issue => textPrefix(issue, maximum)).join("\n")}${total > shown.length ? `\n... and ${total - shown.length} more` : ""}${clipped || data.truncated ? "\nRun codex-lsp diagnostics --changed --global-config-only --global-bins-only --limit 0 --json for complete details." : ""}`,
             }));
         }
         else if (data.success !== true) {
@@ -77,7 +81,9 @@ export async function hook(args) {
             allow();
     }
     catch (error) {
-        if (kind === "stop")
-            console.log(JSON.stringify({ systemMessage: `LSP diagnostics could not run: ${error}` }));
+        if (kind === "stop") {
+            const result = failure(error);
+            console.log(JSON.stringify({ systemMessage: [`LSP diagnostics could not run: ${result.error}`, result.hint].filter(Boolean).join("\n") }));
+        }
     }
 }

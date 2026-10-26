@@ -3,6 +3,7 @@ import childProcess from "node:child_process";
 import { json } from "node:stream/consumers";
 import { object } from "./config.ts";
 import type { Options } from "./commands.ts";
+import { failure, textPrefix } from "./output.ts";
 
 export async function hook(args: Options): Promise<void> {
   const event = object(await json(process.stdin));
@@ -20,7 +21,7 @@ export async function hook(args: Options): Promise<void> {
   const command =
     kind === "session-start"
       ? ["status", "--global-config-only", "--global-bins-only", "--json"]
-      : ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "0", "--json"];
+      : ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "12", "--json"];
   try {
     const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
       childProcess.execFile(process.execPath,
@@ -64,10 +65,13 @@ export async function hook(args: Options): Promise<void> {
               `${object(file).file}:${Number(object(object(item.range).start).line ?? 0) + 1}: ${item.message}`,
             );
         }
+      const shown = issues.slice(0, 12), maximum = Math.floor(6000 / Math.max(1, shown.length));
+      const total = Math.max(issues.length, Number(object(data.counts).errors) || 0);
+      const clipped = shown.some(issue => issue.length > maximum);
       console.log(
         JSON.stringify({
           decision: "block",
-          reason: `LSP found errors in changed files. Fix them, or explain why they are expected.\n${issues.slice(0, 12).join("\n")}${issues.length > 12 ? `\n... and ${issues.length - 12} more` : ""}`,
+          reason: `LSP found errors in changed files. Fix them, or explain why they are expected.\n${shown.map(issue => textPrefix(issue, maximum)).join("\n")}${total > shown.length ? `\n... and ${total - shown.length} more` : ""}${clipped || data.truncated ? "\nRun codex-lsp diagnostics --changed --global-config-only --global-bins-only --limit 0 --json for complete details." : ""}`,
         }),
       );
     } else if (data.success !== true) {
@@ -84,7 +88,9 @@ export async function hook(args: Options): Promise<void> {
       );
     } else allow();
   } catch (error) {
-    if (kind === "stop")
-      console.log(JSON.stringify({ systemMessage: `LSP diagnostics could not run: ${error}` }));
+    if (kind === "stop") {
+      const result = failure(error);
+      console.log(JSON.stringify({ systemMessage: [`LSP diagnostics could not run: ${result.error}`, result.hint].filter(Boolean).join("\n") }));
+    }
   }
 }

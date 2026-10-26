@@ -7,6 +7,7 @@ import { hook } from "./hooks.js";
 import { LspClient } from "./client.js";
 import { expandHome } from "./config.js";
 import { version } from "./version.js";
+import { failure } from "./output.js";
 const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Node ${process.versions.node})
 
 Commands:
@@ -110,8 +111,10 @@ export function parseOptions(argv, cwd = process.cwd()) {
     };
 }
 export async function main(argv = process.argv.slice(2)) {
+    let limit = 50;
     try {
         const args = parseOptions(argv);
+        limit = args.limit;
         if (args.version) {
             console.log(`codex-lsp ${version}`);
             return 0;
@@ -129,11 +132,11 @@ export async function main(argv = process.argv.slice(2)) {
         return result.code ?? 0;
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const result = failure(error, limit);
         if (argv.includes("--json"))
-            console.log(JSON.stringify({ success: false, error: message }));
+            console.log(JSON.stringify(result));
         else
-            console.error(`codex-lsp: ${message}`);
+            console.error([`codex-lsp: ${result.error}`, result.hint].filter(Boolean).join("\n"));
         return 2;
     }
     finally {

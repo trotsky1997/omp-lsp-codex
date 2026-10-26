@@ -7,6 +7,7 @@ import { hook } from "./hooks.ts";
 import { LspClient } from "./client.ts";
 import { expandHome } from "./config.ts";
 import { version } from "./version.ts";
+import { failure } from "./output.ts";
 
 const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Node ${process.versions.node})
 
@@ -116,8 +117,10 @@ export function parseOptions(
   };
 }
 export async function main(argv = process.argv.slice(2)): Promise<number> {
+  let limit = 50;
   try {
     const args = parseOptions(argv);
+    limit = args.limit;
     if (args.version) {
       console.log(`codex-lsp ${version}`);
       return 0;
@@ -134,9 +137,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     console.log(args.json ? JSON.stringify(result.data) : result.human);
     return result.code ?? 0;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (argv.includes("--json")) console.log(JSON.stringify({ success: false, error: message }));
-    else console.error(`codex-lsp: ${message}`);
+    const result = failure(error, limit);
+    if (argv.includes("--json")) console.log(JSON.stringify(result));
+    else console.error([`codex-lsp: ${result.error}`, result.hint].filter(Boolean).join("\n"));
     return 2;
   } finally {
     await Promise.allSettled([...LspClient.active].map((client) => client.close()));

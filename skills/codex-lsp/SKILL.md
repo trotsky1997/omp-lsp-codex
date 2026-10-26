@@ -23,7 +23,7 @@ Prefer the compact human output for reading. Start with default limits; request 
 
 `signature-help` shows the active overload and parameter without bulk documentation. Put the cursor just after the call's opening `(` or a separating comma; some servers return no help inside string literals. If still empty, use hover on the callable. It defaults to one signature, prioritizing the active overload; JSON indices are zero-based. Use `--limit 0 --json` for complete signatures, parameters and documentation. Server-side type abbreviations can remain in a complete response. Raw `request` responses remain complete and can be much larger.
 
-Default display limits: 50 results/hover lines, 10 per `inspect` section. Hover and signature text also have character budgets. Check `truncated`, `textTruncated`, `documentationOmitted` and hints; a short hover can omit a return type. Increase the line/result limit when useful, or save complete output with `--limit 0 --json > /tmp/lsp-result.json` and read only the needed part. Limits affect display; applied edits use the complete validated edit set.
+Default display limits: 50 results/hover lines, 10 per `inspect` section. Hover, signatures, diagnostics and errors also have character budgets. Check `truncated`, `textTruncated`, `documentationOmitted`, `detailsOmitted`, `errorTruncated` and hints; a short hover can omit a return type. Diagnostic previews prioritize errors across files; counts and verification cover every diagnostic. Increase the line/result limit when useful, or save complete output with `--limit 0 --json > /tmp/lsp-result.json` and read only the needed part. Limits affect display; applied edits use the complete validated edit set.
 
 ## Project context and results
 

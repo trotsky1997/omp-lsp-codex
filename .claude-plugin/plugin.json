@@ -1,6 +1,6 @@
 {
   "name": "codex-lsp",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Use local language servers from Claude Code with the codex-lsp CLI, skill, and lifecycle hooks.",
   "author": {
     "name": "trotsky1997"

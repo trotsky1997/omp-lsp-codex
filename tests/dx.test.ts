@@ -77,6 +77,9 @@ test("DX: hidden diagnostics keep complete severity totals and the failure exit 
     assert.strictEqual(result.code, 1); assert.partialDeepStrictEqual(result.data, { success: false, verified: true, hasErrors: true, total: 80, shown, counts: { errors: 1, warnings: 79, information: 0, hints: 0 } });
     assert.strictEqual((result.data.checked as { diagnostics: unknown[]; diagnosticCount: number }[])[0].diagnostics.length, shown);
     assert.strictEqual((result.data.checked as { diagnosticCount: number }[])[0].diagnosticCount, 80);
+    const visible = (result.data.checked as { diagnostics: typeof diagnostics }[])[0].diagnostics;
+    if (flags[1] === "0") assert.deepStrictEqual(visible, diagnostics);
+    else assert.strictEqual(visible[0].severity, 1);
   }
 });
 test("DX: code-action display preserves original indexes and selection beyond the limit", async () => {
