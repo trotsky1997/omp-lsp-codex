@@ -232,3 +232,73 @@ test.each(["executable override", "malformed configuration"])("hook scope: user-
   const settings = object(w.events().find(event => event.method === "workspace/didChangeConfiguration")?.params).settings;
   expect(settings).toEqual({ fixture: { selected: "user" } });
 });
+
+function changedConfiguration() {
+  const w = workspace(); fs.rmSync(join(w.root, ".git"), { recursive: true });
+  expect(Bun.spawnSync(["git", "-C", w.root, "init", "-q"]).exitCode).toBe(0);
+  fs.writeFileSync(join(w.root, ".gitignore"), "*\n!*.fixture\n!.codex/\n!.codex/lsp.json\n");
+  return { ...w, options: { ...w.args("diagnostics"), file: undefined, changed: true } };
+}
+test("configuration diagnostics: CLI metadata is validated separately from changed source", async () => {
+  const w = changedConfiguration();
+  expect(await changedFiles(w.root)).toContain(w.configPath);
+  const result = await run(w.options);
+  expect(result.data).toMatchObject({ success: true, verified: true, hasErrors: false,
+    configurationChecks: [{ file: w.configPath, status: "validated" }],
+  });
+  expect((result.data.checked as { file: string }[]).map(row => row.file)).toEqual([w.file]);
+  expect(result.human).toContain(`Validated CLI configuration: ${w.configPath}`);
+});
+test("configuration diagnostics: metadata-only changes start no language server", async () => {
+  const w = changedConfiguration(), start = spyOn(LspClient, "start");
+  fs.appendFileSync(join(w.root, ".gitignore"), "*.fixture\n");
+  try {
+    const result = await run(w.options);
+    expect(result.data).toMatchObject({ success: true, checked: [], configurationChecks: [{ file: w.configPath, status: "validated" }] });
+    expect(result.human).toContain("No changed source files"); expect(start).not.toHaveBeenCalled();
+  } finally { start.mockRestore(); }
+});
+test("configuration diagnostics: explicit file checks still require a JSON language server", async () => {
+  const w = changedConfiguration(), result = await run({ ...w.options, changed: false, file: w.configPath });
+  expect(result.data).toMatchObject({ success: false, verified: false });
+  expect(result.data.configurationChecks).toBeUndefined();
+  expect((result.data.checked as { errors: string[] }[])[0].errors[0]).toContain("No available language server");
+});
+test.each(["malformed JSON", "invalid server"])("configuration diagnostics: %s fails before source analysis", async fault => {
+  const w = changedConfiguration(), start = spyOn(LspClient, "start");
+  fs.writeFileSync(w.configPath, fault === "malformed JSON" ? "{ malformed" : JSON.stringify({ servers: { fixture: { command: "" } } }));
+  try {
+    await expect(run(w.options)).rejects.toThrow(fault === "malformed JSON" ? "Cannot read LSP configuration" : "needs a command");
+    expect(start).not.toHaveBeenCalled();
+  } finally { start.mockRestore(); }
+});
+test("configuration diagnostics: hook scope explicitly ignores malformed project metadata", async () => {
+  const w = changedConfiguration(); setGlobalServers(structuredClone(w.configs));
+  fs.writeFileSync(w.configPath, "{ malformed project configuration");
+  const result = await run({ ...w.options, globalConfigOnly: true, globalBinsOnly: true });
+  expect(result.data).toMatchObject({ success: true, verified: true, configurationChecks: [{ file: w.configPath, status: "ignored" }] });
+  expect(result.human).toContain("Ignored project LSP configuration");
+  expect(fs.readFileSync(w.configPath, "utf8")).toBe("{ malformed project configuration");
+});
+test("configuration diagnostics: inactive nested configs remain ordinary unverified JSON files", async () => {
+  const w = changedConfiguration(), nested = join(w.root, "nested/.codex/lsp.json");
+  fs.mkdirSync(join(w.root, "nested/.codex"), { recursive: true }); fs.writeFileSync(nested, "{ inactive config");
+  fs.appendFileSync(join(w.root, ".gitignore"), "!nested/\n!nested/.codex/\n!nested/.codex/lsp.json\n");
+  const result = await run(w.options);
+  expect(result.data).toMatchObject({ success: false, verified: false, configurationChecks: [{ file: w.configPath, status: "validated" }] });
+  const record = (result.data.checked as { file: string; verified: boolean; errors: string[] }[]).find(row => row.file === nested)!;
+  expect(record.verified).toBe(false); expect(record.errors[0]).toContain("No available language server");
+});
+test("configuration diagnostics: canonical in-checkout metadata aliases remain identifiable", async () => {
+  const w = changedConfiguration(), target = join(w.root, "settings.data");
+  fs.renameSync(w.configPath, target); fs.symlinkSync(target, w.configPath);
+  const result = await run(w.options);
+  expect(result.data).toMatchObject({ success: true, configurationChecks: [{ file: target, status: "validated" }] });
+  expect((result.data.checked as { file: string }[]).map(row => row.file)).toEqual([w.file]);
+});
+test("configuration diagnostics: metadata symlink escapes fail before any server starts", async () => {
+  const w = changedConfiguration(), other = workspace(), start = spyOn(LspClient, "start");
+  fs.rmSync(w.configPath); fs.symlinkSync(other.configPath, w.configPath);
+  try { await expect(run(w.options)).rejects.toThrow("outside the workspace"); expect(start).not.toHaveBeenCalled(); }
+  finally { start.mockRestore(); }
+});

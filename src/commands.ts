@@ -687,15 +687,23 @@ export async function changedFiles(cwd: string): Promise<string[]> {
 export async function diagnostics(args: Options, shared?: FileContext): Promise<Result> {
   if (!!args.file === args.changed) throw new Error("Choose exactly one of --file or --changed");
   const paths = args.changed ? await changedFiles(args.cwd) : [resolveFile(args.file!, args.cwd)];
+  const configurationPaths = args.changed ? configPaths(args.cwd).filter(existsSync).map(file => realpathSync(file)) : [];
+  const scopedConfigurationPaths = args.changed ? configPaths(args.cwd, args.globalConfigOnly).filter(existsSync).map(file => realpathSync(file)) : [];
+  const configurationChecks: { file: string; status: "validated" | "ignored" }[] = [];
   const groups = new Map<string, { server: Server; files: string[] }>();
   const records = new Map<
     string,
     { file: string; diagnostics: Diagnostic[]; verified: boolean; errors: string[] }
   >();
   for (const path of paths) {
+    const configs = loadConfig(dirname(path), args.globalConfigOnly);
+    if (configurationPaths.includes(path)) {
+      configurationChecks.push({ file: path, status: scopedConfigurationPaths.includes(path) ? "validated" : "ignored" });
+      continue;
+    }
     const servers = fileServers(
       availableServers(
-        loadConfig(dirname(path), args.globalConfigOnly),
+        configs,
         dirname(path),
         args.globalBinsOnly,
       ),
@@ -753,9 +761,9 @@ export async function diagnostics(args: Options, shared?: FileContext): Promise<
     return { ...record, diagnosticCount: record.diagnostics.length, diagnostics };
   });
   return {
-    data: { success, verified, hasErrors, ...summary, counts, checked: visible },
+    data: { success, verified, hasErrors, ...summary, counts, checked: visible, ...(configurationChecks.length ? { configurationChecks } : {}) },
     code: success ? 0 : 1,
-    human: checked.length
+    human: [checked.length
       ? [`${all.length} diagnostic(s): ${counts.errors} error(s), ${counts.warnings} warning(s), ${counts.information} information, ${counts.hints} hint(s)`, ...visible
           .flatMap((x) => [
             `${x.file}: ${x.verified ? "verified" : "unverified"}, ${x.diagnosticCount} diagnostic(s)`,
@@ -766,6 +774,8 @@ export async function diagnostics(args: Options, shared?: FileContext): Promise<
             ...x.errors.map((e) => `  ERROR: ${e}`),
           ]), summary.hint].filter(Boolean).join("\n")
       : "No changed source files to check",
+      ...configurationChecks.map(row => `${row.status === "validated" ? "Validated CLI configuration" : "Ignored project LSP configuration (global-config-only)"}: ${row.file}`),
+    ].join("\n"),
   };
 }
 
