@@ -16,7 +16,7 @@ Language servers can omit import or re-export edits. Applied output says `verifi
 
 ## Raw protocol
 
-Use the focused CLI command for ordinary questions, including `signature-help` for call signatures. Raw `request` preserves full server payloads, including potentially large documentation. It requires `--apply` unless its method is read-only. Raw `textDocument/codeAction` is read-only and never executes suggestions.
+Use the focused CLI command for ordinary questions, including `signature-help` for call signatures. Raw `request` preserves full server payloads by default, including potentially large documentation; `--fields` explicitly selects emitted JSON. It requires `--apply` unless its method is read-only. Raw `textDocument/codeAction` is read-only and never executes suggestions.
 
 ```sh
 codex-lsp request --method textDocument/signatureHelp --file PATH --line N --column N --json

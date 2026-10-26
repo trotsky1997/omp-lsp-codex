@@ -7,7 +7,7 @@ import { hook } from "./hooks.js";
 import { LspClient } from "./client.js";
 import { expandHome } from "./config.js";
 import { version } from "./version.js";
-import { failure } from "./output.js";
+import { failure, selectFields } from "./output.js";
 const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Node ${process.versions.node})
 
 Commands:
@@ -33,6 +33,8 @@ Commands:
 Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --cwd PATH            Use this project directory for setup, relative paths and --changed
   --limit N             Max results/hover lines (default 50, inspect 10, signature-help 1; 0 shows all)
+  --fields A,B          Select JSON object paths, e.g. total,results.diagnostics.counts
+                        Keeps status/error/truncation metadata; arrays are selected whole
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 --project is a flag without a path; run setup from the intended project directory.
 Rename and code-actions preview by default. Add --apply to write changes.
@@ -56,6 +58,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
             timeout: { type: "string" },
             limit: { type: "string" },
             json: { type: "boolean" },
+            fields: { type: "string" },
             changed: { type: "boolean" },
             workspace: { type: "boolean" },
             apply: { type: "boolean" },
@@ -76,6 +79,13 @@ export function parseOptions(argv, cwd = process.cwd()) {
         (column !== undefined && (!Number.isInteger(column) || column < 1)))
         throw new Error("--line and --column must be positive integers");
     const [command = "", ...languages] = positionals;
+    const fields = v.fields === undefined ? undefined : [...new Set(v.fields.split(",").map(field => field.trim()))];
+    if (fields && !v.json)
+        throw new Error("--fields requires --json");
+    if (fields && command === "hook")
+        throw new Error("--fields is unavailable for hook: hooks emit their own protocol");
+    if (fields?.some(field => !/^[$A-Za-z_][\w$-]*(?:\.[$A-Za-z_][\w$-]*)*$/.test(field)))
+        throw new Error("--fields expects comma-separated object paths, e.g. success,results.definition.locations; select arrays as a whole");
     if (/\s/.test(command))
         throw new Error("Pass the command and flags as separate arguments; for example: codex-lsp inspect --file path/to/file.ts");
     if (languages.length && !["setup", "hook"].includes(command))
@@ -100,6 +110,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
         timeout: Math.max(5, Math.min(300, timeout)) * 1000,
         limit,
         json: !!v.json,
+        fields,
         changed: !!v.changed,
         workspace: !!v.workspace,
         apply: !!v.apply,
@@ -128,7 +139,7 @@ export async function main(argv = process.argv.slice(2)) {
             return 0;
         }
         const result = await run(args);
-        console.log(args.json ? JSON.stringify(result.data) : result.human);
+        console.log(args.json ? JSON.stringify(args.fields ? selectFields(result.data, args.fields) : result.data) : result.human);
         return result.code ?? 0;
     }
     catch (error) {

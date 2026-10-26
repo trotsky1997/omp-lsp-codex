@@ -22,3 +22,35 @@ export function compactText(items: Record<string, unknown>[], fields: string[], 
     truncated: true, textTruncated: true, hint: "Text clipped; use --limit 0 --json for complete output.",
   };
 }
+
+const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "verification", "failedSections", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
+
+export function selectFields(data: Record<string, unknown>, fields: string[]): Record<string, unknown> {
+  const selected = new Map<string, unknown>(), missing: string[] = [];
+  const state = (value: Record<string, unknown>, prefix: string) => {
+    for (const key of STATE_FIELDS) if (Object.hasOwn(value, key) && value[key] !== undefined) selected.set(prefix + key, value[key]);
+  };
+  state(data, "");
+  for (const field of fields) {
+    const parts = field.split("."); let value: unknown = data, found = true;
+    for (let index = 0; index < parts.length; index++) {
+      if (value === null || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, parts[index]) || (value as Record<string, unknown>)[parts[index]] === undefined) { found = false; break; }
+      value = (value as Record<string, unknown>)[parts[index]];
+      if (index < parts.length - 1 && value !== null && typeof value === "object" && !Array.isArray(value)) state(value as Record<string, unknown>, parts.slice(0, index + 1).join(".") + ".");
+    }
+    if (found) selected.set(field, value); else missing.push(field);
+  }
+  const result: Record<string, unknown> = Object.create(null);
+  for (const [field, value] of selected) {
+    const parts = field.split(".");
+    if (parts.some((_, index) => index > 0 && selected.has(parts.slice(0, index).join(".")))) continue;
+    let target = result;
+    for (const part of parts.slice(0, -1)) {
+      target[part] ??= Object.create(null);
+      target = target[part] as Record<string, unknown>;
+    }
+    target[parts.at(-1)!] = value;
+  }
+  if (missing.length) result.missingFields = missing;
+  return result;
+}
