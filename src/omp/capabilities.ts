@@ -10,6 +10,14 @@ export const CLIENT_CAPABILITIES = {
 			contentFormat: ["markdown", "plaintext"],
 			dynamicRegistration: false,
 		},
+		signatureHelp: {
+			dynamicRegistration: false,
+			signatureInformation: {
+				documentationFormat: ["markdown", "plaintext"],
+				parameterInformation: { labelOffsetSupport: true },
+				activeParameterSupport: true,
+			},
+		},
 		definition: {
 			dynamicRegistration: false,
 			linkSupport: true,

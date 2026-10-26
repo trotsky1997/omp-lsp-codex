@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { LspClient } from "./client.ts";
 import {
   availableServers,
@@ -71,6 +71,57 @@ function outputInfo(total: number, limit: number) {
   const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
   return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
 }
+function textPrefix(text: string, maximum: number): string {
+  let end = Math.min(text.length, maximum);
+  if (end < text.length && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+  return text.slice(0, Math.max(0, end));
+}
+function locationLines(items: ObjectValue[], root: string, named = false): string[] {
+  const groups = new Map<string, string[]>();
+  for (const item of items) {
+    const file = typeof item.file === "string" ? item.file : "(location unavailable)";
+    const path = isAbsolute(file) && inside(root, file) ? relative(root, file) || "." : file;
+    const point = item.line === undefined ? "?" : `${item.line}:${item.column}`;
+    if (!groups.has(path)) groups.set(path, []);
+    groups.get(path)!.push(named ? `${item.name}@${point}` : point);
+  }
+  return [...groups].map(([file, points]) => `${file}:${points.join(", ")}`);
+}
+function signatureHelp(value: unknown, server: string, limit: number): Result {
+  const response = object(value);
+  if (value !== null && (!Array.isArray(response.signatures) || response.signatures.some(item => typeof object(item).label !== "string")))
+    throw new Error(`Invalid signature help response from ${server}`);
+  const signatures = (response.signatures ?? []) as ObjectValue[];
+  const index = (value: unknown, count: number) => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) < count ? Number(value) : 0;
+  const activeSignature = index(response.activeSignature, signatures.length), active = signatures[activeSignature];
+  const parameters = Array.isArray(active?.parameters) ? active.parameters : [];
+  const activeParameter = parameters.length ? index(active?.activeParameter ?? response.activeParameter, parameters.length) : null;
+  const parameter = activeParameter === null ? undefined : object(parameters[activeParameter]).label;
+  const activeLabel = String(active?.label ?? "");
+  let activeParameterLabel: string | null = null;
+  if (typeof parameter === "string") activeParameterLabel = parameter;
+  else if (Array.isArray(parameter) && parameter.length === 2 && parameter.every(Number.isSafeInteger) && parameter[0] >= 0 && parameter[1] >= parameter[0] && parameter[1] <= activeLabel.length && parameter.every(offset => !(activeLabel.charCodeAt(offset) >= 0xdc00 && activeLabel.charCodeAt(offset) <= 0xdfff)))
+    activeParameterLabel = activeLabel.slice(parameter[0], parameter[1]);
+  const summary = outputInfo(signatures.length, limit);
+  const indexes = signatures.map((_, index) => index);
+  if (limit && signatures.length) indexes.unshift(...indexes.splice(activeSignature, 1));
+  let remaining = limit ? 6000 : Infinity, textTruncated = false;
+  const selected = indexes.slice(0, summary.shown).map(index => {
+    const signature = signatures[index], original = String(signature.label), label = textPrefix(original, remaining);
+    remaining -= label.length; textTruncated ||= label.length < original.length;
+    return limit ? { index, label } : { ...signature, index, label };
+  });
+  if (limit && activeParameterLabel) {
+    const preview = textPrefix(activeParameterLabel, 1000); textTruncated ||= preview.length < activeParameterLabel.length; activeParameterLabel = preview;
+  }
+  const documentationOmitted = !!limit && signatures.some(signature => signature.documentation !== undefined || (Array.isArray(signature.parameters) && signature.parameters.some(parameter => object(parameter).documentation !== undefined)));
+  const hint = !signatures.length ? "Place the cursor inside a call's arguments." : summary.truncated || documentationOmitted || textTruncated
+    ? [documentationOmitted ? "Documentation omitted." : "", textTruncated ? "Signature text clipped." : "", "Use --limit 0 --json for complete signature information."].filter(Boolean).join(" ") : "";
+  return {
+    data: { success: true, found: !!signatures.length, server, ...summary, truncated: summary.truncated || textTruncated, activeSignature: signatures.length ? activeSignature : null, activeParameter, activeParameterLabel, signatures: selected, ...(documentationOmitted ? { documentationOmitted: true } : {}), ...(textTruncated ? { textTruncated: true } : {}), ...(hint ? { hint } : {}) },
+    human: [signatures.length ? `${signatures.length} signature(s); active ${activeSignature + 1}${activeParameterLabel ? `; parameter: ${activeParameterLabel}` : ""}` : "No signature help", ...selected.map(signature => `${signature.index === activeSignature ? "*" : ""}[${signature.index + 1}] ${signature.label}`), hint].filter(Boolean).join("\n"),
+  };
+}
 const VERIFY_EDITS = "Project verification pending. Run relevant build/tests; use code-actions for missing imports or re-exports if checks fail.";
 function editVerification(applied: boolean, hint?: string) {
   return applied ? { verification: "pending", hint: [hint, VERIFY_EDITS].filter(Boolean).join(" ") } : {};
@@ -93,6 +144,7 @@ const NAVIGATION: Record<string, string> = {
   definition: "textDocument/definition",
   references: "textDocument/references",
   hover: "textDocument/hover",
+  "signature-help": "textDocument/signatureHelp",
   "type-definition": "textDocument/typeDefinition",
   implementation: "textDocument/implementation",
 };
@@ -228,13 +280,14 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
         throw error;
       }
       if (args.command === "hover") content = hoverText(object(result).contents);
-      else
+      else if (args.command !== "signature-help")
         locations = (Array.isArray(result) ? result : [result])
           .map(location)
           .filter((x): x is ObjectValue => !!x);
       if (
         content.trim() ||
         locations.length ||
+        args.command === "signature-help" ||
         knownReady ||
         !symbolAt(text, pos.line, pos.character)
       )
@@ -262,7 +315,12 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
       if (timedOut && !content.trim())
         throw new Error(`Timed out waiting for hover information from ${server.name}`);
       const found = !!content.trim(), lines = found ? content.split("\n") : [], summary = outputInfo(lines.length, args.limit);
-      content = lines.slice(0, summary.shown).join("\n");
+      const originalCharacters = content.length, preview = lines.slice(0, summary.shown).join("\n");
+      content = args.limit ? textPrefix(preview, 6000) : preview;
+      if (content.length < preview.length) {
+        summary.shown = content ? content.split("\n").length : 0; summary.truncated = true;
+        summary.hint = `Hover text clipped (${content.length}/${originalCharacters} characters); use --limit 0 for complete output.`;
+      }
       return {
         data: {
           success: true,
@@ -271,18 +329,20 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
           provider,
           hover: content,
           ...summary,
+          ...(content.length < preview.length ? { characters: { total: originalCharacters, shown: content.length } } : {}),
         },
         human: [content.trim() ? content : found ? "Hover information found." : "No hover information", summary.hint].filter(Boolean).join("\n"),
       };
     }
     if (timedOut) throw new Error(`Timed out waiting for ${args.command} from ${server.name}`);
+    if (args.command === "signature-help") return signatureHelp(result, server.name, args.limit);
     const summary = outputInfo(locations.length, args.limit);
     locations = locations.slice(0, summary.shown);
     return {
       data: { success: true, found: !!summary.total, server: server.name, ...summary, locations },
       human: locations.length
         ? [`Found ${summary.total} ${args.command}(s):`,
-          ...locations.map((x) => `${x.file}:${x.line}:${x.column}`), summary.hint].filter(Boolean).join("\n")
+          ...(!shared ? [`Root: ${gitRoot(server.root)}`] : []), ...locationLines(locations, gitRoot(server.root)), summary.hint].filter(Boolean).join("\n")
         : `No ${args.command} found`,
     };
   } finally {
@@ -308,7 +368,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
       return {
         data: { success: true, server: server.name, ...summary, ...(hint ? { hint } : {}), symbols: items },
         human: [items.length
-          ? items.map((x) => `${x.name} @ ${x.file}:${x.line}:${x.column}`).join("\n")
+          ? [...(!shared ? [`Root: ${gitRoot(server.root)}`] : []), ...locationLines(items, gitRoot(server.root), true)].join("\n")
           : "No symbols found", summary.hint ?? hint].filter(Boolean).join("\n"),
       };
     } finally {
@@ -352,7 +412,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
     code: errors.length ? 1 : 0,
     human:
       [
-        ...selected.map((x) => `${x.name} @ ${x.file}:${x.line}:${x.column}`),
+        ...(selected.length ? [`Root: ${gitRoot(cwd)}`, ...locationLines(selected, gitRoot(cwd), true)] : []),
         ...errors.map((x) => `ERROR ${x.server}: ${x.error}`),
         summary.hint,
       ].filter(Boolean).join("\n") || "No symbols found",
@@ -818,7 +878,7 @@ async function inspect(args: Options): Promise<Result> {
       ? `Diagnostics verified: ${object(diagnostic.counts).errors} project code error(s). Navigation results remain available; see results.diagnostics.checked for locations.` : undefined;
     if (hint) human.unshift(hint);
     if (!success) human.unshift(`Inspection has issues in: ${failedSections.join(", ")}. See each section below.`);
-    return { data: { success, applied: false, server: context.server.name, failedSections, ...(hint ? { hint } : {}), results }, human: human.join("\n\n"), code: success ? 0 : 1 };
+    return { data: { success, applied: false, server: context.server.name, failedSections, ...(hint ? { hint } : {}), results }, human: [`Root: ${gitRoot(context.server.root)}`, ...human].join("\n\n"), code: success ? 0 : 1 };
   } finally { await context.client.close(); }
 }
 
@@ -966,6 +1026,7 @@ async function request(args: Options): Promise<Result> {
 
 export async function run(args: Options): Promise<Result> {
   const navigation = Object.hasOwn(NAVIGATION, args.command);
+  if (navigation && args.apply) throw new Error(`${args.command} is read-only; omit --apply`);
   let requestPosition = false;
   if (args.command === "request" && POSITION_METHODS.has(args.method ?? "")) {
     const payload: unknown = args.payload ? JSON.parse(args.payload) : {};

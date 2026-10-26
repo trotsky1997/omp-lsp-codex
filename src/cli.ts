@@ -20,6 +20,7 @@ Commands:
   definition             --file PATH --line N [--symbol NAME | --column N]
   references             --file PATH --line N [--symbol NAME | --column N]
   hover                  --file PATH --line N [--symbol NAME | --column N]
+  signature-help         --file PATH --line N --column N
   type-definition        Find symbol types
   implementation         Find implementations
   symbols                --file PATH [--query NAME], or --workspace --query NAME [--file PATH]
@@ -31,7 +32,7 @@ Commands:
 
 Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --cwd PATH            Use this project directory for setup, relative paths and --changed
-  --limit N             Show at most N results or hover lines (default 50, inspect 10; 0 shows all)
+  --limit N             Max results/hover lines (default 50, inspect 10, signature-help 1; 0 shows all)
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 --project is a flag without a path; run setup from the intended project directory.
 Rename and code-actions preview by default. Add --apply to write changes.
@@ -70,7 +71,7 @@ export function parseOptions(
     },
   });
   const timeout = Number(v.timeout ?? 20),
-    limit = Number(v.limit ?? (positionals[0] === "inspect" ? 10 : 50)),
+    limit = Number(v.limit ?? (positionals[0] === "inspect" ? 10 : positionals[0] === "signature-help" ? 1 : 50)),
     line = Number(v.line ?? 1),
     column = v.column === undefined ? undefined : Number(v.column);
   if (!Number.isFinite(timeout)) throw new Error("--timeout must be a number");
