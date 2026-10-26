@@ -42,7 +42,7 @@ import { findReference, symbolAt } from "./devdocs.ts";
 import { resolveSymbolColumn } from "./omp/symbol-column.ts";
 import type { CodeAction, Command, Diagnostic, Position, WorkspaceEdit } from "./omp/types.ts";
 import { version } from "./version.ts";
-import { failure, textPrefix } from "./output.ts";
+import { compactText, failure, textPrefix } from "./output.ts";
 
 export interface Options {
   command: string;
@@ -234,7 +234,7 @@ export function formatSymbols(values: unknown, uri = "", container?: string): Ob
     const point = location(item.location ?? { uri, range }) ?? {};
     const name = String(item.name ?? "");
     return [
-      { name, kind: item.kind, container: item.containerName ?? container ?? null, ...point },
+      { name, kind: Number.isSafeInteger(item.kind) ? item.kind : undefined, container: typeof item.containerName === "string" ? item.containerName : container ?? null, ...point },
       ...formatSymbols(item.children, uri, name),
     ];
   });
@@ -362,13 +362,13 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
           String(x.name).toLowerCase().includes(args.query!.toLowerCase()),
         );
       const summary = outputInfo(items.length, args.limit);
-      items = items.slice(0, summary.shown);
-      const hint = !items.length && args.query ? "Use symbols --workspace --file <path> --query <name> to search the project." : undefined;
+      const { items: selected, ...preview } = compactText(items.slice(0, summary.shown), ["name", "container"], args.limit);
+      const hint = preview.hint ?? (!items.length && args.query ? "Use symbols --workspace --file <path> --query <name> to search the project." : undefined);
       return {
-        data: { success: true, server: server.name, ...summary, ...(hint ? { hint } : {}), symbols: items },
+        data: { success: true, server: server.name, ...summary, ...preview, ...(hint ? { hint } : {}), symbols: selected },
         human: [items.length
-          ? [...(!shared ? [`Root: ${gitRoot(server.root)}`] : []), ...locationLines(items, gitRoot(server.root), true)].join("\n")
-          : "No symbols found", summary.hint ?? hint].filter(Boolean).join("\n"),
+          ? [...(!shared ? [`Root: ${gitRoot(server.root)}`] : []), ...locationLines(selected, gitRoot(server.root), true)].join("\n")
+          : "No symbols found", summary.hint, hint].filter(Boolean).join("\n"),
       };
     } finally {
       if (!shared) await client.close();
@@ -405,15 +405,16 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
     throw new Error(
       "No available server supports workspace symbols; use --file to select a project",
     );
-  const summary = outputInfo(items.length, args.limit), selected = items.slice(0, summary.shown);
+  const summary = outputInfo(items.length, args.limit), { items: selected, ...preview } = compactText(items.slice(0, summary.shown), ["name", "container"], args.limit);
   return {
-    data: { success: !errors.length, servers: used, ...summary, symbols: selected, errors },
+    data: { success: !errors.length, servers: used, ...summary, ...preview, symbols: selected, errors },
     code: errors.length ? 1 : 0,
     human:
       [
         ...(selected.length ? [`Root: ${gitRoot(cwd)}`, ...locationLines(selected, gitRoot(cwd), true)] : []),
         ...errors.map((x) => [`ERROR ${x.server}: ${x.error}`, x.hint].filter(Boolean).join("\n")),
         summary.hint,
+        preview.hint,
       ].filter(Boolean).join("\n") || "No symbols found",
   };
 }
@@ -474,20 +475,26 @@ async function codeActions(args: Options): Promise<Result> {
         range: actionRange,
         context: { diagnostics },
       })) ?? [];
+    const invalidAction = (item: unknown) => {
+      const row = object(item);
+      return typeof row.title !== "string" || (row.kind !== undefined && typeof row.kind !== "string") || (row.disabled != null && typeof object(row.disabled).reason !== "string");
+    };
+    if (!Array.isArray(actions) || actions.some(invalidAction)) throw new Error(`Invalid code action response from ${server.name}`);
     if (!args.apply) {
       const items = actions
         .map((item, index) => ({
           index,
           title: item.title,
           kind: "kind" in item ? item.kind : undefined,
+          ...("disabled" in item && item.disabled ? { disabledReason: item.disabled.reason } : {}),
         }))
         .filter((x) => !args.query || x.title.toLowerCase().includes(args.query.toLowerCase()));
-      const summary = outputInfo(items.length, args.limit), selected = items.slice(0, summary.shown);
-      const hint = summary.hint ?? (!items.length ? "No applicable actions for this range; check diagnostics and server capabilities, or select a different line/position." : undefined);
+      const summary = outputInfo(items.length, args.limit), { items: selected, ...preview } = compactText(items.slice(0, summary.shown), ["title", "kind", "disabledReason"], args.limit);
+      const hint = preview.hint ? `${preview.hint} Select actions by original index with --query INDEX --apply.` : summary.hint ?? (!items.length ? "No applicable actions for this range; check diagnostics and server capabilities, or select a different line/position." : undefined);
       return {
-        data: { success: true, server: server.name, ...summary, ...(hint ? { hint } : {}), actions: selected },
+        data: { success: true, server: server.name, ...summary, ...preview, ...(hint ? { hint } : {}), actions: selected },
         human:
-          [`${items.length} code action(s):`, ...selected.map((x) => `${x.index}: ${x.title}`), hint].filter(Boolean).join("\n"),
+          [`${items.length} code action(s):`, ...selected.map((x) => `${x.index}: ${x.title}${x.disabledReason !== undefined ? ` [disabled: ${x.disabledReason}]` : ""}`), hint].filter(Boolean).join("\n"),
       };
     }
     if (!args.query) throw new Error("--query must select an action when using --apply");
@@ -496,8 +503,10 @@ async function codeActions(args: Options): Promise<Result> {
       : actions.find((x) => x.title.toLowerCase().includes(args.query!.toLowerCase()));
     if (!chosen) throw new Error(`No code action matches ${args.query}`);
     if ("disabled" in chosen && chosen.disabled) throw new Error(chosen.disabled.reason);
-    if (!("edit" in chosen) && !("command" in chosen) && client.capabilities.codeActionProvider)
+    if (!("edit" in chosen) && !("command" in chosen) && client.capabilities.codeActionProvider) {
       chosen = await client.request<CodeAction>("codeAction/resolve", chosen);
+      if (invalidAction(chosen)) throw new Error(`Invalid resolved code action from ${server.name}`);
+    }
     if ("disabled" in chosen && chosen.disabled) throw new Error(chosen.disabled.reason);
     client.applyEdit = async (edit) => {
       try {
@@ -522,9 +531,10 @@ async function codeActions(args: Options): Promise<Result> {
     else if (!("edit" in chosen) || !chosen.edit)
       throw new Error("Selected code action has no edit or command");
     if (editFailure !== undefined) throw editFailure;
+    const { items: selected, ...preview } = compactText([{ title: chosen.title }], ["title"], args.limit);
     return {
-      data: { success: true, applied: true, server: server.name, title: chosen.title, ...editVerification(true) },
-      human: `Applied ${chosen.title}\n${VERIFY_EDITS}`,
+      data: { success: true, applied: true, server: server.name, ...preview, title: selected[0].title, ...editVerification(true, preview.hint) },
+      human: [`Applied ${selected[0].title}`, preview.hint, VERIFY_EDITS].filter(Boolean).join("\n"),
     };
   } catch (error) {
     if (edited) throw new Error(`Code action failed after applying edits: ${error}`);
@@ -587,8 +597,9 @@ async function doctor(args: Options): Promise<Result> {
           .sort(),
       });
     } catch (error) {
-      Object.assign(row, { status: "error", error: String(error) });
-      issues.push({ severity: "error", server: server.name, message: String(error) });
+      const result = failure(error, args.limit), preview = result.hint ? { errorTruncated: true, hint: result.hint } : {};
+      Object.assign(row, { status: "error", error: result.error, ...preview });
+      issues.push({ severity: "error", server: server.name, message: result.error, ...preview });
     } finally {
       await client?.close();
     }
@@ -624,7 +635,7 @@ async function doctor(args: Options): Promise<Result> {
       `codex-lsp doctor (${version}, Node ${process.versions.node})`,
       ...servers.map(
         (row) =>
-          `${row.status === "ok" ? "OK" : "ERROR"} ${row.name}: ${row.error ?? row.message ?? row.command} (root: ${row.root})${row.pythonPath ? `\n  Analysis Python: ${row.pythonPath}` : ""}`,
+          `${row.status === "ok" ? "OK" : "ERROR"} ${row.name}: ${row.error ?? row.message ?? row.command} (root: ${row.root})${row.pythonPath ? `\n  Analysis Python: ${row.pythonPath}` : ""}${row.hint ? `\n  ${row.hint}` : ""}`,
       ),
       ...issues.filter((x) => x.severity === "warning").map((x) => `WARNING: ${x.message}`),
       success ? "Doctor result: OK" : "Doctor result: needs attention",

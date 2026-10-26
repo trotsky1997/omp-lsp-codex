@@ -24,6 +24,8 @@ If the actual TypeScript Language Server reports no TypeScript installation, che
 
 Rust commands wait for a ready workspace; large projects may need `--timeout 120` (range 5–300 seconds). Workspace health warnings/errors include the server's reason. Inspect `cargo metadata --locked --format-version 1`, dependencies, build scripts and toolchains; without Cargo.lock, allow an initial metadata run without `--locked`. LSP subprocesses disable rustup's implicit installation, so explicitly install a required toolchain before retrying.
 
+A file query uses its nearest matching manifest; doctor reports this analysis `root`. Standalone or excluded examples can have a separate Cargo workspace. Prepare dependencies there and use `cargo test --manifest-path path/to/Cargo.toml` for that example.
+
 Rust diagnostics enable and wait for Cargo check. Match analysis features to the project test command using project-local `settings.rust-analyzer.cargo.features` and `noDefaultFeatures` as needed; see [official feature configuration](https://rust-analyzer.github.io/book/configuration.html#cargo.features). A zero-test run leaves project acceptance incomplete.
 
 Diagnostics require every selected server to verify the file. Stale versions, concurrent source changes, silence or initialization failures remain unverified. Git enumeration errors, over 200 changed files, oversized files and symlink escapes fail explicitly; inspect the error or check individual supported files with `--file`.

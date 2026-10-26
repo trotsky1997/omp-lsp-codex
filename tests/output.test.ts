@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, test, mock } from "node:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { LspClient } from "../src/client.ts";
@@ -78,6 +78,21 @@ test("output: compact diagnostics retain small related locations", async () => {
   const result = await run(w.args("diagnostics"));
   assert.deepStrictEqual((result.data.checked as { diagnostics: unknown[] }[])[0].diagnostics, [diagnostic]); assert.strictEqual(result.data.detailsOmitted, undefined);
 });
+test("doctor: huge server health errors are bounded with complete details available explicitly", async () => {
+  const w = workspace(), message = "Cargo metadata failed: " + "x".repeat(100000), start = LspClient.start.bind(LspClient);
+  w.configs["rust-analyzer"] = { ...w.configs.fixture, disabled: false }; w.configs.fixture = { ...w.configs.fixture, disabled: true }; w.saveConfig();
+  const inject = mock.method(LspClient, "start", async (...args: Parameters<typeof LspClient.start>) => {
+    const client = await start(...args);
+    await client.request("fixture/notification", { method: "experimental/serverStatus", params: { quiescent: true, health: "error", message } });
+    return client;
+  });
+  try {
+    const result = await run(w.args("doctor"));
+    assert.strictEqual(result.code, 1); assert.strictEqual(result.data.success, false); assert.ok(JSON.stringify(result.data).length < 13500); assert.ok(result.human.length < 6700);
+    assert.strictEqual(object((result.data.servers as unknown[])[0]).errorTruncated, true); assert.ok(result.human.includes("--limit 0"));
+    const full = await run(w.args("doctor", "--limit", "0")); assert.ok(String(object((full.data.servers as unknown[])[0]).error).includes(message));
+  } finally { inject.mock.restore(); }
+});
 test("output: compact diagnostics tolerate malformed optional provider metadata", async () => {
   const w = workspace({ diagnostics: [{ range: { ...range, providerData: "x".repeat(200000) }, message: "type mismatch", source: { invalid: true }, code: [], data: "x".repeat(200000) }] });
   const result = await run(w.args("diagnostics"));
@@ -114,6 +129,53 @@ test("output: RPC failures stay bounded in CLI and inspect with an explicit full
   const symbols = await run(w.args("symbols", "--workspace", "--query", "value"));
   assert.strictEqual(symbols.code, 1); assert.ok(symbols.human.length < 6500); assert.partialDeepStrictEqual((symbols.data.errors as unknown[])[0], { success: false, errorTruncated: true });
 });
+test("code-actions: previews expose disabled reasons without executing commands", async () => {
+  const w = workspace({ responses: { "textDocument/codeAction": [{ title: "Fix unavailable import", disabled: { reason: "dependency is unavailable" }, command: "fixture.must-not-run" }] } });
+  const result = await run(w.args("code-actions"));
+  assert.partialDeepStrictEqual(result.data, { success: true, actions: [{ index: 0, title: "Fix unavailable import", disabledReason: "dependency is unavailable" }] });
+  assert.ok(result.human.includes("disabled: dependency is unavailable"));
+  await assert.rejects(run(w.args("code-actions", "--query", "0", "--apply")), /dependency is unavailable/);
+  assert.strictEqual(w.events().some(event => event.method === "workspace/executeCommand"), false);
+});
+test("code-actions: malformed resolved actions fail before writing", async () => {
+  const w = workspace({ capabilities: { codeActionProvider: { resolveProvider: true } }, responses: { "textDocument/codeAction": [{ title: "Resolve fix" }], "codeAction/resolve": null } });
+  await assert.rejects(run(w.args("code-actions", "--query", "0", "--apply")), /Invalid resolved code action from fixture/);
+  assert.strictEqual(readFileSync(w.file, "utf8"), "value = 1\n");
+  assert.strictEqual(w.events().some(event => event.method === "workspace/executeCommand"), false);
+});
+test("code-actions: huge titles stay bounded while index selection applies the complete edit", async () => {
+  const w = workspace(), title = "x".repeat(5999) + "😀" + "y".repeat(100000);
+  const action = { title, kind: "quickfix", edit: { changes: { [w.uri]: [{ range, newText: "renamed" }] } } };
+  w.setScenario({ responses: { "textDocument/codeAction": [action] } });
+  const result = await run(w.args("code-actions"));
+  assert.partialDeepStrictEqual(result.data, { success: true, total: 1, shown: 1, truncated: true, textTruncated: true });
+  assert.ok(result.human.length < 6500); assert.ok(JSON.stringify(result.data).length < 6800); assert.ok(String(result.data.hint).includes("--limit 0"));
+  const full = await run(w.args("code-actions", "--limit", "0")); assert.strictEqual(object((full.data.actions as unknown[])[0]).title, title);
+  const applied = await run(w.args("code-actions", "--query", "0", "--apply"));
+  assert.partialDeepStrictEqual(applied.data, { applied: true, verification: "pending", textTruncated: true }); assert.ok(applied.human.length < 6500);
+  assert.strictEqual(readFileSync(w.file, "utf8"), "renamed = 1\n");
+});
+test("symbols: huge names and containers have bounded previews with complete full output", async () => {
+  const w = workspace(), name = "name".repeat(50000), containerName = "container".repeat(30000);
+  w.setScenario({ capabilities: { workspaceSymbolProvider: true }, responses: {
+    "textDocument/documentSymbol": [{ name, kind: 12, range, containerName }],
+    "workspace/symbol": [{ name, kind: 12, location: { uri: w.uri, range }, containerName }],
+  } });
+  for (const flags of [[], ["--workspace", "--query", "name"]]) {
+    const result = await run(w.args("symbols", ...flags));
+    assert.partialDeepStrictEqual(result.data, { success: true, shown: 1, truncated: true, textTruncated: true });
+    assert.ok(JSON.stringify(result.data).length < 6800); assert.ok(result.human.length < 6500);
+    const full = await run(w.args("symbols", ...flags, "--limit", "0")), row = object((full.data.symbols as unknown[])[0]);
+    assert.strictEqual(row.name, name); assert.strictEqual(row.container, containerName);
+  }
+});
+for (const response of [42, {}, [null], [{ title: 42 }]]) {
+  test(`code-actions: malformed response ${JSON.stringify(response)} fails with provider context`, async () => {
+    const w = workspace({ responses: { "textDocument/codeAction": response } });
+    await assert.rejects(run(w.args("code-actions")), /Invalid code action response from fixture/);
+    assert.strictEqual(w.events().some(event => event.method === "workspace/executeCommand"), false);
+  });
+}
 test("signature-help: active overload and UTF-16 parameter offsets survive compact output", async () => {
   const w = workspace(), label = "call(😀value: string, count: number): boolean", start = label.indexOf("count");
   const response = { activeSignature: 1, activeParameter: 0, signatures: [

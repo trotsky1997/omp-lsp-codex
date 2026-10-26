@@ -6,7 +6,7 @@ Read this for code actions, file moves, raw requests or custom configuration.
 
 Rename previews include replacement spans and workspace edits. Bounded previews omit the complete edit object when truncated and set `workspaceEditOmitted`; `--limit 0 --json` retrieves all details. `--apply` always processes the complete edit set. Empty symbol renames fail.
 
-`code-actions --file PATH --line N` selects the whole line and includes initial diagnostics. Narrow it with `--symbol` or `--column`. Choose a returned title with `--query TITLE --apply`; resolving/applying an action may execute its server command. Preview indexes retain their original meaning after filtering. Empty results suggest checking diagnostics, selection and server capabilities.
+`code-actions --file PATH --line N` selects the whole line and includes initial diagnostics. Narrow it with `--symbol` or `--column`. Choose a returned title with `--query TITLE --apply`; resolving/applying an action may execute its server command. Preview indexes retain their original meaning after filtering. A `disabledReason` explains unavailable actions. Clipped titles retain their numeric index; select it with `--query INDEX --apply` rather than copying a clipped title. Malformed initial or resolved action responses fail before any edit. Empty results suggest checking diagnostics, selection and server capabilities.
 
 `rename-file --file PATH --new-name PATH` previews a move and import updates. Add `--apply` for an authorized move. Existing destinations are protected. Workspace-edit resource operations are rejected; the dedicated file-move command manages its own move and rollback.
 

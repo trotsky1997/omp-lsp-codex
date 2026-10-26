@@ -215,6 +215,11 @@ test("readiness: malformed Rust status cannot satisfy a workspace wait", async (
   await client.request("fixture/notification", { method: "experimental/serverStatus", params: { quiescent: "true", health: "ok" } });
   await assert.rejects(client.waitWorkspace(50), (error) => error instanceof Error && error.message.includes(String("workspace analysis")));
 });
+test("readiness: Rust timeouts retain server status and Cargo recovery guidance", async () => {
+  const { server } = fixture("normal", "rust-analyzer"), client = await LspClient.start(server, 1000);
+  await client.request("fixture/notification", { method: "experimental/serverStatus", params: { quiescent: false, health: "warning", message: "Cargo metadata cannot resolve dependencies" } });
+  await assert.rejects(client.waitWorkspace(20), error => error instanceof Error && /Cargo metadata cannot resolve dependencies/.test(error.message) && /cargo metadata --locked --format-version 1/.test(error.message));
+});
 for (const [caseIndex, caseValue] of (["running", "finished", "unrelated"]).entries()) {
   const runCase: (value: typeof caseValue) => void | Promise<void> = async (state) => {
   const { server, root } = fixture("normal", "rust-analyzer"), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.rs"));

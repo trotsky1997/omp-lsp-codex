@@ -316,7 +316,9 @@ export class LspClient {
         cleanup();
         const seconds = Math.min(300, Math.max(120, Math.ceil(this.timeoutMs / 1000) * 2));
         const recovery = this.timeoutMs < 300000 ? `retry with --timeout ${seconds}` : "check project dependencies and language-server health";
-        reject(new Error(`Timed out waiting for ${this.server.name} ${label}; ${recovery}`));
+        const context = this.server.name === "rust-analyzer" && label === "workspace analysis"
+          ? `; run cargo metadata --locked --format-version 1 in ${this.server.root} to check dependencies (omit --locked if Cargo.lock is absent)${typeof this.serverStatus?.message === "string" ? `; server status: ${this.serverStatus.message}` : ""}` : "";
+        reject(new Error(`Timed out waiting for ${this.server.name} ${label}; ${recovery}${context}`));
       },
       Math.max(1, timeoutMs),
     );
