@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { appendFileSync, closeSync, fstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { encodeMessageFrame, MessageFramer } from "../../src/omp/message-framing.ts";
 import { object } from "../../src/config.ts";
@@ -13,7 +14,7 @@ const send = async (message: Record<string, unknown>) => {
   if (mode === "fragmented") {
     for (let offset = 0; offset < frame.length; offset += 7) {
       process.stdout.write(frame.subarray(offset, offset + 7));
-      await Bun.sleep(1);
+      await delay(1);
     }
   } else process.stdout.write(frame);
 };
@@ -23,7 +24,7 @@ let callbackId: unknown;
 let callbackMethod: string | undefined;
 let lateId: unknown;
 const framer = new MessageFramer(Buffer.alloc(0));
-for await (const chunk of Bun.stdin.stream()) {
+for await (const chunk of process.stdin) {
   framer.push(chunk);
   for (const text of framer.drain(() => {})) {
     const message = object(JSON.parse(text)), params = object(message.params);
@@ -63,7 +64,7 @@ for await (const chunk of Bun.stdin.stream()) {
         break;
       case "fixture/exit": process.stderr.write("fixture crash detail\n"); process.exit(23);
       case "fixture/close-stdout": {
-        // Bun keeps duplicate pipe handles; all stdout copies must close to produce EOF.
+        // Close every stdout pipe handle so EOF can precede process exit.
         const stdout = fstatSync(1);
         for (const descriptor of readdirSync("/dev/fd")) {
           try {

@@ -6,7 +6,7 @@ Read this for missing servers, dependencies or initialization problems. `status 
 
 When a server is absent, inspect the project's instructions/manifests, `command -v EXECUTABLE`, and the package manager's install prefix. Follow the platform-specific install command and official documentation emitted by setup. Register and verify one task-relevant query after installation. For npm, use `--fetch-timeout=15000 --fetch-retries=0`; if the registry is unavailable, inspect `npm cache ls PACKAGE` and use a compatible cached version with `--offline`.
 
-The CLI runs directly from TypeScript with Bun. If Bun is missing, follow its official installation instructions for the platform. If the global CLI is absent from PATH, `bun pm bin --global` identifies the directory. A bundled fallback is `bun --cwd PLUGIN_ROOT PLUGIN_ROOT/src/cli.ts --cwd PROJECT COMMAND`.
+The CLI runs compiled JavaScript on Node.js 22.20+ and has no runtime npm dependencies. Use `npm install --global git+https://github.com/trotsky1997/omp-lsp-codex.git` to register it. `npm prefix --global` identifies the prefix; add `bin` on macOS/Linux, the prefix itself on Windows, to PATH. Run from the project directory; the bundled fallback is `node PLUGIN_ROOT/dist/cli.js COMMAND`.
 
 ## Python
 

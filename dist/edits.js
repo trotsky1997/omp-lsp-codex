@@ -1,0 +1,154 @@
+import { chmodSync, closeSync, copyFileSync, constants, existsSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { fileUri, insideWorkspace, MAX_FILE_BYTES, uriFile } from "./config.js";
+import { applyTextEditsToString } from "./omp/text-edits.js";
+export function atomicWrite(path, bytes) {
+    mkdirSync(dirname(path), { recursive: true });
+    const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+    const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
+    try {
+        const fd = openSync(temp, "wx", mode);
+        try {
+            fchmodSync(fd, mode);
+            writeFileSync(fd, bytes);
+            fsyncSync(fd);
+        }
+        finally {
+            closeSync(fd);
+        }
+        renameSync(temp, path);
+    }
+    finally {
+        if (existsSync(temp))
+            unlinkSync(temp);
+    }
+}
+export function textChanges(edit) {
+    const changes = new Map();
+    for (const [uri, items] of Object.entries(edit.changes ?? {}))
+        changes.set(uri, [...items]);
+    for (const change of edit.documentChanges ?? []) {
+        if (!("textDocument" in change))
+            throw new Error("Resource operations are not supported by this CLI");
+        const uri = change.textDocument.uri;
+        changes.set(uri, [...(changes.get(uri) ?? []), ...change.edits]);
+    }
+    return changes;
+}
+export function editSummary(edit, limit = Infinity) {
+    const changes = textChanges(edit);
+    const lines = [
+        `${changes.size} file(s), ${[...changes.values()].reduce((n, items) => n + items.length, 0)} edit(s)`,
+    ];
+    for (const [uri, edits] of changes)
+        for (const edit of edits) {
+            if (lines.length > limit)
+                return lines;
+            const { start, end } = edit.range;
+            lines.push(`${uriFile(uri) ?? uri}:${start.line + 1}:${start.character + 1}-${end.line + 1}:${end.character + 1} → ${JSON.stringify(edit.newText)}`);
+        }
+    return lines;
+}
+function validatePosition(lines, pos) {
+    if (!pos ||
+        !Number.isInteger(pos.line) ||
+        !Number.isInteger(pos.character) ||
+        pos.line < 0 ||
+        pos.line >= lines.length ||
+        pos.character < 0 ||
+        pos.character > lines[pos.line].length)
+        throw new Error("Invalid LSP edit range");
+    const unit = lines[pos.line].charCodeAt(pos.character);
+    if (unit >= 0xdc00 && unit <= 0xdfff)
+        throw new Error("LSP edit splits a UTF-16 surrogate pair");
+}
+export async function applyWorkspaceEdit(edit, root, documents) {
+    for (const change of edit.documentChanges ?? []) {
+        if (!("textDocument" in change))
+            continue;
+        const { uri, version } = change.textDocument;
+        if (version !== undefined && version !== null &&
+            (!Number.isInteger(version) || documents?.get(uri)?.version !== version))
+            throw new Error(`LSP edit version does not match the analyzed document: ${uri}`);
+    }
+    const planned = [];
+    for (const [uri, edits] of textChanges(edit)) {
+        const target = uriFile(uri);
+        if (!target)
+            throw new Error(`Unsupported edit URI: ${uri}`);
+        const path = realpathSync(target), info = statSync(path);
+        if (!insideWorkspace(realpathSync(root), path))
+            throw new Error(`Edit is outside the workspace: ${path}`);
+        if (!info.isFile() || info.size > MAX_FILE_BYTES)
+            throw new Error(`Unsupported edit target: ${path}`);
+        const original = readFileSync(path), text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(original);
+        const document = documents?.get(fileUri(path));
+        if (document && document.text !== text)
+            throw new Error(`File changed since LSP analysis: ${path}`);
+        const lines = text.split("\n");
+        for (const item of edits) {
+            validatePosition(lines, item.range?.start);
+            validatePosition(lines, item.range?.end);
+            const { start, end } = item.range;
+            if (start.line > end.line ||
+                (start.line === end.line && start.character > end.character) ||
+                typeof item.newText !== "string")
+                throw new Error("Invalid LSP text edit");
+        }
+        const updated = Buffer.from(applyTextEditsToString(text, edits));
+        if (!original.equals(updated))
+            planned.push({ path, original, updated });
+    }
+    const written = [];
+    try {
+        for (const item of planned) {
+            if (!readFileSync(item.path).equals(item.original))
+                throw new Error(`File changed before applying edits: ${item.path}`);
+            atomicWrite(item.path, item.updated);
+            written.push(item);
+        }
+    }
+    catch (error) {
+        const failures = [];
+        for (const item of written.reverse()) {
+            try {
+                if (!readFileSync(item.path).equals(item.updated))
+                    throw new Error(`File changed before rollback: ${item.path}`);
+                atomicWrite(item.path, item.original);
+            }
+            catch {
+                failures.push(item.path);
+            }
+        }
+        if (failures.length)
+            throw new Error(`${error}; rollback failed for ${failures.join(", ")}`);
+        throw error;
+    }
+    return new Map(planned.map(({ path, updated }) => [fileUri(path), updated.toString("utf8")]));
+}
+export function moveNoReplace(source, destination) {
+    let created = false;
+    try {
+        copyFileSync(source, destination, constants.COPYFILE_EXCL);
+        created = true;
+        chmodSync(destination, statSync(source).mode & 0o777);
+        unlinkSync(source);
+    }
+    catch (error) {
+        if (created && existsSync(source))
+            unlinkSync(destination);
+        throw error;
+    }
+}
+export function remapEdit(edit, oldUri, newUri) {
+    const result = structuredClone(edit);
+    if (result.changes?.[oldUri]) {
+        result.changes[newUri] = [...result.changes[oldUri], ...(result.changes[newUri] ?? [])];
+        delete result.changes[oldUri];
+    }
+    for (const change of result.documentChanges ?? [])
+        if ("textDocument" in change && change.textDocument.uri === oldUri)
+            change.textDocument.uri = newUri;
+    return result;
+}

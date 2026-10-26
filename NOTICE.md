@@ -14,3 +14,7 @@ The following TypeScript code is extracted from `packages/coding-agent/src/`:
 `src/defaults.json` derives from `lsp/defaults.json`, with install guidance added. The OMP-specific `typescript-native` and `swiftlint` entries are omitted.
 
 OMP's UI, agent runtime, logger, native helpers, shared mux and tool schema are outside this package. The upstream MIT license is included at `LICENSES/oh-my-pi-MIT.txt`.
+
+# Windows command shims
+
+`src/windows-command.ts` adapts argument escaping from [moxystudio/node-cross-spawn](https://github.com/moxystudio/node-cross-spawn/tree/77cd97f3ca7b62c904a63a698fc4a79bf41977d0), `lib/util/escape.js` and `lib/parse.js`. Its MIT license is included at `LICENSES/cross-spawn-MIT.txt`. The helper preserves Windows npm command shim arguments without a runtime npm dependency.

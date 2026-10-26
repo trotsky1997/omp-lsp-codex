@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
@@ -6,9 +6,9 @@ import { run, type Options } from "./commands.ts";
 import { hook } from "./hooks.ts";
 import { LspClient } from "./client.ts";
 import { expandHome } from "./config.ts";
-import { version } from "../package.json";
+import { version } from "./version.ts";
 
-const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Bun ${Bun.version})
+const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Node ${process.versions.node})
 
 Commands:
   setup LANGUAGE... [--project]  Register servers; project scope uses the current directory

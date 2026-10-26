@@ -1,4 +1,7 @@
 import { basename } from "node:path";
+import childProcess, { type ChildProcessWithoutNullStreams } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
+import { windowsCommand } from "./windows-command.ts";
 import { CLIENT_CAPABILITIES } from "./omp/capabilities.ts";
 import { encodeMessageFrame, MessageFramer } from "./omp/message-framing.ts";
 import type {
@@ -11,7 +14,7 @@ import type {
 } from "./omp/types.ts";
 import { fileUri, gitRoot, languageId, object, readText, resolveFile, uriFile, type ObjectValue, type Server } from "./config.ts";
 import { applyWorkspaceEdit, type DocumentState } from "./edits.ts";
-import { version } from "../package.json";
+import { version } from "./version.ts";
 
 interface Pending {
   resolve: (value: unknown) => void;
@@ -38,7 +41,8 @@ function validDiagnostics(value: unknown): value is Diagnostic[] {
 // Extracted from OMP's async stdio client; the standalone CLI owns one process per invocation.
 export class LspClient {
   static readonly active = new Set<LspClient>();
-  readonly proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  readonly proc: ChildProcessWithoutNullStreams;
+  readonly exited: Promise<void>;
   readonly diagnostics = new Map<string, Diagnostic[]>();
   readonly documents = new Map<string, DocumentState>();
   readonly progress = new Set<string>();
@@ -64,23 +68,26 @@ export class LspClient {
       server.resolvedCommand,
       ...(server.args ?? []).map((arg) => (arg === "$PID" ? String(process.pid) : arg)),
     ];
-    this.proc = Bun.spawn(command, {
+    const invocation = process.platform === "win32" && /\.(cmd|bat)$/i.test(command[0])
+      ? windowsCommand(command[0], command.slice(1))
+      : { command: command[0], args: command.slice(1), windowsVerbatimArguments: false };
+    this.proc = childProcess.spawn(invocation.command, invocation.args, {
       cwd: server.root,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: "pipe",
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       env: { ...process.env, RUSTUP_AUTO_INSTALL: "0" },
     });
     LspClient.active.add(this);
     void this.#readMessages();
     void this.#readStderr();
-    void this.proc.exited.then((code) =>
-      this.#fail(
-        new Error(
-          `${server.name} exited (${code})${this.#stderr.trim() ? `: ${this.#stderr.trim()}` : ""}`,
-        ),
-      ),
-    );
+    this.proc.stdin.on("error", error => this.#fail(error));
+    this.exited = new Promise(resolve => {
+      this.proc.once("error", error => this.#fail(error));
+      this.proc.once("close", (code, signal) => {
+        this.#fail(new Error(`${server.name} exited (${signal ?? code})${this.#stderr.trim() ? `: ${this.#stderr.trim()}` : ""}`));
+        resolve();
+      });
+    });
   }
 
   static async start(server: Server, timeoutMs: number, allowApply = false): Promise<LspClient> {
@@ -122,8 +129,7 @@ export class LspClient {
   async #send(message: Message): Promise<void> {
     const write = this.#writeQueue.then(async () => {
       if (this.#failure) throw this.#failure;
-      this.proc.stdin.write(encodeMessageFrame(message));
-      await this.proc.stdin.flush();
+      await new Promise<void>((resolve, reject) => this.proc.stdin.write(encodeMessageFrame(message), error => error ? reject(error) : resolve()));
     });
     this.#writeQueue = write.catch(() => {});
     return write;
@@ -189,7 +195,7 @@ export class LspClient {
         }
       }
       if (!this.#closed) {
-        await Promise.race([this.proc.exited, Bun.sleep(100)]);
+        await Promise.race([this.exited, sleep(100, undefined, { ref: false })]);
         this.#fail(
           new Error(
             `${this.server.name} closed its LSP stream${this.#stderr ? `: ${this.#stderr}` : ""}`,
@@ -378,10 +384,10 @@ export class LspClient {
     const relevant = (token: string) => /^(rustAnalyzer|rust-analyzer)\//.test(token);
     while (Date.now() < deadline) {
       if ([...this.progressSeen].some(relevant) && ![...this.progress].some(relevant)) {
-        await Bun.sleep(100);
+        await sleep(100);
         if (![...this.progress].some(relevant)) return true;
       }
-      await Bun.sleep(50);
+      await sleep(50);
     }
     return false;
   }
@@ -436,15 +442,15 @@ export class LspClient {
           /* Kill below if shutdown fails. */
         }
       }
-      if (this.proc.exitCode === null) {
-        await Promise.race([this.proc.exited, Bun.sleep(200)]);
-        if (this.proc.exitCode === null) {
+      if (this.proc.exitCode === null && this.proc.signalCode === null) {
+        await Promise.race([this.exited, sleep(200, undefined, { ref: false })]);
+        if (this.proc.exitCode === null && this.proc.signalCode === null) {
           this.proc.kill();
-          await Promise.race([this.proc.exited, Bun.sleep(200)]);
-          if (this.proc.exitCode === null) this.proc.kill("SIGKILL");
+          await Promise.race([this.exited, sleep(200, undefined, { ref: false })]);
+          if (this.proc.exitCode === null && this.proc.signalCode === null) this.proc.kill("SIGKILL");
         }
-        await this.proc.exited;
       }
+      await this.exited;
     } finally {
       this.#fail(new Error("LSP client closed"));
       LspClient.active.delete(this);

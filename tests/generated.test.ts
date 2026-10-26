@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { encodeMessageFrame, MessageFramer } from "../src/omp/message-framing.ts";
 import { applyTextEditsToString } from "../src/omp/text-edits.ts";
 import type { TextEdit } from "../src/omp/types.ts";
@@ -15,7 +16,8 @@ function position(source: string, offset: number) {
   return { line: prefix.length - 1, character: prefix.at(-1)!.length };
 }
 
-test.each([42, 20261026, 0x5eed])("generated edits: shuffled Unicode/CRLF batches match the string oracle, seed=%s", seed => {
+for (const [caseIndex, caseValue] of ([42, 20261026, 0x5eed]).entries()) {
+  const runCase: (value: typeof caseValue) => void | Promise<void> = seed => {
   const next = random(seed);
   for (let trial = 0; trial < 150; trial++) {
     let source = "", expected = "";
@@ -33,11 +35,14 @@ test.each([42, 20261026, 0x5eed])("generated edits: shuffled Unicode/CRLF batche
     }
     const edits: TextEdit[] = changes.map(change => ({ range: { start: position(source, change.start), end: position(source, change.end) }, newText: change.value }));
     expected += changes.filter(change => change.start === change.end).map(change => change.value).join("");
-    expect(applyTextEditsToString(source, edits)).toBe(expected);
+    assert.strictEqual(applyTextEditsToString(source, edits), expected);
   }
-});
+};
+  test("generated edits: shuffled Unicode/CRLF batches match the string oracle, seed=%s".replaceAll(/%s|%j|%#/g, token => token === "%#" ? String(caseIndex) : token === "%j" ? JSON.stringify(caseValue) ?? String(caseValue) : String(caseValue)), () => runCase(caseValue));
+};
 
-test.each([42, 20261026, 0x5eed])("generated framing: randomly fragmented multi-message streams preserve JSON, seed=%s", seed => {
+for (const [caseIndex, caseValue] of ([42, 20261026, 0x5eed]).entries()) {
+  const runCase: (value: typeof caseValue) => void | Promise<void> = seed => {
   const next = random(seed), messages = Array.from({ length: 256 }, (_, id) => ({ jsonrpc: "2.0", id, result: { text: text(next, next(24)), values: [id, null, true] } }));
   const bytes = Buffer.concat(messages.map(encodeMessageFrame)), framer = new MessageFramer(Buffer.alloc(0)), received: unknown[] = [];
   for (let offset = 0; offset < bytes.length;) {
@@ -45,5 +50,7 @@ test.each([42, 20261026, 0x5eed])("generated framing: randomly fragmented multi-
     framer.push(bytes.subarray(offset, end)); offset = end;
     received.push(...[...framer.drain(header => { throw new Error(`Unexpected header: ${header}`); })].map(value => JSON.parse(value)));
   }
-  expect(received).toEqual(messages);
-});
+  assert.deepStrictEqual(received, messages);
+};
+  test("generated framing: randomly fragmented multi-message streams preserve JSON, seed=%s".replaceAll(/%s|%j|%#/g, token => token === "%#" ? String(caseIndex) : token === "%j" ? JSON.stringify(caseValue) ?? String(caseValue) : String(caseValue)), () => runCase(caseValue));
+};

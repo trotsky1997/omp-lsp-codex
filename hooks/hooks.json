@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun --cwd \"${CLAUDE_PLUGIN_ROOT}\" \"${CLAUDE_PLUGIN_ROOT}/src/cli.ts\" hook session-start",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/cli.js\" hook session-start",
             "timeout": 10,
             "statusMessage": "Checking language server availability"
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun --cwd \"${CLAUDE_PLUGIN_ROOT}\" \"${CLAUDE_PLUGIN_ROOT}/src/cli.ts\" hook stop",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/cli.js\" hook stop",
             "timeout": 120,
             "statusMessage": "Checking changed files with LSP"
           }

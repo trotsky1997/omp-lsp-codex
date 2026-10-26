@@ -1,12 +1,13 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import assert from "node:assert/strict";
+import { after, afterEach, before, test } from "node:test";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ancestors, availableServers, configPaths, executable, fileServers, gitRoot, languageId, loadConfig, matchesFile, MAX_FILE_BYTES, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, workspaceSource } from "../src/config.ts";
 import { cleanWorkspaces, isolateGlobalConfig, setGlobalServers, workspace } from "./fixtures/workspace.ts";
 
 let restoreConfig: () => void;
-beforeAll(() => { restoreConfig = isolateGlobalConfig(); });
-afterAll(() => restoreConfig());
+before(() => { restoreConfig = isolateGlobalConfig(); });
+after(() => restoreConfig());
 afterEach(cleanWorkspaces);
 
 test("config: project overrides inherit builtins, preserve user overrides, and never mutate defaults", () => {
@@ -15,68 +16,71 @@ test("config: project overrides inherit builtins, preserve user overrides, and n
   const inheritedArgs = loadConfig(w.root)["typescript-language-server"].args;
   writeFileSync(w.configPath, JSON.stringify({ servers: { "typescript-language-server": { initOptions: { tsserver: { useSyntaxServer: "auto", fallbackPath: "custom" } } } } }));
   const first = loadConfig(w.root), second = loadConfig(w.root, true);
-  expect(first["typescript-language-server"].args).toEqual(inheritedArgs);
-  expect(first["typescript-language-server"].args).toEqual(["--stdio", "--global-fixture"]);
-  expect(first["typescript-language-server"].initOptions?.tsserver).toEqual({ useSyntaxServer: "auto", fallbackPath: "custom" });
-  expect(second["typescript-language-server"].initOptions?.tsserver).toEqual({ useSyntaxServer: "never" });
+  assert.deepStrictEqual(first["typescript-language-server"].args, inheritedArgs);
+  assert.deepStrictEqual(first["typescript-language-server"].args, ["--stdio", "--global-fixture"]);
+  assert.deepStrictEqual(first["typescript-language-server"].initOptions?.tsserver, { useSyntaxServer: "auto", fallbackPath: "custom" });
+  assert.deepStrictEqual(second["typescript-language-server"].initOptions?.tsserver, { useSyntaxServer: "never" });
   first["typescript-language-server"].args!.push("mutated");
-  expect(loadConfig(w.root, true)["typescript-language-server"].args).toEqual(["--stdio", "--global-fixture"]);
-  expect(loadConfig(w.root)["typescript-language-server"].args).toEqual(["--stdio", "--global-fixture"]);
+  assert.deepStrictEqual(loadConfig(w.root, true)["typescript-language-server"].args, ["--stdio", "--global-fixture"]);
+  assert.deepStrictEqual(loadConfig(w.root)["typescript-language-server"].args, ["--stdio", "--global-fixture"]);
 });
 test("config: hook scope preserves user overrides without reading malformed project configuration", () => {
   const w = workspace();
   setGlobalServers({ "typescript-language-server": { command: process.execPath, args: ["--global-server"], settings: { selected: "user" } } });
   writeFileSync(w.configPath, "{ malformed project configuration");
-  expect(configPaths(w.root, true)).toHaveLength(1); expect(configPaths(w.root, true)).not.toContain(w.configPath);
-  expect(loadConfig(w.root, true)["typescript-language-server"]).toMatchObject({ command: process.execPath, args: ["--global-server"], settings: { selected: "user" } });
-  expect(() => loadConfig(w.root)).toThrow(w.configPath);
+  assert.strictEqual((configPaths(w.root, true)).length, 1); assert.ok(!(configPaths(w.root, true)).includes(w.configPath));
+  assert.partialDeepStrictEqual(loadConfig(w.root, true)["typescript-language-server"], { command: process.execPath, args: ["--global-server"], settings: { selected: "user" } });
+  assert.throws(() => loadConfig(w.root), (error) => error instanceof Error && error.message.includes(String(w.configPath)));
 });
-test.each([
+for (const [caseIndex, caseValue] of ([
   { command: "" }, { command: 5 }, { args: "--stdio" }, { args: [1] }, { fileTypes: null }, { rootMarkers: [false] },
   { settings: [] }, { initOptions: null }, { disabled: "false" }, { isLinter: "true" }, { languageId: 1 },
   { warmupTimeoutMs: -1 }, { warmupTimeoutMs: "500" }, { warmupTimeoutMs: 2147483648 },
   { setup: { install: { default: 1 } } }, { setup: { docs: [] } },
-])("config: invalid field %# is rejected before execution", (override) => {
+]).entries()) {
+  const runCase: (value: typeof caseValue) => void | Promise<void> = (override) => {
   const w = workspace(); writeFileSync(w.configPath, JSON.stringify({ servers: { fixture: { ...w.configs.fixture, ...override } } }));
-  expect(() => { loadConfig(w.root); }).toThrow("fixture");
-});
+  assert.throws(() => { loadConfig(w.root); }, (error) => error instanceof Error && error.message.includes(String("fixture")));
+};
+  test("config: invalid field %# is rejected before execution".replaceAll(/%s|%j|%#/g, token => token === "%#" ? String(caseIndex) : token === "%j" ? JSON.stringify(caseValue) ?? String(caseValue) : String(caseValue)), () => runCase(caseValue));
+};
 test("config: invalid TypeScript init options and Python settings have clear errors", () => {
   const w = workspace(); writeFileSync(w.configPath, JSON.stringify({ servers: { "typescript-language-server": { initOptions: { tsserver: [] } } } }));
-  expect(() => loadConfig(w.root)).toThrow("tsserver");
-  expect(() => availableServers({ pyright: { ...w.configs.fixture, settings: { python: [] } } }, w.root)).toThrow("settings.python");
+  assert.throws(() => loadConfig(w.root), (error) => error instanceof Error && error.message.includes(String("tsserver")));
+  assert.throws(() => availableServers({ pyright: { ...w.configs.fixture, settings: { python: [] } } }, w.root), (error) => error instanceof Error && error.message.includes(String("settings.python")));
 });
 test("discovery: nearest roots, glob markers and disabled/missing servers", () => {
   const w = workspace(), sub = join(w.root, "nested/src"); mkdirSync(sub, { recursive: true });
   writeFileSync(join(w.root, "nested/inner.project"), "");
-  expect(gitRoot(sub)).toBe(w.root); expect(ancestors(sub)[0]).toBe(sub);
-  expect(serverRoot(sub, ["*.project"])).toBe(join(w.root, "nested"));
-  expect(serverRoot(sub, ["missing.marker"])).toBeUndefined();
-  expect(availableServers({ disabled: { ...w.configs.fixture, disabled: true }, missing: { ...w.configs.fixture, command: "codex-lsp-no-such-bin" }, fixture: w.configs.fixture }, sub).map((s) => s.name)).toEqual(["fixture"]);
+  assert.strictEqual(gitRoot(sub), w.root); assert.strictEqual(ancestors(sub)[0], sub);
+  assert.strictEqual(serverRoot(sub, ["*.project"]), join(w.root, "nested"));
+  assert.strictEqual(serverRoot(sub, ["missing.marker"]), undefined);
+  assert.deepStrictEqual(availableServers({ disabled: { ...w.configs.fixture, disabled: true }, missing: { ...w.configs.fixture, command: "codex-lsp-no-such-bin" }, fixture: w.configs.fixture }, sub).map((s) => s.name), ["fixture"]);
 });
 test("discovery: local executables win, explicit relative paths resolve, and non-executable files are ignored", () => {
   const w = workspace(), bin = join(w.root, "node_modules/.bin"); mkdirSync(bin, { recursive: true });
   const name = process.platform === "win32" ? "fixture.exe" : "fixture", path = join(bin, name);
   writeFileSync(path, "binary"); chmodSync(path, 0o755);
-  expect(resolveCommand("fixture", w.root)).toBe(path);
-  expect(resolveCommand(`./node_modules/.bin/${name}`, w.root)).toBe(path);
-  expect(executable(bin)).toBe(false);
-  if (process.platform !== "win32") { chmodSync(path, 0o600); expect(executable(path)).toBe(false); }
+  assert.strictEqual(resolveCommand("fixture", w.root), path);
+  assert.strictEqual(resolveCommand(`./node_modules/.bin/${name}`, w.root), path);
+  assert.strictEqual(executable(bin), false);
+  if (process.platform !== "win32") { chmodSync(path, 0o600); assert.strictEqual(executable(path), false); }
 });
 test("discovery: basenames, case-insensitive extensions, server ordering and language aliases", () => {
   const w = workspace(), config = { ...w.configs.fixture, fileTypes: [".TS", "Dockerfile"] };
-  expect(matchesFile(config, "a.ts")).toBe(true); expect(matchesFile(config, "Dockerfile")).toBe(true); expect(matchesFile(config, "a.py")).toBe(false);
+  assert.strictEqual(matchesFile(config, "a.ts"), true); assert.strictEqual(matchesFile(config, "Dockerfile"), true); assert.strictEqual(matchesFile(config, "a.py"), false);
   const base = { ...config, root: w.root, resolvedCommand: process.execPath };
-  expect(fileServers([{ ...base, name: "lint", isLinter: true }, { ...base, name: "semantic" }], "a.ts").map((s) => s.name)).toEqual(["semantic", "lint"]);
+  assert.deepStrictEqual(fileServers([{ ...base, name: "lint", isLinter: true }, { ...base, name: "semantic" }], "a.ts").map((s) => s.name), ["semantic", "lint"]);
   const configs = loadConfig(w.root, true);
-  for (const [language, server] of [["Rust", "rust-analyzer"], ["python", "pyright"], ["typescript", "typescript-language-server"], ["c++", "clangd"], ["docker", "dockerls"], [".rs", "rust-analyzer"]]) expect(serverForLanguage(language, configs)).toBe(server);
-  expect(languageId(config, "Dockerfile")).toBe("dockerfile"); expect(languageId(config, "a.tsx")).toBe("typescriptreact"); expect(languageId(config, "unknown")).toBe("plaintext"); expect(languageId({ ...config, languageId: "custom" }, "a.ts")).toBe("custom");
+  for (const [language, server] of [["Rust", "rust-analyzer"], ["python", "pyright"], ["typescript", "typescript-language-server"], ["c++", "clangd"], ["docker", "dockerls"], [".rs", "rust-analyzer"]]) assert.strictEqual(serverForLanguage(language, configs), server);
+  assert.strictEqual(languageId(config, "Dockerfile"), "dockerfile"); assert.strictEqual(languageId(config, "a.tsx"), "typescriptreact"); assert.strictEqual(languageId(config, "unknown"), "plaintext"); assert.strictEqual(languageId({ ...config, languageId: "custom" }, "a.ts"), "custom");
 });
 test("files: resolve symlinks, reject directories/oversized/binary files and preserve BOM", () => {
   const w = workspace(), link = join(w.root, "link.fixture"); symlinkSync(w.file, link);
-  expect(resolveFile(link, w.root)).toBe(w.file); expect(() => resolveFile(w.root, w.root)).toThrow("regular file");
-  writeFileSync(w.file, "\uFEFFvalue\r\n"); expect(readText(w.file)).toBe("\uFEFFvalue\r\n");
-  writeFileSync(w.file, Buffer.from([0xff])); expect(() => readText(w.file)).toThrow();
-  truncateSync(w.file, MAX_FILE_BYTES + 1); expect(() => resolveFile(w.file, w.root)).toThrow("16 MiB");
+  assert.strictEqual(resolveFile(link, w.root), w.file); assert.throws(() => resolveFile(w.root, w.root), (error) => error instanceof Error && error.message.includes(String("regular file")));
+  writeFileSync(w.file, "\uFEFFvalue\r\n"); assert.strictEqual(readText(w.file), "\uFEFFvalue\r\n");
+  writeFileSync(w.file, Buffer.from([0xff])); assert.throws(() => readText(w.file));
+  truncateSync(w.file, MAX_FILE_BYTES + 1); assert.throws(() => resolveFile(w.file, w.root), (error) => error instanceof Error && error.message.includes(String("16 MiB")));
 });
 test("workspace source: skip dependencies, symlink directories and oversized files", () => {
   const w = workspace();
@@ -84,6 +88,6 @@ test("workspace source: skip dependencies, symlink directories and oversized fil
   const big = join(w.root, "a.fixture"); writeFileSync(big, ""); truncateSync(big, MAX_FILE_BYTES + 1);
   const other = workspace(); symlinkSync(other.root, join(w.root, "b-link"));
   const server = { ...w.configs.fixture, name: "fixture", root: w.root, resolvedCommand: process.execPath };
-  expect(workspaceSource(server)).toBe(w.file);
-  expect(readFileSync(w.file, "utf8")).toBe("value = 1\n");
+  assert.strictEqual(workspaceSource(server), w.file);
+  assert.strictEqual(readFileSync(w.file, "utf8"), "value = 1\n");
 });

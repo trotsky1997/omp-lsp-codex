@@ -8,9 +8,9 @@ import {
   statSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import defaults from "./defaults.json";
+import defaults from "./defaults.json" with { type: "json" };
 
 export type ObjectValue = Record<string, unknown>;
 export function object(value: unknown): ObjectValue {
@@ -193,7 +193,7 @@ export function serverRoot(cwd: string, markers: string[] = []): string | undefi
     if (markers.some((marker) => {
       try {
         return /[*?\[]/.test(marker)
-          ? readdirSync(root).some((name) => new Bun.Glob(marker).match(name))
+          ? readdirSync(root).some((name) => matchesGlob(name, marker))
           : existsSync(join(root, marker));
       } catch {
         return false;
@@ -220,7 +220,7 @@ export function resolveCommand(
   const value = expandHome(command);
   const names =
     process.platform === "win32" && !extname(value)
-      ? [value, `${value}.exe`, `${value}.cmd`, `${value}.bat`]
+      ? [value, ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map(extension => value + extension)]
       : [value];
   if (isAbsolute(value) || /[\\/]/.test(value)) {
     return names.map((name) => resolve(root, name)).find(executable);
@@ -237,8 +237,9 @@ export function resolveCommand(
       const local = names.map((name) => join(root, directory, name)).find(executable);
       if (local) return local;
     }
-  const found = Bun.which(command) ?? undefined;
-  if (globalOnly && found && inside(realpathSync(root), realpathSync(found))) return undefined;
+  const found = (process.env.PATH ?? "").split(delimiter).flatMap(directory =>
+    directory ? names.map(name => resolve(directory, name)) : []
+  ).find(path => executable(path) && (!globalOnly || !inside(realpathSync(root), realpathSync(path))));
   return found;
 }
 export function availableServers(

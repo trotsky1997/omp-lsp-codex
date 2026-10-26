@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdtempSync,
@@ -10,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MessageFramer, encodeMessageFrame } from "../src/omp/message-framing.ts";
 import { fileUri, object } from "../src/config.ts";
 import { LspClient } from "../src/client.ts";
@@ -27,7 +29,7 @@ async function fixtureServer(): Promise<void> {
     initializedId: number | string = 0,
     uri = "",
     ready = false;
-  for await (const chunk of Bun.stdin.stream()) {
+  for await (const chunk of process.stdin) {
     framer.push(chunk);
     for (const text of framer.drain(() => {})) {
       const message = object(JSON.parse(text)),
@@ -157,7 +159,7 @@ async function checks(): Promise<void> {
     root = join(temp, "project with spaces");
   mkdirSync(root);
   const path = join(root, "source.py"),
-    cli = join(dirname(import.meta.dir), "src/cli.ts");
+    cli = join(dirname(dirname(fileURLToPath(import.meta.url))), "src/cli.js");
   const edit: TextEdit = {
     range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
     newText: "renamed",
@@ -168,7 +170,7 @@ async function checks(): Promise<void> {
     mkdirSync(join(root, ".codex"));
     const server = {
       command: process.execPath,
-      args: [import.meta.path, "--server"],
+      args: [fileURLToPath(import.meta.url), "--server"],
       fileTypes: [".py"],
       rootMarkers: ["pyproject.toml"],
       settings: { python: { analysis: { typeCheckingMode: "strict" } } },
@@ -224,21 +226,16 @@ async function checks(): Promise<void> {
       args: string[],
       input?: unknown,
     ): Promise<{ exit: number; data: Record<string, unknown> }> {
-      const proc = Bun.spawn([process.execPath, cli, ...args], {
+      const proc = spawnSync(process.execPath, [cli, ...args], {
         cwd: root,
-        stdin: input ? new TextEncoder().encode(JSON.stringify(input)) : "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
+        input: input ? JSON.stringify(input) : undefined,
+        encoding: "utf8",
         timeout: 10000,
         env: { ...process.env, CLAUDE_PLUGIN_ROOT: "" },
       });
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      const exit = await proc.exited;
-      assert.equal(stderr, "");
-      return { exit, data: object(JSON.parse(stdout)) };
+      assert.equal(proc.error, undefined, proc.error?.message);
+      assert.equal(proc.stderr, "");
+      return { exit: proc.status ?? -1, data: object(JSON.parse(proc.stdout)) };
     }
     const refs = await invoke(["references", "--file", path, "--symbol", "hello", "--json"]);
     assert.equal(refs.exit, 0);

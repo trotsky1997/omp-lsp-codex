@@ -21,7 +21,7 @@ codex-lsp inspect --file PATH --line N --symbol NAME
 
 Prefer the compact human output for reading. Start with default limits; request complete output when omitted details are needed. Locations share a `Root:` and group repeated file paths; external files retain absolute paths. JSON retains canonical absolute locations for automation. The `server` field identifies the configured entry; `status --file PATH` shows its executable, which may be `tsgo` under the `typescript-language-server` entry.
 
-`signature-help` shows the active overload and parameter without bulk documentation. Put the cursor inside a call's arguments. It defaults to one signature, prioritizing the active overload; JSON indices are zero-based. Use `--limit 0 --json` for complete signatures, parameters and documentation. Server-side type abbreviations can remain in a complete response. Raw `request` responses remain complete and can be much larger.
+`signature-help` shows the active overload and parameter without bulk documentation. Put the cursor just after the call's opening `(` or a separating comma; some servers return no help inside string literals. If still empty, use hover on the callable. It defaults to one signature, prioritizing the active overload; JSON indices are zero-based. Use `--limit 0 --json` for complete signatures, parameters and documentation. Server-side type abbreviations can remain in a complete response. Raw `request` responses remain complete and can be much larger.
 
 Default display limits: 50 results/hover lines, 10 per `inspect` section. Hover and signature text also have character budgets. Check `truncated`, `textTruncated`, `documentationOmitted` and hints; a short hover can omit a return type. Increase the line/result limit when useful, or save complete output with `--limit 0 --json > /tmp/lsp-result.json` and read only the needed part. Limits affect display; applied edits use the complete validated edit set.
 
@@ -29,7 +29,7 @@ Default display limits: 50 results/hover lines, 10 per `inspect` section. Hover 
 
 Pass command arguments separately; quote shell paths. Positions are one-based UTF-16 columns. `--symbol NAME#2` selects a repeated token. Missing-file errors suggest `rg --files`; wrong-line errors suggest nearby matching lines.
 
-File queries select configuration from the target file. For commands without `--file`, pass `--cwd PROJECT`, especially `codex-lsp --cwd PROJECT diagnostics --changed`. Run from a neutral directory or the installed plugin directory. If Bun stalls before any CLI output on macOS, use `bun --cwd PLUGIN_ROOT PLUGIN_ROOT/src/cli.ts --cwd PROJECT COMMAND`; increasing the LSP timeout leaves that startup problem unresolved.
+Run from the project directory; relative paths and `diagnostics --changed` use that context. File queries select configuration from the target file. Use `--cwd PROJECT` when selecting a different project. The CLI and hooks run on Node.js and preserve the caller's working directory.
 
 Use `--json` when checking structured outcomes: `success`, navigation `found`, diagnostics `verified` and `hasErrors`. Verified project errors cause exit 1 while navigation remains available. Unverified diagnostics require investigation; see [setup and readiness](references/setup.md). `inspect` identifies failing sections in `failedSections`. Unsupported capabilities stay explicit.
 
@@ -43,4 +43,4 @@ When discovery is needed, use `status --file PATH`; use `doctor --file PATH` for
 
 Edits validate snapshots/versions and stay within one Git checkout; outside Git they use the language project. Nested repositories and escaping symlinks retain their boundary. Resource operations inside workspace edits are rejected. See [advanced edits and requests](references/advanced.md) when using code-actions, file moves, raw methods or custom server settings.
 
-If the CLI is missing, check Bun, then register with `bun add --global git+https://github.com/trotsky1997/omp-lsp-codex.git`. `bun pm bin --global` locates its PATH directory. Update with the same install command plus `--force`. The bundled entry is `PLUGIN_ROOT/src/cli.ts`, runnable with Bun as shown above.
+If the CLI is missing, check Node.js 22.20+, then register with `npm install --global git+https://github.com/trotsky1997/omp-lsp-codex.git`. `npm prefix --global` locates the prefix: add its `bin` to PATH on macOS/Linux, the prefix itself on Windows. Repeat the install command to update. The bundled fallback is `node PLUGIN_ROOT/dist/cli.js COMMAND`; compiled JavaScript is included.

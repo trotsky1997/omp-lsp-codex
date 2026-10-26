@@ -1,24 +1,24 @@
 # codex-lsp
 
-A standalone TypeScript/Bun LSP CLI, skill and lifecycle hooks for Codex and Claude Code. The CLI and hooks run directly from TypeScript, with no runtime npm dependencies.
+A standalone TypeScript LSP CLI, skill and lifecycle hooks for Codex and Claude Code. The CLI and hooks run on Node.js, with no runtime npm dependencies. Compiled JavaScript is included in the npm package and plugin.
 
 The protocol framing, protocol types, client capabilities, symbol matching and text-edit algorithms are extracted from [oh-my-pi](https://github.com/can1357/oh-my-pi). See [NOTICE.md](NOTICE.md) for the source commit and adaptation boundary.
 
 ## Install
 
-Install [Bun](https://bun.com/docs/installation), then register the CLI:
+Install [Node.js](https://nodejs.org/en/download) 22.20 or later, then register the CLI:
 
 ```sh
-bun add --global git+https://github.com/trotsky1997/omp-lsp-codex.git
+npm install --global git+https://github.com/trotsky1997/omp-lsp-codex.git
 codex-lsp --version
 codex-lsp doctor --file path/to/source.ts
 ```
 
-Add the directory printed by `bun pm bin --global` to your `PATH` if the command is unavailable. Bun supports macOS, Linux and Windows. Each language server and project toolchain must also support your platform.
+`npm prefix --global` shows the installation prefix. Add its `bin` directory to `PATH` on macOS/Linux, or the prefix itself on Windows, if the command is unavailable. Each language server and project toolchain must also support your platform.
 
-For a local checkout, run `bun install --frozen-lockfile`, then `bun link`. The bundled fallback is `bun /absolute/plugin/path/src/cli.ts <command>`.
+For a local checkout, run `npm ci`, `npm run build`, then `npm link`. The bundled fallback is `node /absolute/plugin/path/dist/cli.js <command>`.
 
-Update the CLI with `bun add --global --force git+https://github.com/trotsky1997/omp-lsp-codex.git`.
+Update the CLI with the same `npm install --global` command.
 
 ## Commands
 
@@ -42,11 +42,11 @@ codex-lsp capabilities --file path/to/file.rs
 
 Positions are one-based; columns use UTF-16. Use `--symbol name#2` for a repeated token. File paths are resolved from the target project even when the CLI runs elsewhere. `symbols --query` filters document symbols; workspace queries use the matching language servers and return their errors alongside results.
 
-`--cwd PATH` selects project context for relative paths, setup and changed-file checks. This lets agents run from a neutral directory while analyzing the intended project. On macOS, if Bun stalls before any CLI output while probing a parent directory, use the installed plugin directory as the terminal working directory and pass the project with `--cwd`. Hooks already use that startup pattern.
+Run commands directly from the project directory. Relative paths, setup and changed-file checks use that directory. `--cwd PATH` explicitly selects another project when needed. The Node.js entrypoint and hooks keep the caller's working directory.
 
 Start with `status --file` for quick discovery. `inspect` shares one server session across hover, definition, references, matching file symbols and diagnostics, reducing repeated cold starts. It defaults to 10 results or hover lines per section; `--limit` changes all sections. JSON `results` retains individual errors and unsupported capabilities, with `failedSections` explaining a nonzero exit. Diagnostic errors cause exit 1 with navigation results preserved. Add `--new-name NAME` for a rename preview; inspect always runs read-only.
 
-Use a focused command for one question. `signature-help --file PATH --line N --column N` shows the active call signature and parameter, prioritizing one overload and omitting bulk documentation by default. `--limit 0 --json` retains complete provider signatures and documentation; raw `request` responses stay unchanged. Hover and signature text have a 6,000-character preview budget when limits are enabled; truncation remains explicit and `--limit 0` retrieves full text. Human navigation/symbol output shares a `Root:` and groups repeated paths; JSON keeps canonical absolute locations. The skill loads common instructions first and links conditional setup/edit details separately.
+Use a focused command for one question. `signature-help --file PATH --line N --column N` shows the active call signature and parameter, prioritizing one overload and omitting bulk documentation by default. Put the cursor just after `(` or an argument-separating comma; servers can return no help inside string literals. `--limit 0 --json` retains complete provider signatures and documentation; raw `request` responses stay unchanged. Hover and signature text have a 6,000-character preview budget when limits are enabled; truncation remains explicit and `--limit 0` retrieves full text. Human navigation/symbol output shares a `Root:` and groups repeated paths; JSON keeps canonical absolute locations. The skill loads common instructions first and links conditional setup/edit details separately.
 
 `--json` emits one JSON object on success and failure. Check the exit code and `success`; navigation also includes `found`, and diagnostics includes `verified`. Empty or incomplete diagnostics fail verification. Existing type errors remain visible while navigation is available.
 
@@ -81,7 +81,7 @@ Configuration merges the bundled definitions with `~/.codex/lsp.json` and `<git-
 }
 ```
 
-Pyright/Basedpyright automatically select the matched project's `.venv`, then `venv`, using `bin/python` on macOS/Linux and `Scripts/python.exe` on Windows. Explicit `settings.python.pythonPath` wins. Doctor reports the analysis interpreter separately from Bun. Python navigation and edit previews wait for the opened file's first analysis to prevent partial references and empty renames.
+Pyright/Basedpyright automatically select the matched project's `.venv`, then `venv`, using `bin/python` on macOS/Linux and `Scripts/python.exe` on Windows. Explicit `settings.python.pythonPath` wins. Doctor reports the analysis interpreter separately from the Node.js runtime. Python navigation and edit previews wait for the opened file's first analysis to prevent partial references and empty renames.
 
 Rust semantic queries wait for rust-analyzer's ready workspace status. Diagnostics enable Cargo check for that invocation and wait for compiler diagnostics. Large workspaces may need `--timeout 120` (range 5–300 seconds). Processes set `RUSTUP_AUTO_INSTALL=0`; install missing toolchains explicitly. For dependency failures, inspect `cargo metadata --locked --format-version 1`; projects with no lockfile need an initial metadata run without `--locked`.
 
@@ -116,19 +116,19 @@ The skill is `/codex-lsp:codex-lsp`. Restart Claude Code or run `/reload-plugins
 
 ## Hooks and scope
 
-SessionStart reports available servers. Stop checks changed files using built-in definitions plus the user's global `~/.codex/lsp.json`, keeping the user's chosen language server and settings. Hooks ignore project configuration, exclude executables resolved inside the project, and never apply edits. `--global-config-only --global-bins-only` selects this scope for a manual check. Verified errors ask the agent to continue; unavailable diagnostics include bounded recovery reasons without blocking the turn. Both hooks invoke the same TypeScript CLI through Bun.
+SessionStart reports available servers. Stop checks changed files using built-in definitions plus the user's global `~/.codex/lsp.json`, keeping the user's chosen language server and settings. Hooks ignore project configuration, exclude executables resolved inside the project, and never apply edits. `--global-config-only --global-bins-only` selects this scope for a manual check. Verified errors ask the agent to continue; unavailable diagnostics include bounded recovery reasons without blocking the turn. Both hooks invoke the same compiled CLI through Node.js.
 
 Each invocation owns and closes its language-server processes. This extraction excludes OMP's UI, agent runtime, persistent mux and custom linter adapters. Workspace-symbol coverage depends on each server's indexing. Language servers and project dependencies are installed separately.
 
 ## Development
 
 ```sh
-bun install --frozen-lockfile
-bun run check
-bun run test
+npm ci
+npm run check
+npm test
 ```
 
-`bun run test` runs the unit and fault-injection tests in `tests/`, followed by the CLI checks in `scripts/check.ts`. Tests use Bun's built-in runner and local fixtures, without network requests or installed language servers. Run `bun test --coverage` for coverage, or `bun test --randomize --seed 42` to check order independence.
+`npm test` compiles and runs the unit and fault-injection tests with Node's built-in test runner, followed by the CLI checks in `scripts/check.ts`. Tests use local fixtures, without network requests or installed language servers. Node test runner coverage is available with `node --test --experimental-test-coverage ".test-build/tests/*.test.js"` after compiling the tests.
 
 The tests cover CLI parsing and exit codes, configuration and setup, all navigation and edit commands, diagnostics, Codex/Claude hooks and DevDocs. The instrumented LSP fixture records JSON-RPC traffic in temporary files and injects fragmented and reordered responses, late replies, ContentModified, broken streams, crashes, incompatible position encodings and unresponsive shutdowns. Filesystem spies inject write failures and concurrent edits to verify rollback and temporary-file cleanup. Hook tests inject child-process failures and validate completion decisions. DevDocs tests inject offline, corrupt-cache and invalid-catalog responses. Fixtures use temporary workspaces and leave installed server settings unchanged. Real-project acceptance logs are maintained outside the repository.
 

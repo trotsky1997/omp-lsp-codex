@@ -1,5 +1,8 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import childProcess from "node:child_process";
+import { promisify } from "node:util";
+import { setTimeout as sleep } from "node:timers/promises";
 import { LspClient } from "./client.ts";
 import {
   availableServers,
@@ -38,7 +41,7 @@ import {
 import { findReference, symbolAt } from "./devdocs.ts";
 import { resolveSymbolColumn } from "./omp/symbol-column.ts";
 import type { CodeAction, Command, Diagnostic, Position, WorkspaceEdit } from "./omp/types.ts";
-import { version } from "../package.json";
+import { version } from "./version.ts";
 
 export interface Options {
   command: string;
@@ -115,7 +118,7 @@ function signatureHelp(value: unknown, server: string, limit: number): Result {
     const preview = textPrefix(activeParameterLabel, 1000); textTruncated ||= preview.length < activeParameterLabel.length; activeParameterLabel = preview;
   }
   const documentationOmitted = !!limit && signatures.some(signature => signature.documentation !== undefined || (Array.isArray(signature.parameters) && signature.parameters.some(parameter => object(parameter).documentation !== undefined)));
-  const hint = !signatures.length ? "Place the cursor inside a call's arguments." : summary.truncated || documentationOmitted || textTruncated
+  const hint = !signatures.length ? "Place the cursor inside a call's arguments, just after '(' or a comma; string interiors can return no help. Try hover on the callable if still empty." : summary.truncated || documentationOmitted || textTruncated
     ? [documentationOmitted ? "Documentation omitted." : "", textTruncated ? "Signature text clipped." : "", "Use --limit 0 --json for complete signature information."].filter(Boolean).join(" ") : "";
   return {
     data: { success: true, found: !!signatures.length, server, ...summary, truncated: summary.truncated || textTruncated, activeSignature: signatures.length ? activeSignature : null, activeParameter, activeParameterLabel, signatures: selected, ...(documentationOmitted ? { documentationOmitted: true } : {}), ...(textTruncated ? { textTruncated: true } : {}), ...(hint ? { hint } : {}) },
@@ -274,7 +277,7 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
         result = await client.request(method, params, remaining);
       } catch (error) {
         if (/Content\s*Modified|-32801/i.test(String(error))) {
-          await Bun.sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
+          await sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
           continue;
         }
         throw error;
@@ -296,7 +299,7 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
         checkedAnalysis = true;
         if ((await client.getDiagnostics(uri, Math.max(1, deadline - Date.now()))).verified) break;
       }
-      await Bun.sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
+      await sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
       delay = Math.min(delay * 2, 500);
     }
     if (args.command === "hover") {
@@ -615,14 +618,14 @@ async function doctor(args: Options): Promise<Result> {
   return {
     data: {
       success,
-      runtime: { version, bun: Bun.version, executable: process.execPath },
+      runtime: { version, node: process.versions.node, executable: process.execPath },
       configFiles: configPaths(cwd, args.globalConfigOnly).filter(existsSync),
       servers,
       issues,
     },
     code: success ? 0 : 1,
     human: [
-      `codex-lsp doctor (${version}, Bun ${Bun.version})`,
+      `codex-lsp doctor (${version}, Node ${process.versions.node})`,
       ...servers.map(
         (row) =>
           `${row.status === "ok" ? "OK" : "ERROR"} ${row.name}: ${row.error ?? row.message ?? row.command} (root: ${row.root})${row.pythonPath ? `\n  Analysis Python: ${row.pythonPath}` : ""}`,
@@ -706,23 +709,23 @@ export async function changedFiles(cwd: string): Promise<string[]> {
     ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRTUXB"],
     ["ls-files", "--others", "--exclude-standard", "-z"],
   ]) {
-    const proc = Bun.spawn(["git", "-C", root, ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: 5000,
-    });
-    const [output, stderr] = await Promise.all([
-      new Response(proc.stdout).text(), new Response(proc.stderr).text(),
-    ]);
-    if (await proc.exited) {
-      if (args.at(-1) === "HEAD") {
-        const head = Bun.spawn(["git", "-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], {
-          stdout: "ignore", stderr: "ignore", timeout: 5000,
-        });
-        // Only an unborn HEAD may fail; other Git failures must remain visible.
-        if (await head.exited === 1) continue;
+    let output: string;
+    const options = { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 } as const;
+    try {
+      ({ stdout: output } = await promisify(childProcess.execFile)("git", ["-C", root, ...args], options));
+    } catch (error) {
+      const failure = error as childProcess.ExecFileException & { stderr?: string };
+      if (args.at(-1) === "HEAD" && failure.code === 128 && !failure.killed && !failure.signal) {
+        try {
+          await promisify(childProcess.execFile)("git", ["-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], options);
+        } catch (headError) {
+          const head = headError as childProcess.ExecFileException;
+          // Only an unborn HEAD may fail; timeouts and other Git failures stay visible.
+          if (head.code === 1 && !head.killed && !head.signal) continue;
+        }
       }
-      throw new Error(`Git ${args.join(" ")} failed in ${root}${stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : ""}. Select the project with --cwd <project-root> diagnostics --changed, or use diagnostics --file <source-file>`);
+      const reason = failure.stderr?.trim() || failure.message;
+      throw new Error(`Git ${args.join(" ")} failed in ${root}${reason ? `: ${reason.slice(-1000)}` : ""}. Select the project with --cwd <project-root> diagnostics --changed, or use diagnostics --file <source-file>`);
     }
     for (const name of output.split("\0").filter(Boolean)) {
       let path: string, info: ReturnType<typeof statSync>;
@@ -1077,6 +1080,6 @@ export async function run(args: Options): Promise<Result> {
       return { data: { success: true, servers: results }, human: JSON.stringify(results, null, 2) };
     }
     default:
-      throw new Error(`Unknown command: ${args.command}`);
+      throw new Error(`Unknown command: ${args.command}; use codex-lsp ${args.command === "version" ? "--version" : "--help"}`);
   }
 }

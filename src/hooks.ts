@@ -1,9 +1,11 @@
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import childProcess from "node:child_process";
+import { json } from "node:stream/consumers";
 import { object } from "./config.ts";
 import type { Options } from "./commands.ts";
 
 export async function hook(args: Options): Promise<void> {
-  const event = object(await Bun.stdin.json());
+  const event = object(await json(process.stdin));
   const kind = args.languages[0];
   const claude = !!process.env.CLAUDE_PLUGIN_ROOT;
   const allow = () => {
@@ -20,21 +22,15 @@ export async function hook(args: Options): Promise<void> {
       ? ["status", "--global-config-only", "--global-bins-only", "--json"]
       : ["diagnostics", "--changed", "--global-config-only", "--global-bins-only", "--limit", "0", "--json"];
   try {
-    const proc = Bun.spawn(
-      [process.execPath, join(dirname(import.meta.path), "cli.ts"), ...command, "--cwd", typeof event.cwd === "string" ? event.cwd : args.cwd],
-      {
-        cwd: dirname(import.meta.path),
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: kind === "session-start" ? 8000 : 110000,
-        killSignal: "SIGTERM",
-      },
-    );
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const code = await proc.exited;
+    const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
+      childProcess.execFile(process.execPath,
+        [join(import.meta.dirname, "cli.js"), ...command, "--cwd", typeof event.cwd === "string" ? event.cwd : args.cwd],
+        { cwd: args.cwd, encoding: "utf8", timeout: kind === "session-start" ? 8000 : 110000, killSignal: "SIGTERM", maxBuffer: 16 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (error && (typeof error.code !== "number" || error.killed || error.signal)) reject(error);
+          else resolve({ stdout, stderr, code: error?.code as number ?? 0 });
+        });
+    });
     if (!stdout.trim())
       throw new Error(stderr.trim() || "LSP check timed out or produced no result");
     const data = object(JSON.parse(stdout));
