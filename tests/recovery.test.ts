@@ -227,6 +227,15 @@ test("changed diagnostics: a neutral directory identifies its Git context and th
   assert.ok((failure.message).includes("--cwd <project-root> diagnostics --changed"));
   assert.ok((failure.message).includes("--file <source-file>"));
 });
+test("file rename: destination-directory errors explain source-relative paths before startup", async () => {
+  const w = workspace(), start = mock.method(LspClient, "start");
+  try { await assert.rejects(run(w.args("rename-file", "--new-name", "missing/new.fixture", "--apply")), /--new-name.*source.*directory/); assert.strictEqual(start.mock.callCount(), 0); assert.strictEqual(fs.readFileSync(w.file, "utf8"), "value = 1\n"); }
+  finally { start.mock.restore(); }
+});
+test("file rename: an internal error mentioning unsupported methods cannot authorize a plain move", async () => {
+  const w = workspace({ errors: { "workspace/willRenameFiles": { code: -32603, message: "failed after unsupported method -32601" } } });
+  await assert.rejects(run(w.args("rename-file", "--new-name", "moved.fixture", "--apply")), /-32603/); assert.strictEqual(fs.existsSync(w.file), true); assert.strictEqual(fs.existsSync(join(w.root, "moved.fixture")), false);
+});
 for (const [caseIndex, caseValue] of (["diff", "ls-files"]).entries()) {
   const runCase: (value: typeof caseValue) => void | Promise<void> = async stage => {
   const w = workspace(), shimRoot = fs.mkdtempSync(join(tmpdir(), "codex-lsp fake git "));

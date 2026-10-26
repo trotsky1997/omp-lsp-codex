@@ -27,18 +27,19 @@ Commands:
   symbols                --file PATH [--query NAME], or --workspace --query NAME [--file PATH]
   rename                 --file PATH --line N --symbol NAME --new-name NAME [--apply]
   rename-file            --file PATH --new-name PATH [--apply]
-  code-actions           --file PATH --line N [--symbol NAME] [--query TITLE] [--apply]
+  code-actions           --file PATH --line N [--symbol NAME] [--query INDEX|TITLE] [--apply]
   capabilities           [--file PATH]
   request                --method METHOD [--file PATH] [--payload JSON] [--apply]
 
 Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --cwd PATH            Use this project directory for setup, relative paths and --changed
   --limit N             Max results/hover lines (default 50, inspect 10, signature-help 1; 0 shows all)
-  --fields A,B          Select JSON object paths, e.g. total,results.diagnostics.counts
+  --fields A,B          Select JSON object paths (implies --json), e.g. total,results.diagnostics.counts
                         Keeps status/error/truncation metadata; arrays are selected whole
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 --project is a flag without a path; run setup from the intended project directory.
 Rename and code-actions preview by default. Add --apply to write changes.
+code-actions --query INDEX previews edit scope and flags server commands before execution.
 inspect is read-only; --new-name adds a rename preview. Each section honors --limit.
 `;
 
@@ -88,7 +89,6 @@ export function parseOptions(
     throw new Error("--line and --column must be positive integers");
   const [command = "", ...languages] = positionals;
   const fields = v.fields === undefined ? undefined : [...new Set(v.fields.split(",").map(field => field.trim()))];
-  if (fields && !v.json) throw new Error("--fields requires --json");
   if (fields && command === "hook") throw new Error("--fields is unavailable for hook: hooks emit their own protocol");
   if (fields?.some(field => !/^[$A-Za-z_][\w$-]*(?:\.[$A-Za-z_][\w$-]*)*$/.test(field)))
     throw new Error("--fields expects comma-separated object paths, e.g. success,results.definition.locations; select arrays as a whole");
@@ -113,7 +113,7 @@ export function parseOptions(
     payload: v.payload,
     timeout: Math.max(5, Math.min(300, timeout)) * 1000,
     limit,
-    json: !!v.json,
+    json: !!v.json || fields !== undefined,
     fields,
     changed: !!v.changed,
     workspace: !!v.workspace,
@@ -127,6 +127,7 @@ export function parseOptions(
 }
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let limit = 50;
+  const json = argv.includes("--json") || argv.some(arg => arg === "--fields" || arg.startsWith("--fields="));
   try {
     const args = parseOptions(argv);
     limit = args.limit;
@@ -147,7 +148,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return result.code ?? 0;
   } catch (error) {
     const result = failure(error, limit);
-    if (argv.includes("--json")) console.log(JSON.stringify(result));
+    if (json) console.log(JSON.stringify(result));
     else console.error([`codex-lsp: ${result.error}`, result.hint].filter(Boolean).join("\n"));
     return 2;
   } finally {

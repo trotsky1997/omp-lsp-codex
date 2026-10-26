@@ -7,6 +7,7 @@ import { LspClient } from "../src/client.ts";
 import { main, parseOptions } from "../src/cli.ts";
 import { run } from "../src/commands.ts";
 import { fileUri, object } from "../src/config.ts";
+import { selectFields } from "../src/output.ts";
 import { cleanWorkspaces, isolateGlobalConfig, range, workspace } from "./fixtures/workspace.ts";
 
 let restore: () => void;
@@ -137,6 +138,33 @@ test("code-actions: previews expose disabled reasons without executing commands"
   await assert.rejects(run(w.args("code-actions", "--query", "0", "--apply")), /dependency is unavailable/);
   assert.strictEqual(w.events().some(event => event.method === "workspace/executeCommand"), false);
 });
+test("code-actions: selecting an index previews edit scope and full data without applying", async () => {
+  const w = workspace(), edit = { changes: { [w.uri]: [{ range, newText: "renamed" }] } };
+  w.setScenario({ responses: { "textDocument/codeAction": [{ title: "Fix import", edit }] } });
+  const list = await run(w.args("code-actions")); assert.ok(String(list.data.hint).includes("--query"));
+  const result = await run(w.args("code-actions", "--query", "0"));
+  assert.partialDeepStrictEqual(result.data, { success: true, applied: false, executesCommand: false, actions: [{ index: 0 }], editPreview: { fileCount: 1, files: [w.file], total: 1, shown: 1, workspaceEditOmitted: true } });
+  assert.ok(result.human.includes(w.file)); assert.ok(result.human.includes("renamed")); assert.strictEqual(readFileSync(w.file, "utf8"), "value = 1\n");
+  const full = await run(w.args("code-actions", "--query", "0", "--limit", "0")); assert.deepStrictEqual(object(full.data.editPreview).workspaceEdit, edit);
+  const newText = "x".repeat(100000);
+  w.setScenario({ responses: { "textDocument/codeAction": [{ title: "Fix import", edit: { changes: { [w.uri]: [{ range, newText }] } } }] } });
+  const bounded = await run(w.args("code-actions", "--query", "0")); assert.partialDeepStrictEqual(object(bounded.data.editPreview), { textTruncated: true, truncated: true, workspaceEditOmitted: true }); assert.ok(JSON.stringify(bounded.data).length < 7500);
+  await run(w.args("code-actions", "--query", "0", "--apply")); assert.strictEqual(readFileSync(w.file, "utf8"), newText + " = 1\n");
+});
+test("code-actions: resolved preview identifies server commands and never executes them", async () => {
+  const w = workspace({ capabilities: { codeActionProvider: { resolveProvider: true } }, responses: { "textDocument/codeAction": [{ title: "Fix" }], "codeAction/resolve": { title: "Fix", command: { title: "Fix", command: "fixture.must-not-run" } } } });
+  const result = await run(w.args("code-actions", "--query", "0"));
+  assert.partialDeepStrictEqual(result.data, { success: true, applied: false, executesCommand: true }); assert.ok(String(result.data.hint).includes("server command"));
+  assert.strictEqual(w.events().filter(event => event.method === "codeAction/resolve").length, 1); assert.strictEqual(w.events().some(event => event.method === "workspace/executeCommand"), false); assert.strictEqual(readFileSync(w.file, "utf8"), "value = 1\n");
+  assert.partialDeepStrictEqual(selectFields(result.data, ["total"]), { applied: false, executesCommand: true, hint: result.data.hint });
+  w.setScenario({ capabilities: { codeActionProvider: { resolveProvider: true } }, responses: { "textDocument/codeAction": [{ title: "Fix" }], "codeAction/resolve": { title: "Fix", disabled: { reason: "dependency unavailable" } } } });
+  const disabled = await run(w.args("code-actions", "--query", "0")); assert.partialDeepStrictEqual(disabled.data, { actions: [{ index: 0, disabledReason: "dependency unavailable" }] }); assert.ok(String(disabled.data.hint).includes("dependency unavailable"));
+});
+test("code-actions: ambiguous title selection cannot execute the first matching action", async () => {
+  const w = workspace({ responses: { "textDocument/codeAction": [{ title: "Fix first", command: "first" }, { title: "Fix second", command: "second" }] } });
+  await assert.rejects(run(w.args("code-actions", "--query", "Fix", "--apply")), /original index/);
+  assert.strictEqual(w.events().some(event => event.method === "workspace/executeCommand"), false);
+});
 test("code-actions: malformed resolved actions fail before writing", async () => {
   const w = workspace({ capabilities: { codeActionProvider: { resolveProvider: true } }, responses: { "textDocument/codeAction": [{ title: "Resolve fix" }], "codeAction/resolve": null } });
   await assert.rejects(run(w.args("code-actions", "--query", "0", "--apply")), /Invalid resolved code action from fixture/);
@@ -168,6 +196,45 @@ test("symbols: huge names and containers have bounded previews with complete ful
     const full = await run(w.args("symbols", ...flags, "--limit", "0")), row = object((full.data.symbols as unknown[])[0]);
     assert.strictEqual(row.name, name); assert.strictEqual(row.container, containerName);
   }
+});
+test("rename previews: huge replacement text is bounded without clipping ranges or applied edits", async () => {
+  for (const command of ["rename", "rename-file"]) {
+    const w = workspace(), newText = "x".repeat(5999) + "😀" + "y".repeat(100000), edit = { changes: { [w.uri]: [{ range, newText }] } };
+    w.setScenario({ responses: { [command === "rename" ? "textDocument/rename" : "workspace/willRenameFiles"]: edit } });
+    const name = command === "rename" ? "renamed" : "renamed.fixture", result = await run(w.args(command, "--new-name", name));
+    assert.partialDeepStrictEqual(result.data, { total: 1, shown: 1, truncated: true, textTruncated: true, workspaceEditOmitted: true });
+    assert.ok(JSON.stringify(result.data).length < 8000); assert.ok(result.human.length < 7000); assert.ok(result.human.includes(":1:1-1:6 →")); assert.ok(result.human.includes("--limit 0"));
+    const full = await run(w.args(command, "--new-name", name, "--limit", "0"));
+    if (command === "rename") assert.deepStrictEqual(full.data.workspaceEdit, edit); else assert.deepStrictEqual(object((full.data.workspaceEdits as unknown[])[0]).edit, edit);
+    const applied = await run(w.args(command, "--new-name", name, "--apply")); assert.strictEqual(applied.data.applied, true);
+    assert.strictEqual(readFileSync(command === "rename" ? w.file : join(w.root, name), "utf8"), newText + " = 1\n");
+  }
+});
+test("rename-file previews share the replacement text budget across servers", async () => {
+  const w = workspace(), newText = "x".repeat(100000); writeFileSync(w.file, "value = 1\n".repeat(2));
+  w.setScenario({ responses: { "workspace/willRenameFiles": { changes: { [w.uri]: [{ range, newText }] } } } });
+  const other = join(w.root, "other.json"), secondRange = { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } };
+  writeFileSync(other, JSON.stringify({ responses: { "workspace/willRenameFiles": { changes: { [w.uri]: [{ range: secondRange, newText }] } } } }));
+  w.configs.secondary = { ...w.configs.fixture, args: [...w.configs.fixture.args!.slice(0, -1), other] }; w.saveConfig();
+  const result = await run(w.args("rename-file", "--new-name", "moved.fixture"));
+  assert.partialDeepStrictEqual(result.data, { total: 2, shown: 2, textTruncated: true, workspaceEditOmitted: true }); assert.ok(JSON.stringify(result.data).length < 8000);
+});
+test("rename previews keep uneven small replacements complete within the shared text budget", async () => {
+  const w = workspace(); writeFileSync(w.file, "value = 1\n".repeat(20));
+  const replacements = Array.from({ length: 20 }, (_, line) => ({ range: { start: { line, character: 0 }, end: { line, character: 5 } }, newText: line ? "v" : "x".repeat(500) })), edit = { changes: { [w.uri]: replacements } };
+  w.setScenario({ responses: { "textDocument/rename": edit } });
+  const result = await run(w.args("rename", "--new-name", "new"));
+  assert.strictEqual(result.data.truncated, false); assert.strictEqual(result.data.textTruncated, undefined); assert.deepStrictEqual(result.data.workspaceEdit, edit);
+});
+test("rename preview rejects malformed replacement text before any write", async () => {
+  const w = workspace({ responses: { "textDocument/rename": { changes: {} } } });
+  w.setScenario({ responses: { "textDocument/rename": { changes: { [w.uri]: [{ range, newText: 42 }] } } } });
+  await assert.rejects(run(w.args("rename", "--new-name", "new")), /Invalid LSP text edit/); assert.strictEqual(readFileSync(w.file, "utf8"), "value = 1\n");
+});
+test("unverified diagnostics include a recovery reason with zero reported findings", async () => {
+  const w = workspace({ diagnostics: false }), result = await run(w.args("diagnostics"));
+  assert.partialDeepStrictEqual(result.data, { success: false, verified: false, hasErrors: false }); assert.strictEqual(result.code, 1);
+  const errors = (result.data.checked as { errors: string[] }[])[0].errors; assert.ok(errors.some(error => /verify.*diagnostic/i.test(error) && error.includes("doctor") && error.includes("--timeout")));
 });
 for (const response of [42, {}, [null], [{ title: 42 }]]) {
   test(`code-actions: malformed response ${JSON.stringify(response)} fails with provider context`, async () => {

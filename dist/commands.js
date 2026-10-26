@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 import { LspClient } from "./client.js";
 import { availableServers, configPaths, expandHome, fileServers, fileUri, gitRoot, inside, insideWorkspace, languageId, loadConfig, matchesFile, MAX_FILES, MAX_FILE_BYTES, object, readOverrides, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, uriFile, workspaceSource, } from "./config.js";
-import { applyWorkspaceEdit, atomicWrite, editSummary, moveNoReplace, remapEdit, textChanges, } from "./edits.js";
+import { applyWorkspaceEdit, atomicWrite, editSummary, editTextLimit, moveNoReplace, remapEdit, textChanges, } from "./edits.js";
 import { findReference, symbolAt } from "./devdocs.js";
 import { resolveSymbolColumn } from "./omp/symbol-column.js";
 import { version } from "./version.js";
@@ -67,6 +67,7 @@ function signatureHelp(value, server, limit) {
     };
 }
 const VERIFY_EDITS = "Project verification pending. Run relevant build/tests; use code-actions for missing imports or re-exports if checks fail.";
+const UNVERIFIED_DIAGNOSTICS = "Unable to verify diagnostics for the current file. Run codex-lsp doctor --file <source-file> and retry after analysis and file changes settle (--timeout 120).";
 function editVerification(applied, hint) {
     return applied ? { verification: "pending", hint: [hint, VERIFY_EDITS].filter(Boolean).join(" ") } : {};
 }
@@ -354,7 +355,11 @@ async function rename(args, shared) {
         if (![...textChanges(edit).values()].some((x) => x.length))
             throw new Error("The language server returned no rename edits; try the symbol's declaration or check rename support");
         const summary = outputInfo([...textChanges(edit).values()].reduce((n, items) => n + items.length, 0), args.limit);
-        const edits = editSummary(edit, summary.shown);
+        const preview = editSummary(edit, summary.shown, editTextLimit([edit], summary.shown, !!args.limit)), edits = preview.lines;
+        if (preview.textTruncated) {
+            summary.truncated = true;
+            summary.hint = [summary.hint, "Replacement text clipped; use --limit 0 --json for complete edits."].filter(Boolean).join(" ");
+        }
         if (args.apply)
             await client.edit(edit);
         return {
@@ -363,6 +368,7 @@ async function rename(args, shared) {
                 applied: args.apply,
                 server: server.name,
                 ...summary,
+                ...(preview.textTruncated ? { textTruncated: true } : {}),
                 edits,
                 ...(!args.apply ? summary.truncated ? { workspaceEditOmitted: true } : { workspaceEdit: edit } : {}),
                 ...editVerification(args.apply, summary.hint),
@@ -404,36 +410,46 @@ async function codeActions(args) {
         };
         if (!Array.isArray(actions) || actions.some(invalidAction))
             throw new Error(`Invalid code action response from ${server.name}`);
-        if (!args.apply) {
-            const items = actions
-                .map((item, index) => ({
-                index,
-                title: item.title,
-                kind: "kind" in item ? item.kind : undefined,
-                ...("disabled" in item && item.disabled ? { disabledReason: item.disabled.reason } : {}),
-            }))
-                .filter((x) => !args.query || x.title.toLowerCase().includes(args.query.toLowerCase()));
-            const summary = outputInfo(items.length, args.limit), { items: selected, ...preview } = compactText(items.slice(0, summary.shown), ["title", "kind", "disabledReason"], args.limit);
-            const hint = preview.hint ? `${preview.hint} Select actions by original index with --query INDEX --apply.` : summary.hint ?? (!items.length ? "No applicable actions for this range; check diagnostics and server capabilities, or select a different line/position." : undefined);
-            return {
-                data: { success: true, server: server.name, ...summary, ...preview, ...(hint ? { hint } : {}), actions: selected },
-                human: [`${items.length} code action(s):`, ...selected.map((x) => `${x.index}: ${x.title}${x.disabledReason !== undefined ? ` [disabled: ${x.disabledReason}]` : ""}`), hint].filter(Boolean).join("\n"),
-            };
-        }
-        if (!args.query)
-            throw new Error("--query must select an action when using --apply");
-        let chosen = /^\d+$/.test(args.query)
-            ? actions[Number(args.query)]
-            : actions.find((x) => x.title.toLowerCase().includes(args.query.toLowerCase()));
-        if (!chosen)
-            throw new Error(`No code action matches ${args.query}`);
-        if ("disabled" in chosen && chosen.disabled)
-            throw new Error(chosen.disabled.reason);
-        if (!("edit" in chosen) && !("command" in chosen) && client.capabilities.codeActionProvider) {
+        const matches = actions.map((action, index) => ({ action, index })).filter(({ action, index }) => !args.query || (/^\d+$/.test(args.query) ? index === Number(args.query) : action.title.toLowerCase().includes(args.query.toLowerCase())));
+        if (args.apply && matches.length > 1)
+            throw new Error("Multiple code actions match; choose the original index with --query INDEX");
+        let chosen = args.query && matches.length === 1 ? matches[0].action : undefined;
+        if (chosen && !("disabled" in chosen && chosen.disabled) && !("edit" in chosen) && !("command" in chosen) && object(client.capabilities.codeActionProvider).resolveProvider === true) {
             chosen = await client.request("codeAction/resolve", chosen);
             if (invalidAction(chosen))
                 throw new Error(`Invalid resolved code action from ${server.name}`);
         }
+        if (!args.apply) {
+            const items = matches
+                .map(({ action, index }) => {
+                const item = chosen ?? action;
+                return {
+                    index,
+                    title: item.title,
+                    kind: "kind" in item ? item.kind : undefined,
+                    ...("disabled" in item && item.disabled ? { disabledReason: item.disabled.reason } : {}),
+                };
+            });
+            const summary = outputInfo(items.length, args.limit), { items: selected, ...preview } = compactText(items.slice(0, summary.shown), ["title", "kind", "disabledReason"], args.limit);
+            let editPreview;
+            if (chosen && "edit" in chosen && chosen.edit) {
+                const changes = textChanges(chosen.edit), total = [...changes.values()].reduce((sum, edits) => sum + edits.length, 0), info = outputInfo(total, args.limit);
+                const details = editSummary(chosen.edit, info.shown, editTextLimit([chosen.edit], info.shown, !!args.limit));
+                editPreview = { fileCount: changes.size, files: [...changes.keys()].slice(0, args.limit || Infinity).map(uri => uriFile(uri) ?? uri), ...info, truncated: info.truncated || details.textTruncated, edits: details.lines, ...(details.textTruncated ? { textTruncated: true, hint: "Replacement text clipped. Use --limit 0 --json for complete edits." } : {}), ...(args.limit ? { workspaceEditOmitted: true } : { workspaceEdit: chosen.edit }) };
+            }
+            const executesCommand = chosen ? !!chosen.command : undefined;
+            const hint = [preview.hint ?? summary.hint, !items.length ? "No applicable actions for this range; check diagnostics and server capabilities, or select a different line/position." : chosen
+                    ? "disabled" in chosen && chosen.disabled ? `Selected action is disabled: ${selected[0].disabledReason}` : "Use --apply to execute this action."
+                    : "Use --query INDEX to preview edit scope, then add --apply to execute.", executesCommand ? "This action executes a server command; its file scope can extend beyond the edit preview." : "", editPreview?.hint].filter(Boolean).join(" ");
+            return {
+                data: { success: true, applied: false, server: server.name, ...summary, ...preview, ...(executesCommand !== undefined ? { executesCommand } : {}), ...(editPreview ? { editPreview } : {}), hint, actions: selected },
+                human: [`${items.length} code action(s):`, ...selected.map((x) => `${x.index}: ${x.title}${x.disabledReason !== undefined ? ` [disabled: ${x.disabledReason}]` : ""}`), ...(editPreview?.edits ?? []), hint].filter(Boolean).join("\n"),
+            };
+        }
+        if (!args.query)
+            throw new Error("--query must select an action when using --apply");
+        if (!chosen)
+            throw new Error(`No code action matches ${args.query}`);
         if ("disabled" in chosen && chosen.disabled)
             throw new Error(chosen.disabled.reason);
         client.applyEdit = async (edit) => {
@@ -713,6 +729,8 @@ export async function diagnostics(args, shared) {
             for (const file of files) {
                 const result = await client.getDiagnostics(fileUri(file)), record = records.get(file);
                 record.verified &&= result.verified;
+                if (!result.verified)
+                    record.errors.push(`${server.name}: ${UNVERIFIED_DIAGNOSTICS}`);
                 const seen = new Set(record.diagnostics.map((x) => JSON.stringify([x.range, x.message, x.severity ?? 1])));
                 for (const diagnostic of result.diagnostics) {
                     const key = JSON.stringify([diagnostic.range, diagnostic.message, diagnostic.severity ?? 1]);
@@ -772,6 +790,8 @@ export async function diagnostics(args, shared) {
         summary.truncated = true;
         summary.hint = "Diagnostic text or metadata clipped; use --limit 0 --json for complete output. Counts and verification cover all diagnostics.";
     }
+    if (!verified)
+        summary.hint = [summary.hint, UNVERIFIED_DIAGNOSTICS].filter(Boolean).join(" ");
     return {
         data: { success, verified, hasErrors, ...summary, counts, checked: visible, ...(textTruncated ? { textTruncated: true } : {}), ...(detailsOmitted ? { detailsOmitted: true } : {}), ...(configurationChecks.length ? { configurationChecks } : {}) },
         code: success ? 0 : 1,
@@ -840,7 +860,19 @@ async function renameFile(args) {
     if (!args.file || !args.newName)
         throw new Error("--file and --new-name are required");
     const source = resolveFile(args.file, args.cwd), desired = resolve(dirname(source), expandHome(args.newName));
-    const destination = join(realpathSync(dirname(desired)), basename(desired));
+    const pathHint = `--new-name resolves relative to the source file directory (${dirname(source)}); use a basename or absolute path and create the destination directory first.`;
+    let parent;
+    try {
+        parent = realpathSync(dirname(desired));
+    }
+    catch (error) {
+        if (["ENOENT", "ENOTDIR"].includes(String(object(error).code)))
+            throw new Error(`Destination directory is missing: ${dirname(desired)}. ${pathHint}`);
+        throw error;
+    }
+    if (!statSync(parent).isDirectory())
+        throw new Error(`Destination parent is not a directory: ${parent}. ${pathHint}`);
+    const destination = join(parent, basename(desired));
     if (source === destination || existsSync(destination))
         throw new Error(`Destination already exists or matches source: ${destination}`);
     const servers = fileServers(availableServers(loadConfig(dirname(source), args.globalConfigOnly), dirname(source), args.globalBinsOnly), source).filter((x) => !x.isLinter);
@@ -857,10 +889,29 @@ async function renameFile(args) {
             }
             catch (error) {
                 await client.close();
-                if (!/-32601|method.*not.*found|unsupported.*method/i.test(String(error)))
+                if (object(error).code !== -32601)
                     throw error;
             }
         }
+        const total = clients.reduce((n, x) => n + [...textChanges(x.edit).values()].reduce((n, items) => n + items.length, 0), 0);
+        const summary = outputInfo(total, args.limit), maximumText = editTextLimit(clients.map(x => x.edit), summary.shown, !!args.limit);
+        let remaining = summary.shown, textTruncated = false;
+        const edits = clients.map(x => {
+            const count = [...textChanges(x.edit).values()].reduce((n, items) => n + items.length, 0);
+            const preview = editSummary(x.edit, remaining, maximumText);
+            remaining -= Math.min(remaining, count);
+            textTruncated ||= preview.textTruncated;
+            return preview.lines;
+        });
+        if (textTruncated) {
+            summary.truncated = true;
+            summary.hint = [summary.hint, "Replacement text clipped; use --limit 0 --json for complete edits."].filter(Boolean).join(" ");
+        }
+        const importUpdates = total ? "provided" : clients.length ? "none" : "unavailable";
+        const importHint = total ? undefined : clients.length
+            ? "Language servers returned no import-update edits; check affected imports manually."
+            : "No available language server provided file-rename support; this is a file-only move. Update affected imports manually.";
+        const hint = [summary.hint, importHint].filter(Boolean).join(" ") || undefined;
         if (args.apply) {
             const root = gitRoot(servers[0]?.root ?? dirname(source));
             if (!insideWorkspace(realpathSync(root), source) || !insideWorkspace(realpathSync(root), destination))
@@ -900,29 +951,23 @@ async function renameFile(args) {
                 throw new Error(`File renamed and edits applied, but LSP notification failed (${source} → ${destination}): ${error}`);
             }
         }
-        const total = clients.reduce((n, x) => n + [...textChanges(x.edit).values()].reduce((n, items) => n + items.length, 0), 0);
-        const summary = outputInfo(total, args.limit);
-        let remaining = summary.shown;
-        const edits = clients.map((x) => {
-            const count = [...textChanges(x.edit).values()].reduce((n, items) => n + items.length, 0);
-            const lines = editSummary(x.edit, remaining);
-            remaining -= Math.min(remaining, count);
-            return lines;
-        });
         return {
             data: {
                 success: true,
                 applied: args.apply,
                 source,
                 destination,
+                importUpdates,
                 ...summary,
+                ...(textTruncated ? { textTruncated: true } : {}),
+                ...(hint ? { hint } : {}),
                 edits,
                 ...(!args.apply
                     ? summary.truncated ? { workspaceEditOmitted: true } : { workspaceEdits: clients.map((x) => ({ server: x.server.name, edit: x.edit })) }
                     : {}),
-                ...editVerification(args.apply, summary.hint),
+                ...editVerification(args.apply, hint),
             },
-            human: [`${args.apply ? "Renamed" : "Rename preview"}: ${source} → ${destination}\n${edits.flat().join("\n")}`, summary.hint, args.apply ? VERIFY_EDITS : undefined].filter(Boolean).join("\n"),
+            human: [`${args.apply ? "Renamed" : "Rename preview"}: ${source} → ${destination}\n${edits.flat().join("\n")}`, hint, args.apply ? VERIFY_EDITS : undefined].filter(Boolean).join("\n"),
         };
     }
     finally {

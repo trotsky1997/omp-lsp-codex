@@ -24,7 +24,7 @@ export function compactText(items, fields, limit) {
         truncated: true, textTruncated: true, hint: "Text clipped; use --limit 0 --json for complete output.",
     };
 }
-const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "verification", "failedSections", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
+const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
 export function selectFields(data, fields) {
     const selected = new Map(), missing = [];
     const state = (value, prefix) => {
@@ -33,6 +33,9 @@ export function selectFields(data, fields) {
                 selected.set(prefix + key, value[key]);
     };
     state(data, "");
+    for (const key of ["source", "destination", "importUpdates"])
+        if (Object.hasOwn(data, key) && data[key] !== undefined)
+            selected.set(key, data[key]);
     for (const field of fields) {
         const parts = field.split(".");
         let value = data, found = true;

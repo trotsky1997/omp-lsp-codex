@@ -22,13 +22,28 @@ test("fields: parses object paths and rejects invalid selectors before execution
   assert.partialDeepStrictEqual(parseOptions(["status", "--json", "--fields", " success, results.definition.locations,success "]), { fields: ["success", "results.definition.locations"] });
   const w = workspace(), start = mock.method(LspClient, "start");
   try {
-    for (const flags of [["--fields", "success"], ["--json", "--fields", ""], ["--json", "--fields", "a,,b"], ["--json", "--fields", "a..b"], ["--json", "--fields", "locations.0.file"], ["--json", "--fields", "*"]]) {
+    for (const flags of [["--json", "--fields", ""], ["--json", "--fields", "a,,b"], ["--json", "--fields", "a..b"], ["--json", "--fields", "locations.0.file"], ["--json", "--fields", "*"]]) {
       assert.strictEqual(await main(["rename", "--file", w.file, "--new-name", "renamed", "--apply", ...flags]), 2);
       assert.ok(output.pop()!.includes("--fields"));
     }
     assert.strictEqual(await main(["hook", "stop", "--json", "--fields", "continue"]), 2); assert.ok(decoded().error.includes("hook"));
     assert.strictEqual(start.mock.callCount(), 0); assert.strictEqual(readFileSync(w.file, "utf8"), "value = 1\n");
   } finally { start.mock.restore(); }
+});
+test("fields: selection implies JSON for results and parse/command errors", async () => {
+  assert.strictEqual(parseOptions(["status", "--fields", "success"]).json, true);
+  const w = workspace();
+  assert.strictEqual(await main(["symbols", "--file", w.file, "--fields", "total"]), 0); assert.partialDeepStrictEqual(decoded(), { success: true, total: 0 });
+  assert.strictEqual(await main(["unknown", "--fields=total"]), 2); assert.match(decoded().error, /Unknown command/);
+  assert.strictEqual(await main(["rename", "--file", w.file, "--new-name", "new", "--apply", "--fields", "a..b"]), 2); assert.match(decoded().error, /--fields/);
+});
+test("fields: file moves retain paths and import update status without guessing field names", async () => {
+  for (const [scenario, status] of [[{ errors: { "workspace/willRenameFiles": { code: -32601, message: "unsupported method" } } }, "unavailable"], [{}, "none"]] as const) {
+    const w = workspace(scenario);
+    assert.strictEqual(await main(["rename-file", "--file", w.file, "--new-name", "moved.fixture", "--json", "--fields", "total"]), 0);
+    const data = decoded(); assert.partialDeepStrictEqual(data, { applied: false, source: w.file, destination: w.root + "/moved.fixture", importUpdates: status, total: 0 });
+    assert.ok(data.hint.includes("import")); assert.strictEqual(readFileSync(w.file, "utf8"), "value = 1\n");
+  }
 });
 test("fields: references keep completion metadata while omitting unrequested locations", async () => {
   const w = workspace(); w.setScenario({ responses: { "textDocument/references": [{ uri: w.uri, range }, { uri: w.uri, range }] } });

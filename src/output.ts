@@ -23,7 +23,7 @@ export function compactText(items: Record<string, unknown>[], fields: string[], 
   };
 }
 
-const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "verification", "failedSections", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
+const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
 
 export function selectFields(data: Record<string, unknown>, fields: string[]): Record<string, unknown> {
   const selected = new Map<string, unknown>(), missing: string[] = [];
@@ -31,6 +31,7 @@ export function selectFields(data: Record<string, unknown>, fields: string[]): R
     for (const key of STATE_FIELDS) if (Object.hasOwn(value, key) && value[key] !== undefined) selected.set(prefix + key, value[key]);
   };
   state(data, "");
+  for (const key of ["source", "destination", "importUpdates"]) if (Object.hasOwn(data, key) && data[key] !== undefined) selected.set(key, data[key]);
   for (const field of fields) {
     const parts = field.split("."); let value: unknown = data, found = true;
     for (let index = 0; index < parts.length; index++) {

@@ -6,7 +6,7 @@ import type { Mode, PathLike, PathOrFileDescriptor, WriteFileOptions } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite, applyWorkspaceEdit, moveNoReplace, remapEdit, textChanges } from "../src/edits.ts";
-import { fileUri } from "../src/config.ts";
+import { fileUri, MAX_FILE_BYTES } from "../src/config.ts";
 import type { TextEdit } from "../src/omp/types.ts";
 
 const roots: string[] = [];
@@ -51,6 +51,11 @@ test("workspace edit: a later write failure rolls earlier writes back", async ()
   assert.strictEqual(fs.readFileSync(first, "utf8"), "hello\n");
   assert.strictEqual(fs.readFileSync(second, "utf8"), "hello\n");
   assert.strictEqual(fs.readdirSync(root).length, 2);
+});
+test("workspace edit: oversized generated files fail before any planned write", async () => {
+  const { root, first, second, edit } = fixture(), changes = { [fileUri(first)]: [edit], [fileUri(second)]: [{ ...edit, newText: "x".repeat(MAX_FILE_BYTES + 1) }] };
+  await assert.rejects(applyWorkspaceEdit({ changes }, root), /16 MiB/);
+  assert.strictEqual(fs.readFileSync(first, "utf8"), "hello\n"); assert.strictEqual(fs.readFileSync(second, "utf8"), "hello\n"); assert.strictEqual(fs.readdirSync(root).length, 2);
 });
 test("workspace edit: rollback preserves an external edit made during failure", async () => {
   const { root, first, second, changes } = fixture(), rename = originalRename;

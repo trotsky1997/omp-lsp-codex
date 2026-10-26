@@ -158,7 +158,7 @@ export class LspClient {
                         const pending = this.#pending.get(message.id);
                         this.#pending.delete(message.id);
                         if (message.error)
-                            pending?.reject(new Error(`LSP error ${message.error.code}: ${message.error.message}`));
+                            pending?.reject(Object.assign(new Error(`LSP error ${message.error.code}: ${message.error.message}`), { code: message.error.code }));
                         else
                             pending?.resolve(message.result);
                     }

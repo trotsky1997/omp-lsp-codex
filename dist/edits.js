@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileUri, insideWorkspace, MAX_FILE_BYTES, uriFile } from "./config.js";
 import { applyTextEditsToString } from "./omp/text-edits.js";
+import { textPrefix } from "./output.js";
 export function atomicWrite(path, bytes) {
     mkdirSync(dirname(path), { recursive: true });
     const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
@@ -36,19 +37,28 @@ export function textChanges(edit) {
     }
     return changes;
 }
-export function editSummary(edit, limit = Infinity) {
+export function editTextLimit(edits, shown, bounded) {
+    const items = edits.flatMap(edit => [...textChanges(edit).values()].flat()).slice(0, shown);
+    return bounded && items.reduce((sum, item) => sum + (typeof item?.newText === "string" ? item.newText.length : 0), 0) > 6000 ? Math.floor(6000 / Math.max(1, shown)) : Infinity;
+}
+export function editSummary(edit, limit = Infinity, maximumText = Infinity) {
     const changes = textChanges(edit);
+    let textTruncated = false;
     const lines = [
         `${changes.size} file(s), ${[...changes.values()].reduce((n, items) => n + items.length, 0)} edit(s)`,
     ];
     for (const [uri, edits] of changes)
         for (const edit of edits) {
             if (lines.length > limit)
-                return lines;
+                return { lines, textTruncated };
+            if (typeof edit?.newText !== "string" || !edit.range?.start || !edit.range.end)
+                throw new Error("Invalid LSP text edit");
             const { start, end } = edit.range;
-            lines.push(`${uriFile(uri) ?? uri}:${start.line + 1}:${start.character + 1}-${end.line + 1}:${end.character + 1} → ${JSON.stringify(edit.newText)}`);
+            const text = textPrefix(edit.newText, maximumText);
+            textTruncated ||= text.length < edit.newText.length;
+            lines.push(`${uriFile(uri) ?? uri}:${start.line + 1}:${start.character + 1}-${end.line + 1}:${end.character + 1} → ${JSON.stringify(text)}`);
         }
-    return lines;
+    return { lines, textTruncated };
 }
 function validatePosition(lines, pos) {
     if (!pos ||
@@ -97,6 +107,8 @@ export async function applyWorkspaceEdit(edit, root, documents) {
                 throw new Error("Invalid LSP text edit");
         }
         const updated = Buffer.from(applyTextEditsToString(text, edits));
+        if (updated.length > MAX_FILE_BYTES)
+            throw new Error(`Updated file exceeds the 16 MiB LSP limit: ${path}`);
         if (!original.equals(updated))
             planned.push({ path, original, updated });
     }
