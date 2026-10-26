@@ -6,10 +6,10 @@ The protocol framing, protocol types, client capabilities, symbol matching and t
 
 ## Install
 
-Install [Node.js](https://nodejs.org/en/download) 22.20 or later, then register the CLI:
+Install [Node.js](https://nodejs.org/en/download) 22.20 or later, then register the precompiled CLI:
 
 ```sh
-npm install --global git+https://github.com/trotsky1997/omp-lsp-codex.git
+npm install --global https://github.com/trotsky1997/omp-lsp-codex/releases/latest/download/codex-lsp.tgz
 codex-lsp --version
 codex-lsp doctor --file path/to/source.ts
 ```
@@ -18,7 +18,7 @@ codex-lsp doctor --file path/to/source.ts
 
 For a local checkout, run `npm ci`, `npm run build`, then `npm link`. The bundled fallback is `node /absolute/plugin/path/dist/cli.js <command>`.
 
-Update the CLI with the same `npm install --global` command.
+The release package includes compiled JavaScript and needs no install-time compiler or Git checkout. Update with the same command plus `--force`.
 
 ## Commands
 
