@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import { after, afterEach, before, test } from "node:test";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ancestors, availableServers, configPaths, executable, fileServers, gitRoot, languageId, loadConfig, matchesFile, MAX_FILE_BYTES, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, workspaceSource } from "../src/config.ts";
+import { ancestors, availableServers, configPaths, executable, fileServers, gitRoot, languageId, loadConfig, matchesFile, MAX_FILE_BYTES, numstatFiles, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, workspaceSource } from "../src/config.ts";
 import { cleanWorkspaces, isolateGlobalConfig, setGlobalServers, workspace } from "./fixtures/workspace.ts";
 
 let restoreConfig: () => void;
 before(() => { restoreConfig = isolateGlobalConfig(); });
 after(() => restoreConfig());
 afterEach(cleanWorkspaces);
+
+test("Git numstat: preserve raw names, binary and empty changes while rejecting truncated or rename-mode records", () => {
+  assert.deepEqual(numstatFiles(""), []);
+  assert.deepEqual(numstatFiles("0\t0\tempty.ts\0-\t-\tbinary.rs\0" + "1\t2\t中文\tline\nbreak.py \0"), ["empty.ts", "binary.rs", "中文\tline\nbreak.py "]);
+  for (const value of ["1\t2\tfile", "1\t2\t\0old\0new\0", "1\t2\t\0", "-\t2\tx\0", "bad\0"])
+    assert.throws(() => numstatFiles(value), /Git --numstat/);
+});
 
 test("config: project overrides inherit builtins, preserve user overrides, and never mutate defaults", () => {
   const w = workspace();

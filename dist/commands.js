@@ -4,7 +4,7 @@ import childProcess from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 import { LspClient } from "./client.js";
-import { availableServers, configPaths, expandHome, fileServers, fileUri, gitRoot, inside, insideWorkspace, languageId, loadConfig, matchesFile, MAX_FILES, MAX_FILE_BYTES, object, readOverrides, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, uriFile, workspaceSource, } from "./config.js";
+import { availableServers, configPaths, expandHome, fileServers, fileUri, gitRoot, inside, insideWorkspace, languageId, loadConfig, matchesFile, numstatFiles, MAX_FILES, MAX_FILE_BYTES, object, readOverrides, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, uriFile, workspaceSource, } from "./config.js";
 import { applyWorkspaceEdit, atomicWrite, editSummary, editTextLimit, moveNoReplace, remapEdit, textChanges, } from "./edits.js";
 import { findReference, symbolAt } from "./devdocs.js";
 import { resolveSymbolColumn } from "./omp/symbol-column.js";
@@ -12,6 +12,9 @@ import { version } from "./version.js";
 import { compactText, failure, selectFields, textPrefix } from "./output.js";
 import { syntaxLanguage, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.js";
 import { batchQueries } from "./batch.js";
+import { attachTargets, resolveTarget } from "./targets.js";
+import { apiDiff, dependencies } from "./analysis.js";
+import { applyPlan, fixPlan } from "./fixes.js";
 import { inspectContext } from "./context.js";
 import { callHierarchy, complete } from "./semantic.js";
 import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.js";
@@ -738,22 +741,23 @@ function setup(args) {
 }
 export async function changedFiles(cwd) {
     const root = gitRoot(cwd), found = new Set();
+    // Numstat verifies content without refreshing the index or reporting stat-only changes.
     for (const args of [
-        ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD"],
-        ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB"],
-        ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRTUXB"],
+        ["diff", "--numstat", "--no-renames", "-z", "--diff-filter=ACMRTUXB", "HEAD"],
+        ["diff", "--numstat", "--no-renames", "-z", "--diff-filter=ACMRTUXB"],
+        ["diff", "--cached", "--numstat", "--no-renames", "-z", "--diff-filter=ACMRTUXB"],
         ["ls-files", "--others", "--exclude-standard", "-z"],
     ]) {
         let output;
-        const options = { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 };
+        const options = { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } };
         try {
-            ({ stdout: output } = await promisify(childProcess.execFile)("git", ["-C", root, ...args], options));
+            ({ stdout: output } = await promisify(childProcess.execFile)("git", ["-c", "diff.autoRefreshIndex=false", "-C", root, ...args], options));
         }
         catch (error) {
             const failure = error;
             if (args.at(-1) === "HEAD" && failure.code === 128 && !failure.killed && !failure.signal) {
                 try {
-                    await promisify(childProcess.execFile)("git", ["-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], options);
+                    await promisify(childProcess.execFile)("git", ["-c", "diff.autoRefreshIndex=false", "-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], options);
                 }
                 catch (headError) {
                     const head = headError;
@@ -765,7 +769,7 @@ export async function changedFiles(cwd) {
             const reason = failure.stderr?.trim() || failure.message;
             throw new Error(`Git ${args.join(" ")} failed in ${root}${reason ? `: ${reason.slice(-1000)}` : ""}. Select the project with --cwd <project-root> diagnostics --changed, or use diagnostics --file <source-file>`);
         }
-        for (const name of output.split("\0").filter(Boolean)) {
+        for (const name of args[0] === "diff" ? numstatFiles(output) : output.split("\0").filter(Boolean)) {
             let path, info;
             try {
                 path = realpathSync(join(root, name));
@@ -803,6 +807,7 @@ export async function diagnostics(args, shared, session) {
     const configurationChecks = [];
     const groups = new Map();
     const records = new Map();
+    let diagnosticBytes = 0;
     for (const path of paths) {
         const configs = loadConfig(dirname(path), args.globalConfigOnly);
         if (configurationPaths.includes(path)) {
@@ -832,6 +837,9 @@ export async function diagnostics(args, shared, session) {
                     await client.open(file);
             for (const file of files) {
                 const result = await client.getDiagnostics(fileUri(file)), record = records.get(file);
+                diagnosticBytes += Buffer.byteLength(JSON.stringify(result.diagnostics));
+                if (diagnosticBytes > MAX_FILE_BYTES)
+                    throw new Error("Diagnostic results exceed the 16 MiB aggregate limit; narrow to --file or a smaller changed scope");
                 record.verified &&= result.verified;
                 if (args.baseline || args.saveBaseline) {
                     const text = client.documents.get(fileUri(file)).text;
@@ -1217,8 +1225,17 @@ async function request(args) {
     }
 }
 export async function run(args, session) {
+    const resolved = resolveTarget(args), result = await runQuery(resolved, session);
+    try {
+        return { ...result, data: attachTargets(resolved, result.data) };
+    }
+    catch (error) {
+        return { ...result, data: { ...result.data, targets: [], targetsHint: `Targets unavailable; use explicit file/line anchors. ${error instanceof Error ? error.message : String(error)}` } };
+    }
+}
+async function runQuery(args, session) {
     const navigation = Object.hasOwn(NAVIGATION, args.command);
-    if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next"].includes(args.command)))
+    if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix"].includes(args.command)))
         throw new Error(`${args.command} is read-only; omit --apply`);
     if (args.command === "inlay-hints" && !args.range)
         throw new Error("inlay-hints requires --range START_LINE:COL-END_LINE:COL");
@@ -1240,6 +1257,21 @@ export async function run(args, session) {
     if (navigation)
         return navigate(args, undefined, session);
     switch (args.command) {
+        case "api-diff":
+            return apiDiff(args);
+        case "dependencies":
+            return dependencies(args);
+        case "fix": {
+            const pool = { clients: new Map(), diagnostics: true };
+            try {
+                return await fixPlan(args, file => fileContext({ ...args, file }, true, pool));
+            }
+            finally {
+                await Promise.allSettled([...pool.clients.values()].map(client => client.close()));
+            }
+        }
+        case "apply":
+            return applyPlan(args, (_files, baseline) => diagnostics({ ...args, command: "diagnostics", file: undefined, changed: false, apply: false, baseline, saveBaseline: undefined, limit: 0 }));
         case "next": {
             if (!args.cursor || args.file || args.changed || args.symbol || args.query || args.column || args.line !== 1 || args.workspace)
                 throw new Error("Use next --cursor ID from a references page, in the same workspace");

@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LspClient } from "../src/client.ts";
-import { fileUri, type Server } from "../src/config.ts";
+import { fileUri, MAX_FILE_BYTES, MAX_FILES, type Server } from "../src/config.ts";
 
 const roots: string[] = [];
 function fixture(mode = "normal", name = "fixture") {
@@ -16,6 +16,37 @@ function fixture(mode = "normal", name = "fixture") {
   const trace = join(root, "wire.ndjson"); writeFileSync(trace, "");
   const server: Server = { name, root, command: process.execPath, resolvedCommand: process.execPath, args: [join(dirname(fileURLToPath(import.meta.url)), "fixtures/lsp-server.js"), mode, trace], warmupTimeoutMs: 1000, settings: { python: { analysis: { typeCheckingMode: "strict" } } } };
   return { server, root, events: () => readFileSync(trace, "utf8").split("\n").slice(0, -1).filter(Boolean).map((s) => JSON.parse(s)) };
+}
+function diagnosticFixture(mode: "large" | "aggregate" | "burst" | "deep") {
+  const value = fixture(), file = join(value.root, "diagnostics.mjs");
+  writeFileSync(file, `import { MessageFramer, encodeMessageFrame } from ${JSON.stringify(new URL("../src/omp/message-framing.js", import.meta.url).href)};
+const framer = new MessageFramer(Buffer.alloc(0)); let calls = 0;
+const send = message => process.stdout.write(encodeMessageFrame(message));
+for await (const chunk of process.stdin) {
+ framer.push(chunk);
+ for (const text of framer.drain(() => {})) {
+  const message = JSON.parse(text), reply = result => send({ id: message.id, result });
+  if (message.method === "initialize") reply({ capabilities: { diagnosticProvider: true } });
+  else if (message.method === "fixture/notification") { send({ method: message.params.method, params: message.params.params }); reply(true); }
+  else if (message.method === "textDocument/diagnostic") {
+   calls++;
+   if (${JSON.stringify(mode)} === "deep" && calls === 1) {
+    const data = "[".repeat(20000) + "0" + "]".repeat(20000);
+    const raw = '{"id":' + JSON.stringify(message.id) + ',"result":{"kind":"full","items":[{"message":"deep","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"data":' + data + '}]}}';
+    process.stdout.write('Content-Length: ' + Buffer.byteLength(raw) + '\\r\\n\\r\\n' + raw); continue;
+   }
+   if (${JSON.stringify(mode)} === "burst" && calls === 1) {
+    for (let index = 0; index <= ${MAX_FILES}; index++) send({ method: "textDocument/publishDiagnostics", params: { uri: "file:///burst/" + index, diagnostics: [] } });
+    send({ method: "textDocument/publishDiagnostics", params: { uri: message.params.textDocument.uri, diagnostics: [] } });
+   }
+   const large = ${JSON.stringify(mode)} === "aggregate" || ${JSON.stringify(mode)} === "large" && calls === 1;
+   reply({ kind: "full", items: large ? [{ message: "中".repeat(${JSON.stringify(mode)} === "aggregate" ? 3 * 1024 * 1024 : Math.ceil(${MAX_FILE_BYTES} / 3)), range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }] : [] });
+  } else if (message.method === "shutdown") reply(null);
+  else if (message.method === "exit") process.exit(0);
+ }
+}
+`);
+  value.server.args = [file]; return value;
 }
 afterEach(async () => {
   await Promise.all([...LspClient.active].map((client) => client.close()));
@@ -195,6 +226,61 @@ test("diagnostics: unsupported pull requests fall back to published diagnostics"
   const { server, root } = fixture("pull-throws"), client = await LspClient.start(server, 1000), uri = fileUri(join(root, "source.ts"));
   await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [] } });
   assert.deepStrictEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: true });
+});
+test("diagnostic bounds: native workspace push URI overflow is unverified until a fresh valid report", async () => {
+  const { server, root } = fixture(), client = await LspClient.start(server, 2000), file = join(root, "target.ts");
+  writeFileSync(file, "const value = 1;\n"); const { uri } = await client.open(file);
+  const push = (params: unknown) => client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params });
+  for (let index = 0; index < MAX_FILES; index++) await push({ uri: uri + index, diagnostics: [] });
+  assert.equal(client.diagnostics.size, MAX_FILES);
+  await push({ uri: uri + "0", diagnostics: [] }); assert.equal(client.diagnostics.size, MAX_FILES);
+  await push({ uri: uri + "overflow", diagnostics: [] }); assert.equal(client.diagnostics.size, 0);
+  await assert.rejects(client.waitDiagnostics(uri, 50), /200 URI\/16 MiB/);
+  assert.deepEqual(await client.getDiagnostics(uri, 50), { diagnostics: [], verified: false });
+  for (const params of [{ uri, diagnostics: [null] }, { uri, version: -1, diagnostics: [] }, { uri, version: 0, diagnostics: [] }]) {
+    await push(params); assert.deepEqual(await client.getDiagnostics(uri, 50), { diagnostics: [], verified: false });
+  }
+  await push({ uri, version: 1, diagnostics: [] }); assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: true });
+  client.diagnostics.clear(); assert.deepEqual(await client.getDiagnostics(uri, 30), { diagnostics: [], verified: false });
+  await push({ uri, diagnostics: [] }); assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: true });
+});
+test("diagnostic bounds: aggregate native push bytes honor public cache deletions and recover without restarting", async () => {
+  const { server, root } = fixture(), client = await LspClient.start(server, 6000), uri = fileUri(join(root, "target.ts"));
+  const item = { message: "中".repeat(Math.floor(MAX_FILE_BYTES / 6)), range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+  const push = (target: string, diagnostics: unknown[]) => client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri: target, diagnostics } });
+  await push(uri + "-first", [item]); assert.equal(client.diagnostics.size, 1);
+  client.diagnostics.delete(uri + "-first");
+  await push(uri + "-second", [item]); assert.equal(client.diagnostics.size, 1);
+  assert.equal((await client.getDiagnostics(uri + "-second")).verified, true);
+  await push(uri, [item]); assert.equal(client.diagnostics.size, 0);
+  assert.deepEqual(await client.getDiagnostics(uri, 50), { diagnostics: [], verified: false });
+  await push(uri, []); assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: true });
+  assert.equal(client.reusable, true); assert.equal(client.diagnostics.size, 1);
+});
+test("diagnostic bounds: an oversized native pull report is unverified and a later small report recovers", async () => {
+  const { server, root } = diagnosticFixture("large"), client = await LspClient.start(server, 6000), uri = fileUri(join(root, "target.ts"));
+  assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: false }); assert.equal(client.diagnostics.size, 0);
+  assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: true }); assert.equal(client.reusable, true);
+});
+test("diagnostic bounds: native pull results share the aggregate cache cap with published reports", async () => {
+  const { server, root } = diagnosticFixture("aggregate"), client = await LspClient.start(server, 6000), uri = fileUri(join(root, "target.ts"));
+  const item = { message: "中".repeat(3 * 1024 * 1024), range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+  await client.request("fixture/notification", { method: "textDocument/publishDiagnostics", params: { uri: uri + "-other", diagnostics: [item] } });
+  assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: false }); assert.equal(client.diagnostics.size, 0);
+  const recovered = await client.getDiagnostics(uri); assert.equal(recovered.verified, true); assert.equal(recovered.diagnostics.length, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify([...client.diagnostics])) <= MAX_FILE_BYTES);
+});
+test("diagnostic bounds: a query spanning overflow and a fresh push/pull remains unverified once", async () => {
+  const { server, root } = diagnosticFixture("burst"), client = await LspClient.start(server, 2000), uri = fileUri(join(root, "target.ts"));
+  assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: false });
+  assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: true }); assert.equal(client.diagnostics.size, 1);
+});
+test("diagnostic bounds: deep native metadata respects serializer limits without poisoning later reports", async () => {
+  const { server, root } = diagnosticFixture("deep"), client = await LspClient.start(server, 2000), uri = fileUri(join(root, "target.ts"));
+  const first = await client.getDiagnostics(uri);
+  assert.deepEqual(first.diagnostics.map(item => item.message), first.verified ? ["deep"] : []); assert.equal(client.reusable, true);
+  assert.equal(client.diagnostics.has(uri), first.verified);
+  assert.deepEqual(await client.getDiagnostics(uri), { diagnostics: [], verified: true });
 });
 test("wire: read-only workspace/applyEdit callbacks are refused", async () => {
   const { server, events } = fixture(), client = await LspClient.start(server, 1000);

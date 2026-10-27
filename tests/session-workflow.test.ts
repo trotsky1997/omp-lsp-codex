@@ -166,7 +166,7 @@ test("inspect budget: CLI and session share one response budget while retaining 
 });
 
 test("new query flags: misplaced, conflicting and malformed flags fail before creating protocol state", () => {
-  for (const args of [["hover", "--page-size", "2"], ["references", "--page-size", "0"], ["references", "--page-size", "2", "--limit", "3"], ["hover", "--budget", "3000"], ["inspect", "--budget", "511"], ["hover", "--cursor", "x"], ["hover", "--stdio"]]) assert.throws(() => parseOptions(args));
+  for (const args of [["hover", "--page-size", "2"], ["references", "--page-size", "0"], ["references", "--page-size", "2", "--limit", "3"], ["inspect", "--budget", "511"], ["hover", "--cursor", "x"], ["hover", "--stdio"]]) assert.throws(() => parseOptions(args));
   const args = parseOptions(["batch", "--input", "-"]);
   for (const value of [{ command: "inspect", file: "x", budget: 3 }, { command: "hover", file: "x", pageSize: 2 }, { command: "next" }, { command: "next", cursor: "x", file: "x" }]) assert.throws(() => queryOptions(args, value));
 });

@@ -89,6 +89,27 @@ References pages share a private ten-minute snapshot, including across CLI invoc
 
 Multiline code actions select an end-exclusive one-based UTF-16 range and filter action kinds while retaining original indexes. Preview a selected action before a requested apply. Optional TypeScript interactive rename UI is acknowledged without changing the generated name; `renameTarget` gives an optional follow-up anchor. Type hierarchy and inlay hint/resolve support follow server capabilities; unsupported results identify the executable and offer capability-filtered alternatives. Read [analysis](skills/codex-lsp/references/analysis.md) and [advanced edits](skills/codex-lsp/references/advanced.md).
 
+### Continuous work and reviewed repairs
+
+```sh
+codex-lsp symbols --file src/client.ts --query Client --targets --fields targets
+codex-lsp inspect --target TARGET_ID --context --budget 3000
+codex-lsp diagnostics --file src/client.ts --watch --jsonl --budget 3000
+codex-lsp fix --changed --plan /tmp/codex-lsp-fixes.json --budget 4000
+codex-lsp fix --file src/client.ts --kind quickfix --query INDEX --plan /tmp/codex-lsp-reviewed-fix.json
+codex-lsp apply --plan /tmp/codex-lsp-fixes.json --json
+codex-lsp api-diff --base HEAD --file src/client.ts --budget 4000
+codex-lsp dependencies --file src/client.ts --reverse --depth 2 --budget 3000
+```
+
+Location handles are opt-in, private and bound to the workspace and current source hash. Reuse them across CLI calls or session rows; changed or expired source requires a fresh query. `--fields targets` gives compact IDs. Watch emits `starting`, the initial `snapshot`, then `diagnostics` events with new/resolved/updated issues, and a final `closed` row on SIGINT/SIGTERM. Unverified analysis retains the last verified issues; unchanged output stays quiet.
+
+`fix` saves a reviewable pure-text plan while leaving source unchanged. It defaults to `source.fixAll`; automatic quickfixes require one preferred action, while explicit `--file --query` selects a reviewed original index/title. Commands, ambiguous alternatives and resource operations remain individual code-action workflows. `apply --plan` checks the private receipt and source snapshots, applies the saved edit once, and reports a diagnostic baseline comparison. Project build/runtime verification remains pending. Output failures after editing preserve `applied` and application state; inspect files before another action.
+
+API diff and dependency graphs use ast-grep/Git for Rust, Python and TypeScript/JavaScript. API output retains `evidence:syntax`, `compatibility:unverified`, and separate `surfaceComplete`/`callsComplete`. Dependencies follow relative imports and re-exports, distinguish external/unresolved modules and bound reverse analysis to relevant AST candidates. Graphs remain partial when file/node/time limits are reached; aliases, cfg and dynamic loading need project checks.
+
+`--budget` now applies to all ordinary JSON commands, including graphs, completions, batch and streaming rows. It preserves status/counts and valid graph endpoints; inspect its clipping metadata. When required state cannot fit, select fewer fields or raise the budget. Read [continuous exploration and repairs](skills/codex-lsp/references/workflows.md) for schemas, cache lifetime and limits.
+
 ### Calls, completions, baselines and impact
 
 Call graphs store each file on its node. Edge `locations` contain `line`/`column`; resolve their file through the caller node (`nodes.find(node => node.id === edge.from).file`). `totalEdges` and `shownEdges` expose edge sampling alongside node counts.

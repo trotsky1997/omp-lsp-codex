@@ -59,7 +59,7 @@ test("budget: failures keep all error entries and a bounded cause with recovery 
   const result = budgetData(data, 512); fits(result, 512);
   const error = (object(object(result.results).context).errors as ObjectValue[])[0];
   assert.equal(error.file, path); assert.match(String(error.error), /^Source changed/); assert.equal(error.errorTruncated, true); assert.match(String(object(result.budget).hint), /increase/);
-  assert.throws(() => budgetData({ ...data, failedSections: Array(100).fill("context") }, 512), /cannot retain required inspection state.*increase --budget/);
+  assert.throws(() => budgetData({ ...data, failedSections: Array(100).fill("context") }, 512), /cannot retain required output state.*increase --budget/);
 });
 
 test("budget: several failures retain each cause, verification and existing omission flags", () => {
@@ -107,7 +107,50 @@ test("budget: every successful envelope fits its requested size without changing
       const result = budgetData(data, maximum); fits(result, maximum);
       const json = JSON.stringify(result); assert.equal(Buffer.from(json).toString("utf8"), json);
       for (const location of object(object(result.results).definition).locations as ObjectValue[]) assert.ok(data.results.definition.locations.some(row => row.file === location.file && row.line === location.line && row.column === location.column));
-    } catch (error) { assert.match(String(error), /cannot retain required inspection state.*increase --budget/); }
+    } catch (error) { assert.match(String(error), /cannot retain required output state.*increase --budget/); }
     assert.equal(JSON.stringify(data), original);
   }
+});
+
+test("budget: graph sampling retains valid endpoints, roots and exact shown counts", () => {
+  const data = { success: true, total: 100, shown: 100, totalEdges: 99, shownEdges: 99, roots: ["0"], nodes: Array.from({ length: 100 }, (_, id) => ({ id: String(id), file: path, line: id + 1, column: 1, name: `function${id}` })), edges: Array.from({ length: 99 }, (_, id) => ({ from: "0", to: String(id + 1), totalLocations: 1, locations: [{ line: 2, column: 3 }] })) };
+  const result = budgetData(data, 3000); fits(result, 3000);
+  const nodes = result.nodes as ObjectValue[], edges = result.edges as ObjectValue[], ids = new Set(nodes.map(node => node.id));
+  assert.equal(result.total, 100); assert.equal(result.totalEdges, 99); assert.equal(result.shown, nodes.length); assert.equal(result.shownEdges, edges.length);
+  for (const edge of edges) { assert.ok(ids.has(edge.from)); assert.ok(ids.has(edge.to)); }
+  for (const root of result.roots as string[]) assert.ok(ids.has(root));
+  assert.ok(nodes.length > 0); assert.ok(edges.length > 0); assert.equal(result.truncated, true);
+  assert.equal(data.nodes.length, 100); assert.equal(data.edges.length, 99);
+});
+
+test("budget: completions trim labels and markup while preserving item counts and read-only payload omissions", () => {
+  const data = { success: true, total: 100, shown: 100, incomplete: false, items: Array.from({ length: 100 }, (_, index) => ({ label: `item${index} ` + "😀".repeat(1000), documentation: { kind: "markdown", value: "docs ".repeat(2000) }, additionalTextEdits: [{ range, newText: "x".repeat(3000) }], data: { opaque: "opaque ".repeat(1000) } })) };
+  const result = budgetData(data, 2000); fits(result, 2000);
+  const items = result.items as ObjectValue[]; assert.equal(result.total, 100); assert.equal(result.shown, items.length); assert.ok(items.length);
+  for (const item of items) { assert.equal(item.additionalTextEdits, undefined); assert.equal(item.data, undefined); assert.equal(item.detailsOmitted, true); assert.ok(String(item.label).isWellFormed()); }
+});
+
+test("budget: watch sampling preserves diagnostic counts and exposes file-list omissions", () => {
+  const data = { success: true, verified: true, event: "diagnostics", sequence: 4, total: 100, counts: { errors: 100 }, checkedFiles: 100, files: Array.from({ length: 100 }, (_, index) => ({ file: `${path}${index}`, sha256: "a".repeat(64), versions: [2], verified: true, errors: [] })), changes: { counts: { new: 100, resolved: 0, existing: 0, updated: 0 }, new: { total: 100, shown: 100, diagnostics: Array.from({ length: 100 }, (_, index) => ({ id: String(index), file: path, line: index + 1, column: 1, message: "large message ".repeat(100) })) } } };
+  const result = budgetData(data, 1800); fits(result, 1800);
+  assert.equal(result.event, "diagnostics"); assert.equal(result.sequence, 4); assert.equal(result.checkedFiles, 100); assert.deepEqual(result.counts, { errors: 100 });
+  assert.equal(result.filesTotal, 100); assert.equal(result.filesShown, (result.files as unknown[]).length);
+  const fresh = object(object(result.changes).new); assert.equal(fresh.total, 100); assert.equal(fresh.shown, (fresh.diagnostics as unknown[]).length);
+});
+
+test("budget: plan handles and application verification survive field selection and diff clipping", () => {
+  const selected = selectFields({ success: true, applied: true, applicationState: "applied", verification: "pending", diagnosticVerification: "verified", plan: "/private/reviewed plan.json", saved: true, compatibility: "unverified", evidence: "syntax", surfaceComplete: true, callsComplete: false, diff: "large diff\n".repeat(10000) }, ["diff"]);
+  const result = budgetData(selected, 700); fits(result, 700);
+  assert.equal(result.plan, "/private/reviewed plan.json"); assert.equal(result.saved, true); assert.equal(result.applicationState, "applied");
+  assert.equal(result.diagnosticVerification, "verified"); assert.equal(result.verification, "pending"); assert.equal(result.compatibility, "unverified"); assert.equal(result.evidence, "syntax"); assert.equal(result.surfaceComplete, true); assert.equal(result.callsComplete, false);
+});
+
+test("budget: dependency graphs spend space on connected evidence and update shownNodes", () => {
+  const data = { success: true, file: path, totalNodes: 154, shownNodes: 154, totalEdges: 153, shownEdges: 153,
+    nodes: Array.from({ length: 154 }, (_, index) => ({ id: String(index), file: index ? `${path}/module${index}.py` : path, status: "internal" })),
+    edges: Array.from({ length: 153 }, (_, index) => ({ from: "0", to: String(index + 1), kind: "import", specifier: `package.module${index}`, line: index + 1, column: 1, status: "internal" })) };
+  const result = budgetData(data, 5000); fits(result, 5000);
+  const nodes = result.nodes as ObjectValue[], edges = result.edges as ObjectValue[];
+  assert.equal(result.shownNodes, nodes.length); assert.equal(result.shownEdges, edges.length); assert.ok(edges.length >= 5, `Only ${edges.length} connected edges retained`);
+  assert.ok(nodes.length <= edges.length * 2 + 1); assert.equal(result.totalEdges, 153);
 });

@@ -269,7 +269,7 @@ for (const [caseIndex, caseValue] of (["diff", "ls-files"]).entries()) {
   assert.strictEqual(childProcess.spawnSync(realGit, ["-C", w.root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "add", "source.fixture"]).status, 0);
   assert.strictEqual(childProcess.spawnSync(realGit, ["-C", w.root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]).status, 0);
   const fakeGit = join(shimRoot, "git"), quotedGit = `'${realGit.replaceAll("'", "'\\''")}'`;
-  fs.writeFileSync(fakeGit, `#!/bin/sh\nif [ "$3" = "${stage}" ]; then printf 'source.fixture\\0'; printf '%s\\n' '${"x".repeat(256)}fixture Git permission denied' >&2; exit 7; fi\nexec ${quotedGit} "$@"\n`);
+  fs.writeFileSync(fakeGit, `#!/bin/sh\nfor argument in "$@"; do if [ "$argument" = "${stage}" ]; then printf 'source.fixture\\0'; printf '%s\\n' '${"x".repeat(256)}fixture Git permission denied' >&2; exit 7; fi; done\nexec ${quotedGit} "$@"\n`);
   fs.chmodSync(fakeGit, 0o755);
   process.env.PATH = `${shimRoot}:${oldPath}`;
   try {

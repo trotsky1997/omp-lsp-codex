@@ -4,7 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { windowsCommand } from "./windows-command.js";
 import { CLIENT_CAPABILITIES } from "./omp/capabilities.js";
 import { encodeMessageFrame, MessageFramer } from "./omp/message-framing.js";
-import { fileUri, gitRoot, languageId, object, readText, resolveFile, uriFile } from "./config.js";
+import { fileUri, gitRoot, languageId, MAX_FILE_BYTES, MAX_FILES, object, readText, resolveFile, uriFile } from "./config.js";
 import { applyWorkspaceEdit } from "./edits.js";
 import { version } from "./version.js";
 function validDiagnostics(value) {
@@ -39,6 +39,9 @@ export class LspClient {
     #writeQueue = Promise.resolve();
     #stderr = "";
     #failure;
+    #diagnosticSizes = new WeakMap();
+    #diagnosticLimit;
+    #diagnosticOverflow = 0;
     #closed = false;
     #closing;
     get reusable() { return !this.#failure && !this.#closed; }
@@ -198,7 +201,7 @@ export class LspClient {
                     return;
             }
             if (validDiagnostics(params.diagnostics))
-                this.diagnostics.set(params.uri, params.diagnostics);
+                this.#cacheDiagnostics(params.uri, params.diagnostics);
             else
                 this.diagnostics.delete(params.uri);
         }
@@ -389,8 +392,39 @@ export class LspClient {
         }
         return refreshed;
     }
+    #cacheDiagnostics(uri, diagnostics) {
+        const bytes = (items) => {
+            let size = this.#diagnosticSizes.get(items);
+            if (size === undefined) {
+                size = Buffer.byteLength(JSON.stringify(items));
+                this.#diagnosticSizes.set(items, size);
+            }
+            return size;
+        };
+        this.diagnostics.delete(uri);
+        let total = Infinity;
+        try {
+            total = Buffer.byteLength(uri) + bytes(diagnostics);
+            for (const [key, items] of this.diagnostics)
+                total += Buffer.byteLength(key) + bytes(items);
+        }
+        catch {
+            total = Infinity;
+        } // Deep provider metadata must not poison the reusable client.
+        if (this.diagnostics.size >= MAX_FILES || total > MAX_FILE_BYTES) {
+            this.diagnostics.clear();
+            this.#diagnosticOverflow++;
+            this.#diagnosticLimit = new Error("Language-server diagnostics exceed 200 URI/16 MiB; narrow to --file or reduce server diagnostic scope, then retry after a fresh report");
+            return false;
+        }
+        this.diagnostics.set(uri, diagnostics);
+        this.#diagnosticLimit = undefined;
+        return true;
+    }
     async waitDiagnostics(uri, timeoutMs = this.timeoutMs) {
-        await this.#waitUntil(() => this.diagnostics.has(uri), timeoutMs, "file analysis");
+        await this.#waitUntil(() => !!this.#diagnosticLimit || this.diagnostics.has(uri), timeoutMs, "file analysis");
+        if (this.#diagnosticLimit)
+            throw this.#diagnosticLimit;
         return this.diagnostics.get(uri);
     }
     async waitWorkspace(timeoutMs = this.timeoutMs) {
@@ -418,7 +452,10 @@ export class LspClient {
         return false;
     }
     async getDiagnostics(uri, timeoutMs = this.timeoutMs) {
+        const overflow = this.#diagnosticOverflow;
         const result = await this.#collectDiagnostics(uri, timeoutMs), document = this.documents.get(uri);
+        if (result.verified && (this.#diagnosticLimit || overflow !== this.#diagnosticOverflow))
+            return { diagnostics: [], verified: false };
         if (result.verified && document &&
             readText(resolveFile(uriFile(uri), this.server.root)) !== document.text)
             return { diagnostics: [], verified: false };
@@ -437,7 +474,7 @@ export class LspClient {
             try {
                 const report = await this.request("textDocument/diagnostic", { textDocument: { uri } }, remaining());
                 if (report.kind === "full")
-                    return validDiagnostics(report.items)
+                    return validDiagnostics(report.items) && this.#cacheDiagnostics(uri, report.items)
                         ? { diagnostics: report.items, verified: ready }
                         : { diagnostics: [], verified: false };
             }

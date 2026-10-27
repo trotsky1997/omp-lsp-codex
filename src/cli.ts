@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { run, outputData, type Options } from "./commands.ts";
+import { run, outputData, type Options, type Result } from "./commands.ts";
 import { hook } from "./hooks.ts";
 import { LspClient } from "./client.ts";
 import { expandHome, MAX_FILE_BYTES } from "./config.ts";
@@ -10,6 +10,7 @@ import { version } from "./version.ts";
 import { failure, parseFields } from "./output.ts";
 import { parseRange } from "./range.ts";
 import { stdioSession } from "./session.ts";
+import { watchDiagnostics } from "./watch.ts";
 
 const HELP = `codex-lsp ${version} — Multi-language LSP tools for agents (Node ${process.versions.node})
 
@@ -24,6 +25,11 @@ Commands:
                          Hover, definition, references, symbols and diagnostics in one session
   diagnostics            --file PATH or --changed
                          [--baseline PATH] [--save-baseline PATH]
+                         [--watch --jsonl] Stream verified diagnostic changes
+  fix --changed | --file PATH --plan PATH [--kind source.fixAll|quickfix] Save pure-text repairs
+  apply --plan PATH      Apply a reviewed unchanged plan and compare diagnostics
+  api-diff --base REF    [--file PATH] Compare public syntax against a Git revision
+  dependencies           --file PATH [--reverse] [--depth N] Import/re-export evidence graph
   callers / callees      --file PATH --line N [--symbol NAME] [--depth N]
   supertypes / subtypes  --file PATH --line N [--symbol NAME] [--depth N]
   inlay-hints            --file PATH --range START:COL-END:COL [--resolve]
@@ -51,7 +57,9 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --fields A,B          Select JSON object paths (implies --json), e.g. total,results.diagnostics.counts
                         Keeps status/error/truncation metadata; arrays are selected whole
   --page-size N         References per snapshot page (1-1000); follow nextCursor with next
-  --budget N            Inspect JSON character budget (512-16777216, implies --json)
+  --budget N            JSON character budget (512-16777216, implies --json); each streaming row is bounded
+  --targets             Return reusable location IDs (implies --json); --fields targets gives compact handles
+  --target ID           Reuse a location from --targets in the same workspace; source version is checked
   --context             Include enclosing source, definitions, types and sampled references in inspect
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 ast-grep improves --symbol and selects call arguments for signature-help --symbol.
@@ -88,6 +96,13 @@ export function parseOptions(
       input: { type: "string" },
       context: { type: "boolean" },
       stdio: { type: "boolean" },
+      target: { type: "string" },
+      targets: { type: "boolean" },
+      watch: { type: "boolean" },
+      jsonl: { type: "boolean" },
+      plan: { type: "string" },
+      base: { type: "string" },
+      reverse: { type: "boolean" },
       range: { type: "string" },
       kind: { type: "string" },
       "page-size": { type: "string" },
@@ -126,18 +141,25 @@ export function parseOptions(
   const [command = "", ...languages] = positionals;
   const depth = Number(v.depth ?? 1);
   if (!Number.isSafeInteger(depth) || depth < 1 || depth > 10) throw new Error("--depth must be an integer from 1 to 10");
-  if (v.depth !== undefined && !["callers", "callees", "supertypes", "subtypes"].includes(command)) throw new Error("--depth is only available for callers/callees/supertypes/subtypes");
+  if (v.depth !== undefined && !["callers", "callees", "supertypes", "subtypes", "dependencies"].includes(command)) throw new Error("--depth is only available for callers/callees/supertypes/subtypes/dependencies");
   if (v.resolve && !["complete", "inlay-hints"].includes(command)) throw new Error("--resolve is only available for complete/inlay-hints");
   const range = v.range === undefined ? undefined : parseRange(v.range);
   if (range && !["code-actions", "inlay-hints"].includes(command)) throw new Error("--range is only available for code-actions/inlay-hints");
   if (range && (v.line !== undefined || v.column !== undefined || v.symbol !== undefined)) throw new Error("Choose --range or --line/--column/--symbol");
-  if (v.kind !== undefined && (command !== "code-actions" || !/^[\w-]+(?:\.[\w-]+)*$/.test(v.kind))) throw new Error("--kind requires code-actions and an action kind such as refactor.extract");
+  if (v.kind !== undefined && (!["code-actions", "fix"].includes(command) || !/^[\w-]+(?:\.[\w-]+)*$/.test(v.kind))) throw new Error("--kind requires code-actions/fix and an action kind such as refactor.extract");
   const pageSize = v["page-size"] === undefined ? undefined : Number(v["page-size"]);
   if (pageSize !== undefined && (command !== "references" || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000)) throw new Error("--page-size requires references and an integer from 1 to 1000");
   if (pageSize !== undefined && v.limit !== undefined) throw new Error("Choose --page-size or --limit");
   if (v.cursor !== undefined && (command !== "next" || !v.cursor.trim())) throw new Error("--cursor requires next and a nonempty snapshot cursor");
   const budget = v.budget === undefined ? undefined : Number(v.budget);
-  if (budget !== undefined && (command !== "inspect" || !Number.isSafeInteger(budget) || budget < 512 || budget > MAX_FILE_BYTES)) throw new Error(`--budget requires inspect and an integer from 512 to ${MAX_FILE_BYTES}`);
+  if (budget !== undefined && (command === "hook" || !Number.isSafeInteger(budget) || budget < 512 || budget > MAX_FILE_BYTES)) throw new Error(`--budget must be an integer from 512 to ${MAX_FILE_BYTES}; hooks emit their own protocol`);
+  if (v.watch && command !== "diagnostics") throw new Error("--watch is only available for diagnostics");
+  if (v.jsonl && (command !== "diagnostics" || !v.watch)) throw new Error("Use diagnostics --watch --jsonl");
+  if (v.plan !== undefined && (!["fix", "apply"].includes(command) || !v.plan.trim())) throw new Error("--plan requires fix/apply and a nonempty path");
+  if (v.base !== undefined && (command !== "api-diff" || !v.base.trim())) throw new Error("--base requires api-diff and a nonempty Git revision");
+  if (v.reverse && command !== "dependencies") throw new Error("--reverse requires dependencies");
+  if (v.target !== undefined && (!v.target.trim() || v.file !== undefined || v.line !== undefined || v.column !== undefined || v.symbol !== undefined || range)) throw new Error("Choose --target ID or --file/--line/--column/--symbol/--range");
+  if (v.target !== undefined && !["hover", "definition", "references", "type-definition", "implementation", "signature-help", "snippet", "inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "complete"].includes(command)) throw new Error("--target requires a position-based query or rename/code-actions");
   if (v.stdio && command !== "session") throw new Error("--stdio is only available for session");
   if ((v.baseline !== undefined || v["save-baseline"] !== undefined) && command !== "diagnostics") throw new Error("Baseline flags are only available for diagnostics");
   if (v.baseline === "" || v["save-baseline"] === "") throw new Error("Baseline paths must be nonempty");
@@ -171,9 +193,11 @@ export function parseOptions(
     baseline: v.baseline,
     saveBaseline: v["save-baseline"],
     range, kind: v.kind, pageSize, cursor: v.cursor, budget, stdio: !!v.stdio,
+    target: v.target, targets: !!v.targets, watch: !!v.watch, jsonl: !!v.jsonl || !!v.watch,
+    plan: v.plan, base: v.base, reverse: !!v.reverse,
     timeout: Math.max(5, Math.min(300, timeout)) * 1000,
     limit,
-    json: !!v.json || fields !== undefined || budget !== undefined || !!v.stdio,
+    json: !!v.json || fields !== undefined || budget !== undefined || !!v.stdio || !!v.targets || !!v.watch,
     fields,
     changed: !!v.changed,
     workspace: !!v.workspace,
@@ -186,11 +210,12 @@ export function parseOptions(
   };
 }
 export async function main(argv = process.argv.slice(2)): Promise<number> {
-  let limit = 50;
-  const json = argv[0] === "session" || argv.includes("--json") || argv.some(arg => arg === "--fields" || arg.startsWith("--fields=") || arg === "--budget" || arg.startsWith("--budget="));
+  let limit = 50, maximum: number | undefined, completed: Result | undefined;
+  const json = argv[0] === "session" || argv.includes("--json") || argv.includes("--targets") || argv.includes("--watch") || argv.includes("--jsonl") || argv.some(arg => arg === "--fields" || arg.startsWith("--fields=") || arg === "--budget" || arg.startsWith("--budget="));
   try {
     const args = parseOptions(argv);
     limit = args.limit;
+    maximum = args.budget;
     if (args.version) {
       console.log(`codex-lsp ${version}`);
       return 0;
@@ -204,11 +229,28 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     }
     if (args.command === "session") return await stdioSession(args);
-    const result = await run(args);
+    if (args.watch) {
+      const controller = new AbortController(), stop = () => {
+        controller.abort();
+        for (const client of LspClient.active) void client.close();
+      };
+      process.once("SIGINT", stop); process.once("SIGTERM", stop);
+      try { return await watchDiagnostics(args, process.stdout, controller.signal); }
+      finally { process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); }
+    }
+    const result = completed = await run(args);
     console.log(args.json ? JSON.stringify(outputData(result.data, args)) : result.human);
     return result.code ?? 0;
   } catch (error) {
-    const result = failure(error, limit);
+    const state = Object.fromEntries(["applied", "applicationState", "verification", "diagnosticVerification", "plan"].filter(key => completed?.data[key] !== undefined).map(key => [key, completed!.data[key]]));
+    const changed = state.applied === true || state.applied === null;
+    const message = { ...failure(error, limit), ...state, ...(changed ? { hint: "Output failed after editing. Inspect applied/file states and rerun diagnostics; do not retry the edit." } : {}) };
+    let result;
+    try { result = outputData(message, { budget: maximum }); }
+    catch {
+      const { plan, ...short } = message as Record<string, unknown>;
+      result = outputData({ ...short, ...(plan ? { planPathOmitted: true } : {}) }, { budget: maximum });
+    }
     if (json) console.log(JSON.stringify(result));
     else console.error([`codex-lsp: ${result.error}`, result.hint].filter(Boolean).join("\n"));
     return 2;
@@ -217,7 +259,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 }
 if (import.meta.main) {
-  for (const [signal, code] of [
+  if (!process.argv.includes("--watch")) for (const [signal, code] of [
     ["SIGINT", 130],
     ["SIGTERM", 143],
   ] as const)

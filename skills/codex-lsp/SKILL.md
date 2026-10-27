@@ -13,26 +13,19 @@ Read the matching language subskill for project-specific decisions: [Rust](../co
 codex-lsp symbols --file PATH --query NAME --limit 5
 codex-lsp definition --file PATH --line N --symbol NAME
 codex-lsp hover --file PATH --line N --symbol NAME
-codex-lsp references --file PATH --line N --symbol NAME
 codex-lsp signature-help --file PATH --line N --symbol NAME
 codex-lsp snippet --file PATH --line N --symbol NAME
-codex-lsp inspect --file PATH --line N --symbol NAME
-codex-lsp inspect --file PATH --line N --symbol NAME --context
+codex-lsp inspect --file PATH --line N --symbol NAME --context --budget 3000
 codex-lsp batch --input queries.jsonl --json
-codex-lsp callers --file PATH --line N --symbol NAME --depth 2
-codex-lsp callees --file PATH --line N --symbol NAME --depth 2
-codex-lsp complete --file PATH --line N --column N --query NAME --resolve
-codex-lsp diagnostics --file PATH --save-baseline BASELINE.json
-codex-lsp diagnostics --baseline BASELINE.json
-codex-lsp impact --changed --json
 codex-lsp session --stdio
-codex-lsp references --file PATH --line N --symbol NAME --page-size 20 --json
-codex-lsp next --cursor CURSOR --json
-codex-lsp inspect --file PATH --line N --context --budget 3000
-codex-lsp code-actions --file PATH --range 20:1-35:1 --kind refactor.extract
-codex-lsp supertypes --file PATH --line N --symbol NAME --depth 2
-codex-lsp subtypes --file PATH --line N --symbol NAME --depth 2
-codex-lsp inlay-hints --file PATH --range 20:1-60:1 --resolve
+codex-lsp diagnostics --file PATH
+codex-lsp symbols --file PATH --query NAME --targets --fields targets
+codex-lsp inspect --target ID --context --budget 3000
+codex-lsp diagnostics --file PATH --watch --jsonl
+codex-lsp fix --changed --plan /tmp/codex-lsp-fixes.json
+codex-lsp apply --plan /tmp/codex-lsp-fixes.json
+codex-lsp api-diff --base HEAD --file PATH
+codex-lsp dependencies --file PATH --reverse --depth 2
 ```
 
 Use symbols or source search to find a current anchor. File errors suggest discovery; wrong-line errors suggest nearby matches. Positions are one-based UTF-16 columns; `NAME#2` selects a repeated token. Quote paths and pass arguments separately. Run from the project directory, or choose another with `--cwd PROJECT`.
@@ -50,6 +43,8 @@ Prefer human text for reading. For automation, `--fields locations` implies JSON
 Use `session --stdio` for questions chosen from earlier replies: write one JSONL row, read its response before sending the next, then close stdin or send `{"command":"close"}`. It reuses compatible servers and refreshes opened files after external edits. References accept `--page-size N`; follow `nextCursor` with `next --cursor ID` to read a cached page without another server request. `inspect --budget N` bounds the complete JSON response; it preserves state and clips content explicitly. Read [sessions, paging and budgets](references/sessions.md) for streaming, row fields, cache lifetime and recovery.
 
 Default limits are 50 results/hover lines, 10 per inspect section and one signature. Text budgets and truncation flags describe omissions. Use `--limit 0 --json > result.json` when complete details are required. Read [output shapes](references/outputs.md) for field selection, signature cursors or large results.
+
+For repeated navigation, request `--targets` and reuse `--target ID`; stale source requires a fresh handle. Watch diagnostics for continuous disk edits, plan multi-file pure-text fixes before `apply --plan`, and use `api-diff`/`dependencies` for public syntax/module evidence. `--budget` bounds any ordinary JSON command and each streaming row. Read [continuous exploration and repairs](references/workflows.md) for schemas, source checks, unsupported actions and verification limits.
 
 Use call hierarchy to follow callers/callees, completion to discover members at a cursor, a diagnostic baseline to separate new issues from existing ones, and impact for changed declarations and candidate tests with evidence. These commands are read-only with respect to source. Read [analysis workflows](references/analysis.md) for capture/compare, traversal and resolution budgets, incomplete results or removed code.
 

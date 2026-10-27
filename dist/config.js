@@ -73,6 +73,15 @@ export function ancestors(cwd) {
 export function gitRoot(cwd) {
     return ancestors(cwd).find((path) => existsSync(join(path, ".git"))) ?? cwd;
 }
+export function numstatFiles(output) {
+    if (output && !output.endsWith("\0"))
+        throw new Error("Incomplete Git --numstat -z output");
+    return output.split("\0").filter(Boolean).map(record => {
+        if (!/^(?:\d+\t\d+|-\t-)\t[\s\S]+$/.test(record))
+            throw new Error("Invalid Git --numstat -z --no-renames record");
+        return record.slice(record.indexOf("\t", record.indexOf("\t") + 1) + 1);
+    });
+}
 export function inside(root, path) {
     const rel = relative(root, path);
     return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);

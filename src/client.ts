@@ -12,7 +12,7 @@ import type {
   LspJsonRpcResponse,
   WorkspaceEdit,
 } from "./omp/types.ts";
-import { fileUri, gitRoot, languageId, object, readText, resolveFile, uriFile, type ObjectValue, type Server } from "./config.ts";
+import { fileUri, gitRoot, languageId, MAX_FILE_BYTES, MAX_FILES, object, readText, resolveFile, uriFile, type ObjectValue, type Server } from "./config.ts";
 import { applyWorkspaceEdit, type DocumentState } from "./edits.ts";
 import { version } from "./version.ts";
 
@@ -57,6 +57,9 @@ export class LspClient {
   #writeQueue: Promise<void> = Promise.resolve();
   #stderr = "";
   #failure?: Error;
+  #diagnosticSizes = new WeakMap<Diagnostic[], number>();
+  #diagnosticLimit?: Error;
+  #diagnosticOverflow = 0;
   #closed = false;
   #closing?: Promise<void>;
 
@@ -233,7 +236,7 @@ export class LspClient {
         }
         if (this.documents.has(params.uri) && this.documents.get(params.uri)!.version !== params.version) return;
       }
-      if (validDiagnostics(params.diagnostics)) this.diagnostics.set(params.uri, params.diagnostics);
+      if (validDiagnostics(params.diagnostics)) this.#cacheDiagnostics(params.uri, params.diagnostics);
       else this.diagnostics.delete(params.uri);
     } else if (message.method === "experimental/serverStatus") {
       this.serverStatus = params as ServerStatus;
@@ -405,8 +408,29 @@ export class LspClient {
     }
     return refreshed;
   }
+  #cacheDiagnostics(uri: string, diagnostics: Diagnostic[]): boolean {
+    const bytes = (items: Diagnostic[]) => {
+      let size = this.#diagnosticSizes.get(items);
+      if (size === undefined) { size = Buffer.byteLength(JSON.stringify(items)); this.#diagnosticSizes.set(items, size); }
+      return size;
+    };
+    this.diagnostics.delete(uri);
+    let total = Infinity;
+    try {
+      total = Buffer.byteLength(uri) + bytes(diagnostics);
+      for (const [key, items] of this.diagnostics) total += Buffer.byteLength(key) + bytes(items);
+    } catch { total = Infinity; } // Deep provider metadata must not poison the reusable client.
+    if (this.diagnostics.size >= MAX_FILES || total > MAX_FILE_BYTES) {
+      this.diagnostics.clear(); this.#diagnosticOverflow++;
+      this.#diagnosticLimit = new Error("Language-server diagnostics exceed 200 URI/16 MiB; narrow to --file or reduce server diagnostic scope, then retry after a fresh report");
+      return false;
+    }
+    this.diagnostics.set(uri, diagnostics); this.#diagnosticLimit = undefined;
+    return true;
+  }
   async waitDiagnostics(uri: string, timeoutMs = this.timeoutMs): Promise<Diagnostic[]> {
-    await this.#waitUntil(() => this.diagnostics.has(uri), timeoutMs, "file analysis");
+    await this.#waitUntil(() => !!this.#diagnosticLimit || this.diagnostics.has(uri), timeoutMs, "file analysis");
+    if (this.#diagnosticLimit) throw this.#diagnosticLimit;
     return this.diagnostics.get(uri)!;
   }
   async waitWorkspace(timeoutMs = this.timeoutMs): Promise<void> {
@@ -433,7 +457,9 @@ export class LspClient {
     return false;
   }
   async getDiagnostics(uri: string, timeoutMs = this.timeoutMs): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
+    const overflow = this.#diagnosticOverflow;
     const result = await this.#collectDiagnostics(uri, timeoutMs), document = this.documents.get(uri);
+    if (result.verified && (this.#diagnosticLimit || overflow !== this.#diagnosticOverflow)) return { diagnostics: [], verified: false };
     if (result.verified && document &&
         readText(resolveFile(uriFile(uri)!, this.server.root)) !== document.text)
       return { diagnostics: [], verified: false };
@@ -456,7 +482,7 @@ export class LspClient {
           remaining(),
         );
         if (report.kind === "full")
-          return validDiagnostics(report.items)
+          return validDiagnostics(report.items) && this.#cacheDiagnostics(uri, report.items)
             ? { diagnostics: report.items, verified: ready }
             : { diagnostics: [], verified: false };
       } catch {

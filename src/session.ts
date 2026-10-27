@@ -71,7 +71,7 @@ async function verify(session: Session) {
 
 export async function stdioSession(args: Options, input: Readable = process.stdin, output: Writable = process.stdout): Promise<number> {
   if (!args.stdio) throw new Error("Use session --stdio; send JSONL queries and close stdin or send {\"command\":\"close\"}");
-  if (args.apply || args.file || args.changed || args.workspace || args.newName || args.method || args.payload || args.project || args.symbol || args.query || args.column || args.line !== 1 || args.input || args.fields)
+  if (args.apply || args.file || args.changed || args.workspace || args.newName || args.method || args.payload || args.project || args.symbol || args.query || args.column || args.line !== 1 || args.input || args.fields || args.target || args.plan || args.base || args.reverse)
     throw new Error("session is read-only; put file, query and fields in its JSONL rows");
   const session: Session = { clients: new Map(), diagnostics: false };
   let failed = false, queries = 0;
@@ -80,7 +80,7 @@ export async function stdioSession(args: Options, input: Readable = process.stdi
       if (row.text !== undefined && !row.text.trim()) continue;
       const started = performance.now();
       const elapsed = () => Math.round((performance.now() - started) * 100) / 100;
-      let id: unknown = row.line;
+      let id: unknown = row.line, budget = args.budget;
       try {
         if (row.error) throw new Error(row.error);
         if (queries++ >= MAX_FILES) { await write(output, { id, inputLine: row.line, code: 2, success: false, error: `Session limit is ${MAX_FILES} queries; start a new session` }); return 1; }
@@ -91,6 +91,7 @@ export async function stdioSession(args: Options, input: Readable = process.stdi
           await write(output, { id, inputLine: row.line, code: 0, success: true, closed: true, elapsedMs: elapsed() }); break;
         }
         const options = queryOptions(args, value, true);
+        budget = options.budget;
         session.diagnostics ||= ["inspect", "diagnostics"].includes(options.command);
         const refreshed = await refresh(session);
         const result = await run(options, session);
@@ -102,7 +103,7 @@ export async function stdioSession(args: Options, input: Readable = process.stdi
         failed ||= code !== 0;
       } catch (error) {
         failed = true;
-        await write(output, { ...failure(error, args.limit), id, inputLine: row.line, code: 2, elapsedMs: elapsed() });
+        await write(output, outputData({ ...failure(error, args.limit), id, inputLine: row.line, code: 2, elapsedMs: elapsed() }, { budget }));
       }
     }
     return failed ? 1 : 0;

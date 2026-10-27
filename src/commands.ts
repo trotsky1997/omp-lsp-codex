@@ -16,6 +16,7 @@ import {
   languageId,
   loadConfig,
   matchesFile,
+  numstatFiles,
   MAX_FILES,
   MAX_FILE_BYTES,
   object,
@@ -46,6 +47,9 @@ import { version } from "./version.ts";
 import { compactText, failure, selectFields, textPrefix } from "./output.ts";
 import { syntaxLanguage, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.ts";
 import { batchQueries } from "./batch.ts";
+import { attachTargets, resolveTarget } from "./targets.ts";
+import { apiDiff, dependencies } from "./analysis.ts";
+import { applyPlan, fixPlan } from "./fixes.ts";
 import { inspectContext } from "./context.ts";
 import { callHierarchy, complete } from "./semantic.ts";
 import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.ts";
@@ -79,6 +83,13 @@ export interface Options {
   cursor?: string;
   budget?: number;
   stdio?: boolean;
+  target?: string;
+  targets?: boolean;
+  watch?: boolean;
+  jsonl?: boolean;
+  plan?: string;
+  base?: string;
+  reverse?: boolean;
   timeout: number;
   limit: number;
   json: boolean;
@@ -826,21 +837,22 @@ function setup(args: Options): Result {
 export async function changedFiles(cwd: string): Promise<string[]> {
   const root = gitRoot(cwd),
     found = new Set<string>();
+  // Numstat verifies content without refreshing the index or reporting stat-only changes.
   for (const args of [
-    ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD"],
-    ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB"],
-    ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRTUXB"],
+    ["diff", "--numstat", "--no-renames", "-z", "--diff-filter=ACMRTUXB", "HEAD"],
+    ["diff", "--numstat", "--no-renames", "-z", "--diff-filter=ACMRTUXB"],
+    ["diff", "--cached", "--numstat", "--no-renames", "-z", "--diff-filter=ACMRTUXB"],
     ["ls-files", "--others", "--exclude-standard", "-z"],
   ]) {
     let output: string;
-    const options = { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 } as const;
+    const options = { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } } as const;
     try {
-      ({ stdout: output } = await promisify(childProcess.execFile)("git", ["-C", root, ...args], options));
+      ({ stdout: output } = await promisify(childProcess.execFile)("git", ["-c", "diff.autoRefreshIndex=false", "-C", root, ...args], options));
     } catch (error) {
       const failure = error as childProcess.ExecFileException & { stderr?: string };
       if (args.at(-1) === "HEAD" && failure.code === 128 && !failure.killed && !failure.signal) {
         try {
-          await promisify(childProcess.execFile)("git", ["-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], options);
+          await promisify(childProcess.execFile)("git", ["-c", "diff.autoRefreshIndex=false", "-C", root, "rev-parse", "--verify", "--quiet", "HEAD"], options);
         } catch (headError) {
           const head = headError as childProcess.ExecFileException;
           // Only an unborn HEAD may fail; timeouts and other Git failures stay visible.
@@ -850,7 +862,7 @@ export async function changedFiles(cwd: string): Promise<string[]> {
       const reason = failure.stderr?.trim() || failure.message;
       throw new Error(`Git ${args.join(" ")} failed in ${root}${reason ? `: ${reason.slice(-1000)}` : ""}. Select the project with --cwd <project-root> diagnostics --changed, or use diagnostics --file <source-file>`);
     }
-    for (const name of output.split("\0").filter(Boolean)) {
+    for (const name of args[0] === "diff" ? numstatFiles(output) : output.split("\0").filter(Boolean)) {
       let path: string, info: ReturnType<typeof statSync>;
       try {
         path = realpathSync(join(root, name));
@@ -885,6 +897,7 @@ export async function diagnostics(args: Options, shared?: FileContext, session?:
     string,
     { file: string; diagnostics: Diagnostic[]; verified: boolean; errors: string[] }
   >();
+  let diagnosticBytes = 0;
   for (const path of paths) {
     const configs = loadConfig(dirname(path), args.globalConfigOnly);
     if (configurationPaths.includes(path)) {
@@ -919,6 +932,8 @@ export async function diagnostics(args: Options, shared?: FileContext, session?:
       for (const file of files) {
         const result = await client.getDiagnostics(fileUri(file)),
           record = records.get(file)!;
+        diagnosticBytes += Buffer.byteLength(JSON.stringify(result.diagnostics));
+        if (diagnosticBytes > MAX_FILE_BYTES) throw new Error("Diagnostic results exceed the 16 MiB aggregate limit; narrow to --file or a smaller changed scope");
         record.verified &&= result.verified;
         if (args.baseline || args.saveBaseline) {
           const text = client.documents.get(fileUri(file))!.text;
@@ -1249,8 +1264,14 @@ async function request(args: Options): Promise<Result> {
 }
 
 export async function run(args: Options, session?: Session): Promise<Result> {
+  const resolved = resolveTarget(args), result = await runQuery(resolved, session);
+  try { return { ...result, data: attachTargets(resolved, result.data) }; }
+  catch (error) { return { ...result, data: { ...result.data, targets: [], targetsHint: `Targets unavailable; use explicit file/line anchors. ${error instanceof Error ? error.message : String(error)}` } }; }
+}
+
+async function runQuery(args: Options, session?: Session): Promise<Result> {
   const navigation = Object.hasOwn(NAVIGATION, args.command);
-  if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next"].includes(args.command))) throw new Error(`${args.command} is read-only; omit --apply`);
+  if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix"].includes(args.command))) throw new Error(`${args.command} is read-only; omit --apply`);
   if (args.command === "inlay-hints" && !args.range) throw new Error("inlay-hints requires --range START_LINE:COL-END_LINE:COL");
   let requestPosition = false;
   if (args.command === "request" && POSITION_METHODS.has(args.method ?? "")) {
@@ -1266,6 +1287,17 @@ export async function run(args: Options, session?: Session): Promise<Result> {
   }
   if (navigation) return navigate(args, undefined, session);
   switch (args.command) {
+    case "api-diff":
+      return apiDiff(args);
+    case "dependencies":
+      return dependencies(args);
+    case "fix": {
+      const pool: Session = { clients: new Map(), diagnostics: true };
+      try { return await fixPlan(args, file => fileContext({ ...args, file }, true, pool)); }
+      finally { await Promise.allSettled([...pool.clients.values()].map(client => client.close())); }
+    }
+    case "apply":
+      return applyPlan(args, (_files, baseline) => diagnostics({ ...args, command: "diagnostics", file: undefined, changed: false, apply: false, baseline, saveBaseline: undefined, limit: 0 }));
     case "next": {
       if (!args.cursor || args.file || args.changed || args.symbol || args.query || args.column || args.line !== 1 || args.workspace) throw new Error("Use next --cursor ID from a references page, in the same workspace");
       const data = nextPage({ cwd: args.cwd, cursor: args.cursor });

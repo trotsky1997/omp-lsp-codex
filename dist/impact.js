@@ -38,8 +38,8 @@ export async function impactAnalysis(args, paths, acquire) {
     if (!args.changed || args.file || args.apply)
         throw new Error("impact is read-only; use impact --changed from the Git project directory");
     const root = gitRoot(args.cwd), deadline = Date.now() + args.timeout;
-    const git = async (values) => (await promisify(childProcess.execFile)("git", ["-C", root, "--literal-pathspecs", ...values], {
-        encoding: "utf8", maxBuffer: MAX_FILE_BYTES, timeout: Math.max(1, Math.min(5000, deadline - Date.now())), killSignal: "SIGKILL",
+    const git = async (values) => (await promisify(childProcess.execFile)("git", ["-c", "diff.autoRefreshIndex=false", "-C", root, "--literal-pathspecs", ...values], {
+        encoding: "utf8", maxBuffer: MAX_FILE_BYTES, timeout: Math.max(1, Math.min(5000, deadline - Date.now())), killSignal: "SIGKILL", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
     })).stdout;
     let hasHead = true;
     try {

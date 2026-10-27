@@ -5,8 +5,8 @@ import type { Options } from "./commands.ts";
 import { parseFields } from "./output.ts";
 import { parseRange } from "./range.ts";
 
-const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect", "callers", "callees", "complete", "supertypes", "subtypes", "inlay-hints", "code-actions", "next"]);
-const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context", "depth", "resolve", "baseline", "range", "kind", "pageSize", "cursor", "budget"]);
+const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect", "callers", "callees", "complete", "supertypes", "subtypes", "inlay-hints", "code-actions", "next", "dependencies", "api-diff"]);
+const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context", "depth", "resolve", "baseline", "range", "kind", "pageSize", "cursor", "budget", "target", "targets", "base", "reverse"]);
 
 export async function batchQueries(args: Options): Promise<{ line: number; options: Options }[]> {
   if (!args.input) throw new Error('batch requires --input PATH or --input - (JSONL); e.g. {"command":"hover","file":"src/main.ts","line":10}');
@@ -38,11 +38,11 @@ export function queryOptions(args: Options, value: unknown, session = false): Op
   const row = value as Record<string, unknown>;
   for (const field of Object.keys(row)) if (!FIELDS.has(field) && !(session && field === "id")) throw new Error(`Unknown ${session ? "session" : "batch"} field: ${field}; allowed: ${[...FIELDS, ...(session ? ["id"] : [])].join(", ")}`);
   if (typeof row.command !== "string" || !COMMANDS.has(row.command)) throw new Error(`Unsupported read-only command; choose ${[...COMMANDS].join(", ")}${session ? ", close" : ""}`);
-  if (row.command !== "next" && (typeof row.file !== "string" || !row.file.trim())) throw new Error("Each query requires file");
-  for (const field of ["cwd", "symbol", "query", "fields", "baseline", "range", "kind", "cursor"]) if (row[field] !== undefined && (typeof row[field] !== "string" || !(row[field] as string).trim())) throw new Error(`${field} must be a nonempty string`);
+  if (!["next", "api-diff"].includes(row.command) && row.target === undefined && (typeof row.file !== "string" || !row.file.trim())) throw new Error("Each query requires file or target");
+  for (const field of ["cwd", "symbol", "query", "fields", "baseline", "range", "kind", "cursor", "target", "base"]) if (row[field] !== undefined && (typeof row[field] !== "string" || !(row[field] as string).trim())) throw new Error(`${field} must be a nonempty string`);
   for (const field of ["line", "column", "limit"]) if (row[field] !== undefined && (typeof row[field] !== "number" || !Number.isSafeInteger(row[field]) || (row[field] as number) < (field === "limit" ? 0 : 1))) throw new Error(`${field} must be ${field === "limit" ? "a nonnegative" : "a positive"} integer`);
-  for (const field of ["workspace", "context", "resolve"]) if (row[field] !== undefined && typeof row[field] !== "boolean") throw new Error(`${field} must be boolean`);
-  if (row.depth !== undefined && (!Number.isSafeInteger(row.depth) || Number(row.depth) < 1 || Number(row.depth) > 10 || !["callers", "callees", "supertypes", "subtypes"].includes(row.command))) throw new Error("depth must be 1-10 and applies to callers/callees/supertypes/subtypes");
+  for (const field of ["workspace", "context", "resolve", "targets", "reverse"]) if (row[field] !== undefined && typeof row[field] !== "boolean") throw new Error(`${field} must be boolean`);
+  if (row.depth !== undefined && (!Number.isSafeInteger(row.depth) || Number(row.depth) < 1 || Number(row.depth) > 10 || !["callers", "callees", "supertypes", "subtypes", "dependencies"].includes(row.command))) throw new Error("depth must be 1-10 and applies to callers/callees/supertypes/subtypes/dependencies");
   if (row.resolve && !["complete", "inlay-hints"].includes(row.command)) throw new Error("resolve is only available for complete/inlay-hints");
   if (row.baseline && row.command !== "diagnostics") throw new Error("baseline is only available for diagnostics");
   if (row.context && row.command !== "inspect") throw new Error("context is only available for inspect");
@@ -51,11 +51,15 @@ export function queryOptions(args: Options, value: unknown, session = false): Op
   if (range && (!["code-actions", "inlay-hints"].includes(row.command) || row.line !== undefined || row.column !== undefined || row.symbol !== undefined)) throw new Error("range is for code-actions/inlay-hints; choose range or line/column/symbol");
   if (row.kind !== undefined && (row.command !== "code-actions" || !/^[\w-]+(?:\.[\w-]+)*$/.test(String(row.kind)))) throw new Error("kind requires code-actions and an action kind such as refactor.extract");
   if (row.pageSize !== undefined && (row.command !== "references" || !Number.isSafeInteger(row.pageSize) || Number(row.pageSize) < 1 || Number(row.pageSize) > 1000 || row.limit !== undefined)) throw new Error("pageSize requires references, an integer from 1 to 1000 and no row limit");
-  if (row.budget !== undefined && (row.command !== "inspect" || !Number.isSafeInteger(row.budget) || Number(row.budget) < 512 || Number(row.budget) > MAX_FILE_BYTES)) throw new Error(`budget requires inspect and an integer from 512 to ${MAX_FILE_BYTES}`);
+  if (row.budget !== undefined && (!Number.isSafeInteger(row.budget) || Number(row.budget) < 512 || Number(row.budget) > MAX_FILE_BYTES)) throw new Error(`budget must be an integer from 512 to ${MAX_FILE_BYTES}`);
+  if (row.base !== undefined && row.command !== "api-diff") throw new Error("base is only available for api-diff");
+  if (row.reverse && row.command !== "dependencies") throw new Error("reverse is only available for dependencies");
+  if (row.target !== undefined && (row.file !== undefined || row.line !== undefined || row.column !== undefined || row.symbol !== undefined || row.range !== undefined)) throw new Error("Choose target or file/line/column/symbol/range");
+  if (row.target !== undefined && ["next", "api-diff", "dependencies", "diagnostics", "symbols"].includes(row.command)) throw new Error("target requires a position-based query");
   if (row.cursor !== undefined && row.command !== "next") throw new Error("cursor is only available for next");
   if (row.command === "next") {
     if (typeof row.cursor !== "string" || !row.cursor.trim()) throw new Error("next requires cursor from a references page");
-    for (const key of Object.keys(row)) if (!["command", "cursor", "cwd", "fields", "id"].includes(key)) throw new Error("next accepts cursor, cwd, fields and session id");
+    for (const key of Object.keys(row)) if (!["command", "cursor", "cwd", "fields", "id", "budget", "targets"].includes(key)) throw new Error("next accepts cursor, cwd, fields, budget, targets and session id");
   }
   if (row.id !== undefined && !(typeof row.id === "string" && row.id.length > 0 && row.id.length <= 128 || Number.isSafeInteger(row.id))) throw new Error("id must be a nonempty string up to 128 characters or a safe integer");
   const cwd = realpathSync(resolve(args.cwd, expandHome(typeof row.cwd === "string" ? row.cwd : ".")));
@@ -68,6 +72,8 @@ export function queryOptions(args: Options, value: unknown, session = false): Op
     fields: typeof row.fields === "string" ? parseFields(row.fields) : undefined,
     depth: Number(row.depth ?? 1), resolveCompletion: !!row.resolve, baseline: row.baseline as string | undefined,
     range, kind: row.kind as string | undefined, pageSize: row.pageSize as number | undefined,
-    cursor: row.cursor as string | undefined, budget: row.budget as number | undefined,
+    cursor: row.cursor as string | undefined, budget: row.budget as number | undefined ?? (session ? args.budget : undefined),
+    target: row.target as string | undefined, targets: row.targets as boolean | undefined ?? (session ? args.targets : false),
+    base: row.base as string | undefined, reverse: !!row.reverse,
   };
 }

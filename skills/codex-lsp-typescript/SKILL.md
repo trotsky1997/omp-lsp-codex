@@ -23,6 +23,8 @@ For missing imports, list code actions, preview the selected original index with
 
 For extraction, select the expression or statements inside the function body with `code-actions --range ... --kind refactor.extract`. An entire declaration can expose move actions or no extraction. Check returned kinds and disabled reasons before applying. Type hierarchy and hint/resolve support vary by executable; check capabilities on the actual server. An already installed TypeScript Language Server can provide refactors or inlay hints missing from another backend; use an isolated project override for a comparison and preserve the original configuration.
 
+`fix --plan` persists pure-text actions; server commands stay in the individual code-actions workflow. Select a reviewed unpreferred edit with `--file --query INDEX`; inspect `saved`, `skipped` and the actual provider. API/dependency syntax follows exports, relative imports and barrels, while tsconfig aliases and inferred types need compiler checks. Watch events use `event` names; `changes` is the diagnostic delta field. Read [continuous workflows](../codex-lsp/references/workflows.md).
+
 Module suffixes `.mjs`/`.cjs` use JavaScript; `.mts`/`.cts` use TypeScript. Ensure the chosen file is in the intended project. Node can execute supported erasable TypeScript from a `.ts` or `.mts` file. Keep an ordinary eval driver in JavaScript, for example:
 
 ```sh

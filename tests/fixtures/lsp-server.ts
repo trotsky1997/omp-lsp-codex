@@ -6,6 +6,7 @@ import { object } from "../../src/config.ts";
 const [mode, tracePath] = process.argv.slice(2);
 const scenario = mode === "scenario" ? JSON.parse(readFileSync(process.argv[4], "utf8")) : {};
 const calls = new Map<string, number>();
+const documentTexts = new Map<string, string>();
 const trace = (direction: string, message: Record<string, unknown>) => appendFileSync(tracePath, JSON.stringify({ direction, ...message }) + "\n");
 trace("lifecycle", { pid: process.pid });
 const send = async (message: Record<string, unknown>) => {
@@ -50,13 +51,19 @@ for await (const chunk of process.stdin) {
         await reply({ capabilities: scenario.capabilities ?? { diagnosticProvider: mode.startsWith("pull"), hoverProvider: true } });
         break;
       case "textDocument/didChange":
-        if (!scenario.diagnosticVersionFromDocument) break;
+        if (!scenario.diagnosticVersionFromDocument && !scenario.diagnosticsByText) break;
       case "textDocument/didOpen":
         if (mode === "scenario") {
+          const document = object(params.textDocument), uri = String(document.uri);
+          const changes = Array.isArray(params.contentChanges) ? params.contentChanges : [];
+          const text = typeof document.text === "string" ? document.text : object(changes.at(-1)).text;
+          if (typeof text === "string") documentTexts.set(uri, text);
           if (scenario.afterOpen) writeFileSync(scenario.afterOpen.file, scenario.afterOpen.text);
-          if (scenario.diagnostics !== false) {
-            const publish = () => send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [], ...(scenario.diagnosticVersionFromDocument ? { version: object(params.textDocument).version } : "diagnosticVersion" in scenario ? { version: scenario.diagnosticVersion } : {}) } });
-            if (scenario.diagnosticDelay) setTimeout(publish, scenario.diagnosticDelay);
+          const diagnostics = scenario.diagnosticsByText?.[documentTexts.get(uri) ?? ""] ?? scenario.diagnostics;
+          if (diagnostics !== false) {
+            const publish = () => send({ method: "textDocument/publishDiagnostics", params: { uri: document.uri, diagnostics: diagnostics ?? [], ...(scenario.diagnosticVersionFromDocument ? { version: document.version } : "diagnosticVersion" in scenario ? { version: scenario.diagnosticVersion } : {}) } });
+            const diagnosticDelay = scenario.diagnosticDelayByText?.[documentTexts.get(uri) ?? ""] ?? scenario.diagnosticDelay;
+            if (diagnosticDelay) setTimeout(publish, diagnosticDelay);
             else await publish();
           }
           if (scenario.serverStatus && (message.method === "textDocument/didOpen" || scenario.serverStatusOnChange)) {
@@ -106,7 +113,7 @@ for await (const chunk of process.stdin) {
         if (mode === "pull-malformed") await reply({ kind: "full", items: [null] });
         else if (mode === "pull-missing") await reply({ kind: "full" });
         else if (mode === "pull-throws") await send({ id: message.id, error: { code: -32601, message: "Use push diagnostics" } });
-        else await reply({ kind: "full", items: [] });
+        else await reply({ kind: "full", items: scenario.diagnosticsByText?.[documentTexts.get(String(object(params.textDocument).uri)) ?? ""] || [] });
         break;
       case "shutdown": if (mode !== "hang") await reply(null); break;
       case "exit": if (mode !== "hang") process.exit(0); break;
