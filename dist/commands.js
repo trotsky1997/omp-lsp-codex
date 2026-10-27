@@ -9,8 +9,10 @@ import { applyWorkspaceEdit, atomicWrite, editSummary, editTextLimit, moveNoRepl
 import { findReference, symbolAt } from "./devdocs.js";
 import { resolveSymbolColumn } from "./omp/symbol-column.js";
 import { version } from "./version.js";
-import { compactText, failure, textPrefix } from "./output.js";
+import { compactText, failure, selectFields, textPrefix } from "./output.js";
 import { syntaxLanguage, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.js";
+import { batchQueries } from "./batch.js";
+import { inspectContext } from "./context.js";
 function outputInfo(total, limit) {
     const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
     return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
@@ -97,6 +99,28 @@ const NAVIGATION = {
     implementation: "textDocument/implementation",
 };
 const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp"]);
+async function sessionClient(server, args, session) {
+    const key = JSON.stringify([server, args.timeout]);
+    let client = session?.clients.get(key);
+    if (client && !client.reusable) {
+        await client.close();
+        session.clients.delete(key);
+        client = undefined;
+    }
+    if (!client) {
+        if (session && session.clients.size >= 8) {
+            const [oldest, previous] = session.clients.entries().next().value;
+            await previous.close();
+            session.clients.delete(oldest);
+        }
+        client = await LspClient.start(server, args.timeout, args.apply);
+    }
+    if (session) {
+        session.clients.delete(key);
+        session.clients.set(key, client);
+    }
+    return client;
+}
 function compilerDiagnostics(server) {
     return server.name === "rust-analyzer" ? {
         ...server, settings: { ...server.settings,
@@ -104,16 +128,16 @@ function compilerDiagnostics(server) {
         },
     } : server;
 }
-async function fileContext(args, semantic = true) {
+async function fileContext(args, semantic = true, session) {
     if (!args.file)
         throw new Error("--file is required");
     const path = resolveFile(args.file, args.cwd);
     let server = fileServers(availableServers(loadConfig(dirname(path), args.globalConfigOnly), dirname(path), args.globalBinsOnly), path)[0];
     if (!server)
         throw new Error(`No available language server matches ${path}; run codex-lsp setup <language> --project from the project root`);
-    if (args.command === "inspect")
+    if (args.command === "inspect" || session?.diagnostics)
         server = compilerDiagnostics(server);
-    const client = await LspClient.start(server, args.timeout, args.apply);
+    const client = await sessionClient(server, args, session);
     try {
         const opened = await client.open(path);
         if (semantic || server.name !== "rust-analyzer")
@@ -202,8 +226,8 @@ function hoverText(value) {
         return value.map(hoverText).filter(Boolean).join("\n\n");
     return typeof object(value).value === "string" ? String(object(value).value) : "";
 }
-async function navigate(args, shared) {
-    const { server, path, client, uri, text } = shared ?? await fileContext(args);
+async function navigate(args, shared, session) {
+    const { server, path, client, uri, text } = shared ?? await fileContext(args, true, session);
     try {
         const pos = await position(path, text, args), method = NAVIGATION[args.command];
         const params = {
@@ -226,6 +250,10 @@ async function navigate(args, shared) {
                 result = await client.request(method, params, remaining);
             }
             catch (error) {
+                if (Date.now() >= deadline && String(error).includes(`LSP request ${method} timed out after`)) {
+                    timedOut = true;
+                    break;
+                }
                 if (/Content\s*Modified|-32801/i.test(String(error))) {
                     await sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
                     continue;
@@ -301,7 +329,7 @@ async function navigate(args, shared) {
         };
     }
     finally {
-        if (!shared)
+        if (!shared && !session)
             await client.close();
     }
 }
@@ -311,9 +339,9 @@ function prioritizeSymbols(items, query) {
     const lower = query.toLowerCase(), rank = (item) => item.name === query ? 0 : String(item.name).toLowerCase() === lower ? 1 : 2;
     items.sort((a, b) => rank(a) - rank(b));
 }
-async function symbols(args, shared) {
+async function symbols(args, shared, session) {
     if (!args.workspace) {
-        const { server, client, uri } = shared ?? await fileContext(args, false);
+        const { server, client, uri } = shared ?? await fileContext(args, false, session);
         try {
             let items = formatSymbols(await client.request("textDocument/documentSymbol", { textDocument: { uri } }), uri);
             if (args.query)
@@ -330,7 +358,7 @@ async function symbols(args, shared) {
             };
         }
         finally {
-            if (!shared)
+            if (!shared && !session)
                 await client.close();
         }
     }
@@ -344,7 +372,7 @@ async function symbols(args, shared) {
     for (const server of servers.filter((x) => !x.isLinter)) {
         let client;
         try {
-            client = await LspClient.start(server, args.timeout);
+            client = await sessionClient(session?.diagnostics ? compilerDiagnostics(server) : server, args, session);
             if (!client.capabilities.workspaceSymbolProvider)
                 continue;
             // shortcut: one seed loads one project; discover more roots for cross-project searches.
@@ -362,7 +390,8 @@ async function symbols(args, shared) {
             errors.push({ server: server.name, ...failure(error, args.limit) });
         }
         finally {
-            await client?.close();
+            if (!session)
+                await client?.close();
         }
     }
     if (!used.length && !errors.length)
@@ -736,7 +765,7 @@ export async function changedFiles(cwd) {
         throw new Error(`Changed files exceed the ${MAX_FILES} file limit; use --file to check individual files`);
     return [...found].sort();
 }
-export async function diagnostics(args, shared) {
+export async function diagnostics(args, shared, session) {
     if (!!args.file === args.changed)
         throw new Error("Choose exactly one of --file or --changed");
     const paths = args.changed ? await changedFiles(args.cwd) : [resolveFile(args.file, args.cwd)];
@@ -768,7 +797,7 @@ export async function diagnostics(args, shared) {
         const reuse = shared?.server.name === server.name && shared.server.root === server.root;
         let client;
         try {
-            client = reuse ? shared.client : await LspClient.start(server, args.timeout);
+            client = reuse ? shared.client : await sessionClient(server, args, session);
             for (const file of files)
                 if (!client.documents.has(fileUri(file)))
                     await client.open(file);
@@ -794,7 +823,7 @@ export async function diagnostics(args, shared) {
             }
         }
         finally {
-            if (!reuse)
+            if (!reuse && !session)
                 await client?.close();
         }
     }
@@ -853,16 +882,17 @@ export async function diagnostics(args, shared) {
         ].join("\n"),
     };
 }
-async function inspect(args) {
+async function inspect(args, session) {
     if (args.apply || args.workspace || args.changed)
         throw new Error("inspect is read-only and checks one file; omit --apply, --workspace and --changed");
-    const context = await fileContext(args);
+    const context = await fileContext(args, true, session);
     const results = {}, human = [], failedSections = [];
     try {
         const pos = await position(context.path, context.text, args);
         const queries = [
             ["hover", "hoverProvider"], ["definition", "definitionProvider"],
             ["references", "referencesProvider"], ["symbols", "documentSymbolProvider"],
+            ...(args.context ? [["type-definition", "typeDefinitionProvider"]] : []),
             ["diagnostics", undefined], ...(args.newName ? [["rename", "renameProvider"]] : []),
         ];
         for (const [command, capability] of queries) {
@@ -874,7 +904,7 @@ async function inspect(args) {
             try {
                 const query = { ...args, command, query: args.query ?? symbolAt(context.text, pos.line, pos.character) };
                 const result = command === "symbols" ? await symbols(query, context)
-                    : command === "diagnostics" ? await diagnostics(query, context)
+                    : command === "diagnostics" ? await diagnostics(query, context, session)
                         : command === "rename" ? await rename(query, context) : await navigate(query, context);
                 results[command] = result.data;
                 if (result.data.success === false)
@@ -888,6 +918,13 @@ async function inspect(args) {
                 human.push([`${command}: ERROR ${result.error}`, result.hint].filter(Boolean).join("\n"));
             }
         }
+        if (args.context) {
+            const result = await inspectContext(args, context, pos, results);
+            results.context = result.data;
+            human.push(`context:\n${result.human}`);
+            if (result.data.success === false)
+                failedSections.push("context");
+        }
         const success = !failedSections.length;
         const diagnostic = object(results.diagnostics);
         const hint = diagnostic.verified === true && diagnostic.hasErrors === true
@@ -899,7 +936,36 @@ async function inspect(args) {
         return { data: { success, applied: false, server: context.server.name, failedSections, ...(hint ? { hint } : {}), results }, human: [`Root: ${gitRoot(context.server.root)}`, ...human].join("\n\n"), code: success ? 0 : 1 };
     }
     finally {
-        await context.client.close();
+        if (!session)
+            await context.client.close();
+    }
+}
+async function batch(args) {
+    const queries = await batchQueries(args), results = [], human = [];
+    const session = { clients: new Map(), diagnostics: queries.some(query => ["inspect", "diagnostics"].includes(query.options.command)) };
+    try {
+        for (const { line, options } of queries) {
+            let result;
+            try {
+                result = await run(options, session);
+            }
+            catch (error) {
+                const data = failure(error, options.limit);
+                result = { data, human: [data.error, data.hint].filter(Boolean).join("\n"), code: 2 };
+            }
+            const code = result.code ?? 0;
+            const data = options.fields ? selectFields(result.data, options.fields) : result.data;
+            results.push({ index: results.length, inputLine: line, command: options.command, file: options.file, line: options.line,
+                ...(options.symbol ? { symbol: options.symbol } : {}), code, ...data });
+            human.push(`[${results.length}] ${options.command} ${options.file} (exit ${code})\n${options.fields ? JSON.stringify(data) : result.human}`);
+        }
+        const failedQueries = results.filter(row => row.code !== 0).map(row => ({ index: row.index, inputLine: row.inputLine, code: row.code, ...(row.failedSections ? { failedSections: row.failedSections } : {}) })), failed = failedQueries.length;
+        const hint = failed ? `${failed}/${results.length} queries failed. Successful results remain available; failedQueries maps each results[index] to its inputLine and failedSections.` : undefined;
+        return { data: { success: !failed, applied: false, total: results.length, succeeded: results.length - failed, failed, failedQueries, ...(hint ? { hint } : {}), results }, code: failed ? 1 : 0,
+            human: [`Batch: ${results.length - failed}/${results.length} queries succeeded`, ...human].join("\n\n") };
+    }
+    finally {
+        await Promise.allSettled([...session.clients.values()].map(client => client.close()));
     }
 }
 async function renameFile(args) {
@@ -1085,7 +1151,7 @@ async function request(args) {
         await client?.close();
     }
 }
-export async function run(args) {
+export async function run(args, session) {
     const navigation = Object.hasOwn(NAVIGATION, args.command);
     if (navigation && args.apply)
         throw new Error(`${args.command} is read-only; omit --apply`);
@@ -1100,12 +1166,14 @@ export async function run(args) {
         await position(path, readText(path), args);
     }
     if (navigation)
-        return navigate(args);
+        return navigate(args, undefined, session);
     switch (args.command) {
+        case "batch":
+            return batch(args);
         case "snippet":
             return snippet(args);
         case "inspect":
-            return inspect(args);
+            return inspect(args, session);
         case "status":
             return status(args);
         case "setup":
@@ -1113,9 +1181,9 @@ export async function run(args) {
         case "doctor":
             return doctor(args);
         case "diagnostics":
-            return diagnostics(args);
+            return diagnostics(args, undefined, session);
         case "symbols":
-            return symbols(args);
+            return symbols(args, undefined, session);
         case "rename":
             return rename(args);
         case "rename-file":

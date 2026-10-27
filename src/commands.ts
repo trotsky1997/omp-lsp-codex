@@ -43,8 +43,10 @@ import { findReference, symbolAt } from "./devdocs.ts";
 import { resolveSymbolColumn } from "./omp/symbol-column.ts";
 import type { CodeAction, Command, Diagnostic, Position, WorkspaceEdit } from "./omp/types.ts";
 import { version } from "./version.ts";
-import { compactText, failure, textPrefix } from "./output.ts";
+import { compactText, failure, selectFields, textPrefix } from "./output.ts";
 import { syntaxLanguage, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.ts";
+import { batchQueries } from "./batch.ts";
+import { inspectContext } from "./context.ts";
 
 export interface Options {
   command: string;
@@ -58,6 +60,9 @@ export interface Options {
   newName?: string;
   method?: string;
   payload?: string;
+  input?: string;
+  context?: boolean;
+  fields?: string[];
   timeout: number;
   limit: number;
   json: boolean;
@@ -161,6 +166,24 @@ interface FileContext {
   uri: string;
   text: string;
 }
+interface Session {
+  clients: Map<string, LspClient>;
+  diagnostics: boolean;
+}
+async function sessionClient(server: Server, args: Options, session?: Session) {
+  const key = JSON.stringify([server, args.timeout]);
+  let client = session?.clients.get(key);
+  if (client && !client.reusable) { await client.close(); session!.clients.delete(key); client = undefined; }
+  if (!client) {
+    if (session && session.clients.size >= 8) {
+      const [oldest, previous] = session.clients.entries().next().value!;
+      await previous.close(); session.clients.delete(oldest);
+    }
+    client = await LspClient.start(server, args.timeout, args.apply);
+  }
+  if (session) { session.clients.delete(key); session.clients.set(key, client); }
+  return client;
+}
 function compilerDiagnostics(server: Server): Server {
   return server.name === "rust-analyzer" ? {
     ...server, settings: { ...server.settings,
@@ -168,7 +191,7 @@ function compilerDiagnostics(server: Server): Server {
     },
   } : server;
 }
-async function fileContext(args: Options, semantic = true): Promise<FileContext> {
+async function fileContext(args: Options, semantic = true, session?: Session): Promise<FileContext> {
   if (!args.file) throw new Error("--file is required");
   const path = resolveFile(args.file, args.cwd);
   let server = fileServers(
@@ -181,8 +204,8 @@ async function fileContext(args: Options, semantic = true): Promise<FileContext>
   )[0];
   if (!server)
     throw new Error(`No available language server matches ${path}; run codex-lsp setup <language> --project from the project root`);
-  if (args.command === "inspect") server = compilerDiagnostics(server);
-  const client = await LspClient.start(server, args.timeout, args.apply);
+  if (args.command === "inspect" || session?.diagnostics) server = compilerDiagnostics(server);
+  const client = await sessionClient(server, args, session);
   try {
     const opened = await client.open(path);
     if (semantic || server.name !== "rust-analyzer") await client.ready(opened.uri);
@@ -273,8 +296,8 @@ function hoverText(value: unknown): string {
   return typeof object(value).value === "string" ? String(object(value).value) : "";
 }
 
-async function navigate(args: Options, shared?: FileContext): Promise<Result> {
-  const { server, path, client, uri, text } = shared ?? await fileContext(args);
+async function navigate(args: Options, shared?: FileContext, session?: Session): Promise<Result> {
+  const { server, path, client, uri, text } = shared ?? await fileContext(args, true, session);
   try {
     const pos = await position(path, text, args),
       method = NAVIGATION[args.command];
@@ -300,6 +323,10 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
       try {
         result = await client.request(method, params, remaining);
       } catch (error) {
+        if (Date.now() >= deadline && String(error).includes(`LSP request ${method} timed out after`)) {
+          timedOut = true;
+          break;
+        }
         if (/Content\s*Modified|-32801/i.test(String(error))) {
           await sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
           continue;
@@ -375,7 +402,7 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
         : `No ${args.command} found`,
     };
   } finally {
-    if (!shared) await client.close();
+    if (!shared && !session) await client.close();
   }
 }
 
@@ -384,9 +411,9 @@ function prioritizeSymbols(items: ObjectValue[], query?: string) {
   const lower = query.toLowerCase(), rank = (item: ObjectValue) => item.name === query ? 0 : String(item.name).toLowerCase() === lower ? 1 : 2;
   items.sort((a, b) => rank(a) - rank(b));
 }
-async function symbols(args: Options, shared?: FileContext): Promise<Result> {
+async function symbols(args: Options, shared?: FileContext, session?: Session): Promise<Result> {
   if (!args.workspace) {
-    const { server, client, uri } = shared ?? await fileContext(args, false);
+    const { server, client, uri } = shared ?? await fileContext(args, false, session);
     try {
       let items = formatSymbols(
         await client.request("textDocument/documentSymbol", { textDocument: { uri } }),
@@ -407,7 +434,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
           : "No symbols found", summary.hint, hint].filter(Boolean).join("\n"),
       };
     } finally {
-      if (!shared) await client.close();
+      if (!shared && !session) await client.close();
     }
   }
   if (!args.query) throw new Error("--query is required with --workspace");
@@ -421,7 +448,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
   for (const server of servers.filter((x) => !x.isLinter)) {
     let client: LspClient | undefined;
     try {
-      client = await LspClient.start(server, args.timeout);
+      client = await sessionClient(session?.diagnostics ? compilerDiagnostics(server) : server, args, session);
       if (!client.capabilities.workspaceSymbolProvider) continue;
       // shortcut: one seed loads one project; discover more roots for cross-project searches.
       const source = path ?? workspaceSource(server);
@@ -434,7 +461,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
     } catch (error) {
       errors.push({ server: server.name, ...failure(error, args.limit) });
     } finally {
-      await client?.close();
+      if (!session) await client?.close();
     }
   }
   if (!used.length && !errors.length)
@@ -810,7 +837,7 @@ export async function changedFiles(cwd: string): Promise<string[]> {
   return [...found].sort();
 }
 
-export async function diagnostics(args: Options, shared?: FileContext): Promise<Result> {
+export async function diagnostics(args: Options, shared?: FileContext, session?: Session): Promise<Result> {
   if (!!args.file === args.changed) throw new Error("Choose exactly one of --file or --changed");
   const paths = args.changed ? await changedFiles(args.cwd) : [resolveFile(args.file!, args.cwd)];
   const configurationPaths = args.changed ? configPaths(args.cwd).filter(existsSync).map(file => realpathSync(file)) : [];
@@ -850,7 +877,7 @@ export async function diagnostics(args: Options, shared?: FileContext): Promise<
     const reuse = shared?.server.name === server.name && shared.server.root === server.root;
     let client: LspClient | undefined;
     try {
-      client = reuse ? shared.client : await LspClient.start(server, args.timeout);
+      client = reuse ? shared.client : await sessionClient(server, args, session);
       for (const file of files) if (!client.documents.has(fileUri(file))) await client.open(file);
       for (const file of files) {
         const result = await client.getDiagnostics(fileUri(file)),
@@ -872,7 +899,7 @@ export async function diagnostics(args: Options, shared?: FileContext): Promise<
         records.get(file)!.errors.push(`${server.name}: ${error}`);
       }
     } finally {
-      if (!reuse) await client?.close();
+      if (!reuse && !session) await client?.close();
     }
   }
   const checked = [...records.values()],
@@ -931,16 +958,17 @@ export async function diagnostics(args: Options, shared?: FileContext): Promise<
   };
 }
 
-async function inspect(args: Options): Promise<Result> {
+async function inspect(args: Options, session?: Session): Promise<Result> {
   if (args.apply || args.workspace || args.changed)
     throw new Error("inspect is read-only and checks one file; omit --apply, --workspace and --changed");
-  const context = await fileContext(args);
+  const context = await fileContext(args, true, session);
   const results: ObjectValue = {}, human: string[] = [], failedSections: string[] = [];
   try {
     const pos = await position(context.path, context.text, args);
     const queries: [string, string | undefined][] = [
       ["hover", "hoverProvider"], ["definition", "definitionProvider"],
       ["references", "referencesProvider"], ["symbols", "documentSymbolProvider"],
+      ...(args.context ? [["type-definition", "typeDefinitionProvider"] as [string, string]] : []),
       ["diagnostics", undefined], ...(args.newName ? [["rename", "renameProvider"] as [string, string]] : []),
     ];
     for (const [command, capability] of queries) {
@@ -952,7 +980,7 @@ async function inspect(args: Options): Promise<Result> {
       try {
         const query = { ...args, command, query: args.query ?? symbolAt(context.text, pos.line, pos.character) };
         const result = command === "symbols" ? await symbols(query, context)
-          : command === "diagnostics" ? await diagnostics(query, context)
+          : command === "diagnostics" ? await diagnostics(query, context, session)
           : command === "rename" ? await rename(query, context) : await navigate(query, context);
         results[command] = result.data;
         if (result.data.success === false) failedSections.push(command);
@@ -964,6 +992,11 @@ async function inspect(args: Options): Promise<Result> {
         human.push([`${command}: ERROR ${result.error}`, result.hint].filter(Boolean).join("\n"));
       }
     }
+    if (args.context) {
+      const result = await inspectContext(args, context, pos, results);
+      results.context = result.data; human.push(`context:\n${result.human}`);
+      if (result.data.success === false) failedSections.push("context");
+    }
     const success = !failedSections.length;
     const diagnostic = object(results.diagnostics);
     const hint = diagnostic.verified === true && diagnostic.hasErrors === true
@@ -971,7 +1004,28 @@ async function inspect(args: Options): Promise<Result> {
     if (hint) human.unshift(hint);
     if (!success) human.unshift(`Inspection has issues in: ${failedSections.join(", ")}. See each section below.`);
     return { data: { success, applied: false, server: context.server.name, failedSections, ...(hint ? { hint } : {}), results }, human: [`Root: ${gitRoot(context.server.root)}`, ...human].join("\n\n"), code: success ? 0 : 1 };
-  } finally { await context.client.close(); }
+  } finally { if (!session) await context.client.close(); }
+}
+
+async function batch(args: Options): Promise<Result> {
+  const queries = await batchQueries(args), results: ObjectValue[] = [], human: string[] = [];
+  const session: Session = { clients: new Map(), diagnostics: queries.some(query => ["inspect", "diagnostics"].includes(query.options.command)) };
+  try {
+    for (const { line, options } of queries) {
+      let result: Result;
+      try { result = await run(options, session); }
+      catch (error) { const data = failure(error, options.limit); result = { data, human: [data.error, data.hint].filter(Boolean).join("\n"), code: 2 }; }
+      const code = result.code ?? 0;
+      const data = options.fields ? selectFields(result.data, options.fields) : result.data;
+      results.push({ index: results.length, inputLine: line, command: options.command, file: options.file, line: options.line,
+        ...(options.symbol ? { symbol: options.symbol } : {}), code, ...data });
+      human.push(`[${results.length}] ${options.command} ${options.file} (exit ${code})\n${options.fields ? JSON.stringify(data) : result.human}`);
+    }
+    const failedQueries = results.filter(row => row.code !== 0).map(row => ({ index: row.index, inputLine: row.inputLine, code: row.code, ...(row.failedSections ? { failedSections: row.failedSections } : {}) })), failed = failedQueries.length;
+    const hint = failed ? `${failed}/${results.length} queries failed. Successful results remain available; failedQueries maps each results[index] to its inputLine and failedSections.` : undefined;
+    return { data: { success: !failed, applied: false, total: results.length, succeeded: results.length - failed, failed, failedQueries, ...(hint ? { hint } : {}), results }, code: failed ? 1 : 0,
+      human: [`Batch: ${results.length - failed}/${results.length} queries succeeded`, ...human].join("\n\n") };
+  } finally { await Promise.allSettled([...session.clients.values()].map(client => client.close())); }
 }
 
 async function renameFile(args: Options): Promise<Result> {
@@ -1135,7 +1189,7 @@ async function request(args: Options): Promise<Result> {
   }
 }
 
-export async function run(args: Options): Promise<Result> {
+export async function run(args: Options, session?: Session): Promise<Result> {
   const navigation = Object.hasOwn(NAVIGATION, args.command);
   if (navigation && args.apply) throw new Error(`${args.command} is read-only; omit --apply`);
   let requestPosition = false;
@@ -1148,12 +1202,14 @@ export async function run(args: Options): Promise<Result> {
     const path = resolveFile(args.file, args.cwd);
     await position(path, readText(path), args);
   }
-  if (navigation) return navigate(args);
+  if (navigation) return navigate(args, undefined, session);
   switch (args.command) {
+    case "batch":
+      return batch(args);
     case "snippet":
       return snippet(args);
     case "inspect":
-      return inspect(args);
+      return inspect(args, session);
     case "status":
       return status(args);
     case "setup":
@@ -1161,9 +1217,9 @@ export async function run(args: Options): Promise<Result> {
     case "doctor":
       return doctor(args);
     case "diagnostics":
-      return diagnostics(args);
+      return diagnostics(args, undefined, session);
     case "symbols":
-      return symbols(args);
+      return symbols(args, undefined, session);
     case "rename":
       return rename(args);
     case "rename-file":

@@ -17,6 +17,8 @@ codex-lsp references --file PATH --line N --symbol NAME
 codex-lsp signature-help --file PATH --line N --symbol NAME
 codex-lsp snippet --file PATH --line N --symbol NAME
 codex-lsp inspect --file PATH --line N --symbol NAME
+codex-lsp inspect --file PATH --line N --symbol NAME --context
+codex-lsp batch --input queries.jsonl --json
 ```
 
 Use symbols or source search to find a current anchor. File errors suggest discovery; wrong-line errors suggest nearby matches. Positions are one-based UTF-16 columns; `NAME#2` selects a repeated token. Quote paths and pass arguments separately. Run from the project directory, or choose another with `--cwd PROJECT`.
@@ -25,7 +27,9 @@ Symbols rank exact spelling first, then case-insensitive exact names, then parti
 
 Install `npm install --global @ast-grep/cli` for syntax anchors, automatic signature cursors and snippets. With it, `--symbol` excludes comments/string contents. For signature-help, select the callable on a call-site line; the CLI finds its argument cursor, including nested/generic calls. An explicit `--column` inside arguments selects a later parameter. `snippet` returns the smallest enclosing declaration without LSP; use it to read a body before fetching semantic details. Missing ast-grep keeps textual navigation and gives installation guidance for automatic signatures/snippets.
 
-Use one focused command for one question. `inspect` shares a server session across hover, definition, references, matching symbols and diagnostics when all are useful. Use `symbols --workspace --file PATH --query NAME` for cross-file discovery in the selected language.
+Use one focused command for one question. `inspect` shares a server session across hover, definition, references, matching symbols and diagnostics when all are useful. Add `--context` for deduplicated enclosing source, definitions, types and sampled reference bodies. Context shares a 6,000-character snippet budget; `provider: lines` identifies nearby-line fallback when AST declarations are unavailable. Use `symbols --workspace --file PATH --query NAME` for cross-file discovery in the selected language.
+
+Use `batch` for several known queries/files to reuse servers. Its JSONL rows require `command` and `file`, e.g. `{"command":"hover","file":"src/main.ts","line":10,"symbol":"parse"}` or `{"command":"inspect","file":"src/main.ts","line":10,"context":true}`. Run from the project directory; optional row `cwd` is relative to the batch directory. File/position flags belong in rows. A row's `fields` string selects its output, e.g. `"fields":"results.context.snippets,results.diagnostics.counts"`; diagnostic failure state stays visible. `--input -` reads stdin. Check `failedQueries` and each result's `code`/state: one failure preserves later results and makes batch exit 1. `inputLine` identifies the input row; `line` is its source anchor. JSON is emitted when all queries finish; resume a running terminal session after a short tool wait, especially for large Rust projects. Read [batch/context output](references/outputs.md) for limits, supported row fields or automation.
 
 Prefer human text for reading. For automation, `--fields locations` implies JSON; symbols use `--fields symbols`, and inspect wraps sections in `results`. Check `success`, navigation `found`, and diagnostic `verified`/`hasErrors` along with the exit code. Existing diagnostic errors cause exit 1 while navigation can succeed; inspect explains this in `failedSections`.
 

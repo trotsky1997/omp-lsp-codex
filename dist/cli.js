@@ -7,14 +7,15 @@ import { hook } from "./hooks.js";
 import { LspClient } from "./client.js";
 import { expandHome } from "./config.js";
 import { version } from "./version.js";
-import { failure, selectFields } from "./output.js";
+import { failure, parseFields, selectFields } from "./output.js";
 const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Node ${process.versions.node})
 
 Commands:
   setup LANGUAGE... [--project]  Register servers; project scope uses the current directory
   status [--file PATH]    List available servers for the workspace or target file
   doctor [--file PATH]    Check configuration, runtime and workspace health
-  inspect                --file PATH --line N [--symbol NAME] [--new-name NAME]
+  batch --input PATH|-   Run read-only JSONL queries with shared language servers
+  inspect                --file PATH --line N [--symbol NAME] [--context] [--new-name NAME]
                          Hover, definition, references, symbols and diagnostics in one session
   diagnostics            --file PATH or --changed
   definition             --file PATH --line N [--symbol NAME | --column N]
@@ -34,9 +35,10 @@ Commands:
 
 Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --cwd PATH            Use this project directory for setup, relative paths and --changed
-  --limit N             Max results/hover lines (default 50, inspect 10, signature-help 1; 0 shows all)
+  --limit N             Max results/hover lines (default 50, inspect/batch 10, signature-help 1; 0 shows all)
   --fields A,B          Select JSON object paths (implies --json), e.g. total,results.diagnostics.counts
                         Keeps status/error/truncation metadata; arrays are selected whole
+  --context             Include enclosing source, definitions, types and sampled references in inspect
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 ast-grep improves --symbol and selects call arguments for signature-help --symbol.
 Install it with npm install --global @ast-grep/cli. Explicit --column stays exact.
@@ -44,6 +46,9 @@ Install it with npm install --global @ast-grep/cli. Explicit --column stays exac
 Rename and code-actions preview by default. Add --apply to write changes.
 code-actions --query INDEX previews edit scope and flags server commands before execution.
 inspect is read-only; --new-name adds a rename preview. Each section honors --limit.
+Batch rows: {"command":"hover","file":"src/main.ts","line":10,"symbol":"parse"}
+Optional row fields: cwd, column, symbol, query, limit, fields, workspace; context is available for inspect.
+Batch continues after query errors; inspect --context shares a 6,000-character snippet budget.
 `;
 export function parseOptions(argv, cwd = process.cwd()) {
     const { values: v, positionals } = parseArgs({
@@ -60,6 +65,8 @@ export function parseOptions(argv, cwd = process.cwd()) {
             "new-name": { type: "string" },
             method: { type: "string" },
             payload: { type: "string" },
+            input: { type: "string" },
+            context: { type: "boolean" },
             timeout: { type: "string" },
             limit: { type: "string" },
             json: { type: "boolean" },
@@ -74,7 +81,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
             version: { type: "boolean" },
         },
     });
-    const timeout = Number(v.timeout ?? 20), limit = Number(v.limit ?? (positionals[0] === "inspect" ? 10 : positionals[0] === "signature-help" ? 1 : 50)), line = Number(v.line ?? 1), column = v.column === undefined ? undefined : Number(v.column);
+    const timeout = Number(v.timeout ?? 20), limit = Number(v.limit ?? (["inspect", "batch"].includes(positionals[0]) ? 10 : positionals[0] === "signature-help" ? 1 : 50)), line = Number(v.line ?? 1), column = v.column === undefined ? undefined : Number(v.column);
     if (!Number.isFinite(timeout))
         throw new Error("--timeout must be a number");
     if (!Number.isSafeInteger(limit) || limit < 0)
@@ -84,11 +91,13 @@ export function parseOptions(argv, cwd = process.cwd()) {
         (column !== undefined && (!Number.isInteger(column) || column < 1)))
         throw new Error("--line and --column must be positive integers");
     const [command = "", ...languages] = positionals;
-    const fields = v.fields === undefined ? undefined : [...new Set(v.fields.split(",").map(field => field.trim()))];
+    if (v.input !== undefined && command !== "batch")
+        throw new Error("--input is only available for batch");
+    if (v.context && command !== "inspect")
+        throw new Error("--context is only available for inspect; set context on inspect rows in batch input");
+    const fields = v.fields === undefined ? undefined : parseFields(v.fields);
     if (fields && command === "hook")
         throw new Error("--fields is unavailable for hook: hooks emit their own protocol");
-    if (fields?.some(field => !/^[$A-Za-z_][\w$-]*(?:\.[$A-Za-z_][\w$-]*)*$/.test(field)))
-        throw new Error("--fields expects comma-separated object paths, e.g. success,results.definition.locations; select arrays as a whole");
     if (/\s/.test(command))
         throw new Error("Pass the command and flags as separate arguments; for example: codex-lsp inspect --file path/to/file.ts");
     if (languages.length && !["setup", "hook"].includes(command))
@@ -110,6 +119,8 @@ export function parseOptions(argv, cwd = process.cwd()) {
         newName: v["new-name"],
         method: v.method,
         payload: v.payload,
+        input: v.input,
+        context: !!v.context,
         timeout: Math.max(5, Math.min(300, timeout)) * 1000,
         limit,
         json: !!v.json || fields !== undefined,

@@ -29,6 +29,8 @@ codex-lsp setup rust python typescript
 codex-lsp doctor --file path/to/file.rs --timeout 120
 codex-lsp status --json
 codex-lsp inspect --file path/to/file.rs --line 20 --symbol parse --json
+codex-lsp inspect --file path/to/file.rs --line 20 --symbol parse --context --json
+codex-lsp batch --input queries.jsonl --json
 codex-lsp diagnostics --file path/to/file.rs
 codex-lsp diagnostics --changed
 codex-lsp definition --file path/to/file.rs --line 20 --symbol parse
@@ -59,6 +61,26 @@ JavaScript module files (`.mjs`, `.cjs`) and TypeScript module files (`.mts`, `.
 Language-specific skills: [shared CLI](skills/codex-lsp/SKILL.md), [Rust](skills/codex-lsp-rust/SKILL.md), [Python](skills/codex-lsp-python/SKILL.md), and [TypeScript/JavaScript](skills/codex-lsp-typescript/SKILL.md). The main skill routes to the active language; output schemas and advanced setup/edit details load on demand.
 
 Start with `status --file` for quick discovery. `inspect` shares one server session across hover, definition, references, matching file symbols and diagnostics, reducing repeated cold starts. It defaults to 10 results or hover lines per section; `--limit` changes all sections. JSON `results` retains individual errors and unsupported capabilities, with `failedSections` explaining a nonzero exit. Diagnostic errors cause exit 1 with navigation results preserved. Add `--new-name NAME` for a rename preview; inspect always runs read-only.
+
+Add `inspect --context` when you need source bodies alongside navigation. It includes type-definition results and `results.context.snippets` with enclosing source, definitions, types and sampled references. Repeated enclosing declarations merge their `roles`. Default context follows up to three locations per section, returns up to `--limit` distinct snippets and shares a 6,000-character code budget. Each snippet has its file, one-based range, provider and character counts; `omittedLocations`, `truncated` and hints describe sampling/clipping. With ast-grep unavailable or a declaration unresolved, context returns nearby lines with `provider: "lines"` and a hint. Unreadable or concurrently changed files fail the context section while preserving the other results. `--limit 0 --json` retrieves complete snippets and follows all returned locations.
+
+### Batch queries
+
+For several questions or files, put one read-only query per line in a JSONL file:
+
+```jsonl
+{"command":"hover","file":"src/main.ts","line":20,"symbol":"parse","fields":"hover"}
+{"command":"definition","file":"src/main.ts","line":20,"symbol":"parse","fields":"locations"}
+{"command":"inspect","file":"src/parser.ts","line":12,"symbol":"parse","context":true,"fields":"results.context.snippets,results.diagnostics.counts"}
+```
+
+Run `codex-lsp batch --input queries.jsonl --json`, or pipe JSONL to `codex-lsp batch --input - --json`. Input paths and query file paths use the caller's working directory or `--cwd`; each row can select another `cwd` relative to that directory. Every row requires `command` and `file`; optional fields are `cwd`, `line`, `column`, `symbol`, `query`, `limit`, `fields`, `workspace` (symbols only) and `context` (inspect only). Coordinates are one-based UTF-16. Supported commands are hover, definition, references, type-definition, implementation, signature-help, symbols, diagnostics, snippet and inspect. Batch is read-only and rejects edit commands, raw requests and unrecognized fields before starting any server.
+
+Queries run in input order and share compatible servers and opened documents. Up to eight servers remain active; least recently used sessions close when more are needed. A batch containing inspect/diagnostics enables Rust compiler checks at startup. Healthy sessions survive a single request error or timeout; broken connections restart before the next query. Concurrent changes to an opened file fail that query and discard its session. All sessions close on completion or interruption; batch has no background daemon.
+
+JSON emits one object containing `success`, `applied: false`, `total`, `succeeded`, `failed`, `failedQueries` and `results`. Every row preserves `index` (zero-based), `inputLine`, `command`, `file`, source `line`, optional `symbol`, `code` and command result fields. Exit 0 means every query succeeded; exit 1 retains all results when any query fails; exit 2 reports invalid input. Input is limited to 200 queries and 16 MiB. Blank lines are ignored. Batch defaults to 10 results per query; `--limit` changes the inherited limit, and a row's `limit` overrides it. Batch continues through all rows and never truncates the result list. `failedQueries` maps each failed result index to its input line, code and failing inspect sections, so partial results remain easy to use.
+
+A batch row can set `fields` to comma-separated object paths, for example `"fields":"results.context.snippets,results.diagnostics.counts"`. Selection applies to that row and retains status, errors and failing sections; it reduces emitted output while diagnostics and exit codes still cover the complete analysis. Top-level `--fields` selects the outer batch object; select its `results` array as a whole.
 
 Use a focused command for one question. `signature-help --file PATH --line N --column N` shows the active call signature and parameter, prioritizing one overload and omitting bulk documentation by default. Put the cursor just after `(` or an argument-separating comma; servers can return no help inside string literals. `--limit 0 --json` retains complete provider signatures and documentation; raw `request` responses stay unchanged. Hover, signature, code-action, symbol and error text have a 6,000-character preview budget when limits are enabled; truncation remains explicit and `--limit 0` retrieves full text. Human navigation/symbol output shares a `Root:` and groups repeated paths; JSON keeps canonical absolute locations. The main skill loads shared essentials and routes to separate Rust, Python and TypeScript/JavaScript skills. Only the active language and task-specific output/setup/edit references need loading.
 

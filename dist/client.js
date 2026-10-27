@@ -40,6 +40,7 @@ export class LspClient {
     #failure;
     #closed = false;
     #closing;
+    get reusable() { return !this.#failure && !this.#closed; }
     constructor(server, timeoutMs, allowApply = false) {
         this.server = server;
         this.timeoutMs = timeoutMs;
@@ -306,6 +307,12 @@ export class LspClient {
     async open(path) {
         path = resolveFile(path, this.server.root);
         const text = readText(path), uri = fileUri(path);
+        const opened = this.documents.get(uri);
+        if (opened) {
+            if (opened.text !== text)
+                throw new Error(`File changed during the shared session: ${path}; retry with a fresh batch`);
+            return { uri, text };
+        }
         this.documents.set(uri, { text, version: 1 });
         await this.notify("textDocument/didOpen", {
             textDocument: { uri, languageId: languageId(this.server, path), version: 1, text },

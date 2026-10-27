@@ -4,6 +4,12 @@ export function textPrefix(text, maximum) {
         end--;
     return text.slice(0, Math.max(0, end));
 }
+export function parseFields(value) {
+    const fields = [...new Set(value.split(",").map(field => field.trim()))];
+    if (fields.some(field => !/^[$A-Za-z_][\w$-]*(?:\.[$A-Za-z_][\w$-]*)*$/.test(field)))
+        throw new Error("--fields expects comma-separated object paths, e.g. success,results.definition.locations; select arrays as a whole");
+    return fields;
+}
 export function failure(error, limit = 50) {
     const original = error instanceof Error ? error.message : String(error), message = limit ? textPrefix(original, 6000) : original;
     return { success: false, error: message, ...(message.length < original.length ? { errorTruncated: true, hint: "Error text clipped; use --limit 0 --json for complete output." } : {}) };
@@ -24,7 +30,7 @@ export function compactText(items, fields, limit) {
         truncated: true, textTruncated: true, hint: "Text clipped; use --limit 0 --json for complete output.",
     };
 }
-const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
+const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "failedQueries", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
 export function selectFields(data, fields) {
     const selected = new Map(), missing = [];
     let recovery = "";
