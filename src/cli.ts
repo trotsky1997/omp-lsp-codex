@@ -9,7 +9,7 @@ import { expandHome } from "./config.ts";
 import { version } from "./version.ts";
 import { failure, parseFields, selectFields } from "./output.ts";
 
-const HELP = `codex-lsp ${version} — TypeScript LSP tools for agents (Node ${process.versions.node})
+const HELP = `codex-lsp ${version} — Multi-language LSP tools for agents (Node ${process.versions.node})
 
 Commands:
   setup LANGUAGE... [--project]  Register servers; project scope uses the current directory

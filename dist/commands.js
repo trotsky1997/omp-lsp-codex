@@ -155,9 +155,9 @@ async function fileContext(args, semantic = true, session) {
     }
 }
 export async function position(path, text, args) {
-    const lines = text.split("\n");
+    const lines = text.split("\n").map(line => line.endsWith("\r") ? line.slice(0, -1) : line);
     if (!Number.isInteger(args.line) || args.line < 1 || args.line > lines.length)
-        throw new Error(`Line ${args.line} is outside this file`);
+        throw new Error(`Line ${args.line} is outside this file; valid lines: 1-${lines.length}`);
     const syntax = args.column === undefined || args.symbol
         ? await syntaxPosition(path, text, args.line, args.symbol, args.command === "signature-help" && args.column === undefined, args.globalBinsOnly)
         : undefined;
@@ -170,10 +170,10 @@ export async function position(path, text, args) {
             : args.column - 1);
     const targetLine = syntax?.line ?? args.line - 1;
     if (!Number.isInteger(character) || character < 0 || character > lines[targetLine].length)
-        throw new Error("Column is outside this line");
+        throw new Error(`Column ${character + 1} is outside line ${targetLine + 1}; valid columns: 1-${lines[targetLine].length + 1} (UTF-16). Use --symbol NAME for a token anchor.`);
     const unit = lines[targetLine].charCodeAt(character);
     if (unit >= 0xdc00 && unit <= 0xdfff)
-        throw new Error("Column splits a UTF-16 surrogate pair");
+        throw new Error(`Column ${character + 1} on line ${targetLine + 1} splits a UTF-16 surrogate pair; use column ${character} or ${character + 2}.`);
     return syntax ?? { line: args.line - 1, character };
 }
 async function snippet(args) {

@@ -52,7 +52,7 @@ codex-lsp code-actions --file path/to/file.ts --line 20 --symbol value
 codex-lsp capabilities --file path/to/file.rs
 ```
 
-Positions are one-based; columns use UTF-16. Use `--symbol name#2` for a repeated token. File paths are resolved from the target project even when the CLI runs elsewhere. `symbols --query` filters document symbols; workspace queries use the matching language servers and return their errors alongside results.
+Positions are one-based; columns use UTF-16. Invalid anchors report valid line/column ranges; CRLF terminators are excluded from columns, and surrogate-pair errors suggest adjacent valid positions. Use `--symbol name#2` for a repeated token. File paths are resolved from the target project even when the CLI runs elsewhere. `symbols --query` filters document symbols; workspace queries use the matching language servers and return their errors alongside results.
 
 With ast-grep installed, `--symbol` selects code identifiers and excludes same-name comments/string contents. Wrong-line hints list nearby code matches. `signature-help --symbol NAME` selects that call's argument list, including generics and nested calls; choose a call site rather than its declaration. Without `--symbol`, automatic signature selection requires one call on the line. Use `--column` inside a call's arguments to inspect a later active parameter.
 
@@ -71,6 +71,8 @@ Start with `status --file` for quick discovery. `inspect` shares one server sess
 Add `inspect --context` when you need source bodies alongside navigation. It includes type-definition results and `results.context.snippets` with enclosing source, definitions, types and sampled references. Repeated enclosing declarations merge their `roles`. Default context follows up to three locations per section, returns up to `--limit` distinct snippets and shares a 6,000-character code budget. Each snippet has its file, one-based range, provider and character counts; `omittedLocations`, `truncated` and hints describe sampling/clipping. With ast-grep unavailable or a declaration unresolved, context returns nearby lines with `provider: "lines"` and a hint. Unreadable or concurrently changed files fail the context section while preserving the other results. `--limit 0 --json` retrieves complete snippets and follows all returned locations.
 
 ### Calls, completions, baselines and impact
+
+Call graphs store each file on its node. Edge `locations` contain `line`/`column`; resolve their file through the caller node (`nodes.find(node => node.id === edge.from).file`). `totalEdges` and `shownEdges` expose edge sampling alongside node counts.
 
 `callers` / `callees --depth 2` traverse the server call hierarchy in one session, keeping graph IDs, cycles and call-site evidence. `complete --query NAME --resolve` filters and resolves candidates at the specified cursor without inserting text or executing completion commands. Both expose capability/partial-result state and support batch rows.
 

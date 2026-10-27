@@ -92,7 +92,7 @@ export async function callHierarchy(args, client, uri, position) {
                     return false; seenSites.add(key); return true; });
                 const edge = { from: source.id, to: incoming ? entry.id : target.id, totalLocations: ranges.length,
                     ...(ranges.length < call.fromRanges.length ? { duplicateLocations: call.fromRanges.length - ranges.length } : {}),
-                    locations: (args.limit ? ranges.slice(0, args.limit) : ranges).map(range => ({ file: uriFile(source.item.uri) ?? source.item.uri, line: range.start.line + 1, column: range.start.character + 1 })) };
+                    locations: (args.limit ? ranges.slice(0, args.limit) : ranges).map(range => ({ line: range.start.line + 1, column: range.start.character + 1 })) };
                 const key = JSON.stringify(edge);
                 if (!seenEdges.has(key)) {
                     seenEdges.add(key);
@@ -111,7 +111,7 @@ export async function callHierarchy(args, client, uri, position) {
     const { items: visibleNodes, ...preview } = compactText(selected, ["name", "detail"], args.limit), truncated = bounded || selected.length < nodes.length || shownEdges.length < edges.length || shownEdges.some(edge => edge.locations.length < Number(edge.totalLocations)) || !!preview.truncated;
     const hint = truncated ? "Call graph sampled or bounded (200 nodes, 1000 edges); --limit 0 removes display limits. --depth controls traversal." : undefined;
     return { data: { success: !errors.length, supported: true, found: !!roots.length, server: client.server.name, direction: incoming ? "incoming" : "outgoing", depth,
-            roots, total: nodes.length, shown: selected.length, truncated, bounded, ...preview, ...(hint ? { hint } : {}), nodes: visibleNodes, edges: shownEdges, errors },
+            roots, total: nodes.length, shown: selected.length, totalEdges: edges.length, shownEdges: shownEdges.length, truncated, bounded, ...preview, ...(hint ? { hint } : {}), nodes: visibleNodes, edges: shownEdges, errors },
         code: errors.length ? 1 : 0, human: [
             `${args.command}: ${nodes.length} node(s), ${edges.length} edge(s), depth ${depth}`,
             ...visibleNodes.map(node => `[${node.id}] ${node.name} ${node.file}:${node.line}:${node.column}`),

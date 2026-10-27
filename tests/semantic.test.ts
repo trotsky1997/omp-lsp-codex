@@ -40,9 +40,26 @@ test("callees: outgoing call sites belong to the caller and graph display never 
   w.setScenario({ capabilities: { callHierarchyProvider: true }, responses: { "textDocument/prepareCallHierarchy": [a], "callHierarchy/outgoingCalls": [{ to: b, fromRanges: [range] }] } });
   const result = await run(w.args("callees"));
   assert.deepEqual(list(result.data.edges).map(e => [e.from, e.to]), [["0", "1"]]);
-  assert.equal((list(result.data.edges)[0].locations as { file: string }[])[0].file, w.file);
+  assert.equal(list(result.data.nodes).find(n => n.id === list(result.data.edges)[0].from)?.file, w.file);
+  assert.deepEqual(list(result.data.edges)[0].locations, [{ line: 1, column: 1 }]);
   const limited = await run(w.args("callees", "--limit", "1"));
   assert.equal(limited.data.truncated, true); assert.equal(list(limited.data.nodes).length, 1); assert.deepEqual(limited.data.edges, []);
+  assert.equal(limited.data.totalEdges, 1); assert.equal(limited.data.shownEdges, 0);
+});
+test("hierarchy: compact call sites reconstruct every incoming location from the caller node", async () => {
+  const w = workspace(), caller = item(w.uri, "caller"), sites = Array.from({ length: 30 }, (_, line) => ({ start: { line, character: 3 }, end: { line, character: 8 } }));
+  w.setScenario({ capabilities: { callHierarchyProvider: true }, responses: { "textDocument/prepareCallHierarchy": [item("file:///different-callee.fixture", "callee")], "callHierarchy/incomingCalls": [{ from: caller, fromRanges: sites }] } });
+  const result = await run(w.args("callers", "--limit", "0")), edge = list(result.data.edges)[0], node = list(result.data.nodes).find(n => n.id === edge.from)!;
+  const reconstructed = list(edge.locations).map(site => ({ file: node.file, ...site }));
+  assert.deepEqual(reconstructed, sites.map(site => ({ file: w.file, line: site.start.line + 1, column: 4 })));
+  assert.ok(list(edge.locations).every(site => !Object.hasOwn(site, "file")));
+  assert.ok(JSON.stringify(reconstructed).length - JSON.stringify(edge.locations).length > 1000);
+  assert.equal(result.data.totalEdges, 1); assert.equal(result.data.shownEdges, 1);
+});
+for (const command of ["callers", "callees", "complete"]) test(`${command}: invalid cursor ranges fail before starting a server`, async () => {
+  const w = workspace();
+  await assert.rejects(run(w.args(command, "--line", "1", "--column", "99")), /valid columns: 1-10 \(UTF-16\)/);
+  assert.equal(existsSync(join(w.root, "wire.ndjson")), false);
 });
 test("hierarchy: a function-expression binding can precede its expression range without changing the provider item", async () => {
   const w = workspace(), binding = { ...item(w.uri, "assigned"), range: { start: { line: 0, character: 30 }, end: { line: 4, character: 1 } }, selectionRange: { start: { line: 0, character: 6 }, end: { line: 0, character: 14 } } };

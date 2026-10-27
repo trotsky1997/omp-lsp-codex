@@ -86,6 +86,16 @@ test("positions: occurrence, word boundaries and UTF-16 columns", async () => {
   await assert.rejects(position(path, text, { line: 0 }), (error) => error instanceof Error && error.message.includes(String("outside")));
   await assert.rejects(position(path, text, { line: 1, column: 999 }), (error) => error instanceof Error && error.message.includes(String("outside")));
 });
+test("positions: invalid anchors give usable UTF-16 ranges for CRLF, empty lines and surrogate pairs", async () => {
+  const path = join(temp(), "columns.ts"), text = "😀x\r\n\r\n";
+  writeFileSync(path, text);
+  await assert.rejects(position(path, text, { line: 4, column: 1 }), /valid lines: 1-3/);
+  await assert.rejects(position(path, text, { line: 1, column: 5 }), /valid columns: 1-4 \(UTF-16\)/);
+  await assert.rejects(position(path, text, { line: 2, column: 2 }), /valid columns: 1-1 \(UTF-16\)/);
+  await assert.rejects(position(path, text, { line: 1, column: 2 }), /use column 1 or 3/);
+  assert.deepEqual(await position(path, text, { line: 1, column: 4 }), { line: 0, character: 3 });
+  assert.deepEqual(await position(path, text, { line: 2, column: 1 }), { line: 1, character: 0 });
+});
 for (const [caseIndex, caseValue] of ([null, [], { servers: [] }, { servers: { invalid: null } }].map((value) => ({ value }))).entries()) {
   const runCase: (value: typeof caseValue) => void | Promise<void> = ({ value }) => {
   const path = join(temp(), "lsp.json"); writeFileSync(path, JSON.stringify(value));

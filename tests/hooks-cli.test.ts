@@ -51,7 +51,8 @@ test("CLI: clamps timeouts, parses all flags and validates unexpected arguments"
   assert.throws(() => parseOptions(["hover", "extra"]), (error) => error instanceof Error && error.message.includes(String("Unexpected argument"))); assert.throws(() => parseOptions(["--unknown"]));
 });
 test("CLI: help, version, JSON and human errors have the right exit codes", async () => {
-  assert.strictEqual(await main(["--help"]), 0); assert.ok((output.pop()!).includes("Commands:"));
+  assert.strictEqual(await main(["--help"]), 0); const help = output.pop()!;
+  assert.match(help, /Multi-language LSP tools/); assert.ok(help.includes("Commands:"));
   assert.strictEqual(await main(["--version"]), 0); assert.match(output.pop()!, /^codex-lsp \d/);
   assert.strictEqual(await main(["unknown", "--json"]), 2); const error = JSON.parse(output.pop()!); assert.strictEqual(error.success, false); assert.match(error.error, /Unknown command: unknown/);
   assert.strictEqual(await main(["unknown"]), 2); assert.ok((output.pop()!).includes("codex-lsp: Unknown command"));
