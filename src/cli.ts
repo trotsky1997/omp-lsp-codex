@@ -19,6 +19,10 @@ Commands:
   inspect                --file PATH --line N [--symbol NAME] [--context] [--new-name NAME]
                          Hover, definition, references, symbols and diagnostics in one session
   diagnostics            --file PATH or --changed
+                         [--baseline PATH] [--save-baseline PATH]
+  callers / callees      --file PATH --line N [--symbol NAME] [--depth N]
+  complete               --file PATH --line N [--column N] [--query NAME] [--resolve]
+  impact --changed       Find changed declarations, references and candidate tests
   definition             --file PATH --line N [--symbol NAME | --column N]
   references             --file PATH --line N [--symbol NAME | --column N]
   hover                  --file PATH --line N [--symbol NAME | --column N]
@@ -36,7 +40,7 @@ Commands:
 
 Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --cwd PATH            Use this project directory for setup, relative paths and --changed
-  --limit N             Max results/hover lines (default 50, inspect/batch 10, signature-help 1; 0 shows all)
+  --limit N             Max results/hover lines (default 50, inspect/batch/impact 10, signature-help 1; 0 shows all)
   --fields A,B          Select JSON object paths (implies --json), e.g. total,results.diagnostics.counts
                         Keeps status/error/truncation metadata; arrays are selected whole
   --context             Include enclosing source, definitions, types and sampled references in inspect
@@ -72,6 +76,10 @@ export function parseOptions(
       payload: { type: "string" },
       input: { type: "string" },
       context: { type: "boolean" },
+      depth: { type: "string" },
+      resolve: { type: "boolean" },
+      baseline: { type: "string" },
+      "save-baseline": { type: "string" },
       timeout: { type: "string" },
       limit: { type: "string" },
       json: { type: "boolean" },
@@ -87,7 +95,7 @@ export function parseOptions(
     },
   });
   const timeout = Number(v.timeout ?? 20),
-    limit = Number(v.limit ?? (["inspect", "batch"].includes(positionals[0]) ? 10 : positionals[0] === "signature-help" ? 1 : 50)),
+    limit = Number(v.limit ?? (["inspect", "batch", "impact"].includes(positionals[0]) ? 10 : positionals[0] === "signature-help" ? 1 : 50)),
     line = Number(v.line ?? 1),
     column = v.column === undefined ? undefined : Number(v.column);
   if (!Number.isFinite(timeout)) throw new Error("--timeout must be a number");
@@ -99,6 +107,12 @@ export function parseOptions(
   )
     throw new Error("--line and --column must be positive integers");
   const [command = "", ...languages] = positionals;
+  const depth = Number(v.depth ?? 1);
+  if (!Number.isSafeInteger(depth) || depth < 1 || depth > 10) throw new Error("--depth must be an integer from 1 to 10");
+  if (v.depth !== undefined && !["callers", "callees"].includes(command)) throw new Error("--depth is only available for callers/callees");
+  if (v.resolve && command !== "complete") throw new Error("--resolve is only available for complete");
+  if ((v.baseline !== undefined || v["save-baseline"] !== undefined) && command !== "diagnostics") throw new Error("Baseline flags are only available for diagnostics");
+  if (v.baseline === "" || v["save-baseline"] === "") throw new Error("Baseline paths must be nonempty");
   if (v.input !== undefined && command !== "batch") throw new Error("--input is only available for batch");
   if (v.context && command !== "inspect") throw new Error("--context is only available for inspect; set context on inspect rows in batch input");
   const fields = v.fields === undefined ? undefined : parseFields(v.fields);
@@ -124,6 +138,10 @@ export function parseOptions(
     payload: v.payload,
     input: v.input,
     context: !!v.context,
+    depth,
+    resolveCompletion: !!v.resolve,
+    baseline: v.baseline,
+    saveBaseline: v["save-baseline"],
     timeout: Math.max(5, Math.min(300, timeout)) * 1000,
     limit,
     json: !!v.json || fields !== undefined,

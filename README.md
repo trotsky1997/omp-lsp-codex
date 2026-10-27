@@ -33,6 +33,12 @@ codex-lsp inspect --file path/to/file.rs --line 20 --symbol parse --context --js
 codex-lsp batch --input queries.jsonl --json
 codex-lsp diagnostics --file path/to/file.rs
 codex-lsp diagnostics --changed
+codex-lsp callers --file path/to/file.rs --line 20 --symbol parse --depth 2
+codex-lsp callees --file path/to/file.rs --line 20 --symbol parse --depth 2
+codex-lsp complete --file path/to/file.ts --line 20 --column 12 --query open --resolve
+codex-lsp diagnostics --file path/to/file.py --save-baseline ../lsp-before.json
+codex-lsp diagnostics --baseline ../lsp-before.json
+codex-lsp impact --changed --timeout 120 --json
 codex-lsp definition --file path/to/file.rs --line 20 --symbol parse
 codex-lsp references --file path/to/file.rs --line 20 --symbol parse
 codex-lsp hover --file path/to/file.rs --line 20 --symbol parse
@@ -64,6 +70,14 @@ Start with `status --file` for quick discovery. `inspect` shares one server sess
 
 Add `inspect --context` when you need source bodies alongside navigation. It includes type-definition results and `results.context.snippets` with enclosing source, definitions, types and sampled references. Repeated enclosing declarations merge their `roles`. Default context follows up to three locations per section, returns up to `--limit` distinct snippets and shares a 6,000-character code budget. Each snippet has its file, one-based range, provider and character counts; `omittedLocations`, `truncated` and hints describe sampling/clipping. With ast-grep unavailable or a declaration unresolved, context returns nearby lines with `provider: "lines"` and a hint. Unreadable or concurrently changed files fail the context section while preserving the other results. `--limit 0 --json` retrieves complete snippets and follows all returned locations.
 
+### Calls, completions, baselines and impact
+
+`callers` / `callees --depth 2` traverse the server call hierarchy in one session, keeping graph IDs, cycles and call-site evidence. `complete --query NAME --resolve` filters and resolves candidates at the specified cursor without inserting text or executing completion commands. Both expose capability/partial-result state and support batch rows.
+
+`diagnostics --save-baseline PATH.json` atomically captures complete verified diagnostics. `diagnostics --baseline PATH.json` compares the same file scope, retaining moved-line issues and reporting new/resolved/existing counts. Existing errors remain visible; a verified comparison exits 1 only for new errors. Configuration/scope changes remain unverified. Keep baseline artifacts outside the checkout.
+
+`impact --changed` reads staged/unstaged/untracked Git changes, selects changed declarations and follows references. Candidate tests carry direct-reference, enclosing-test or filename-convention evidence. Deleted APIs and incomplete queries remain explicit; no tests run automatically. See [analysis workflows](skills/codex-lsp/references/analysis.md) for schemas, safety and operation budgets.
+
 ### Batch queries
 
 For several questions or files, put one read-only query per line in a JSONL file:
@@ -74,7 +88,7 @@ For several questions or files, put one read-only query per line in a JSONL file
 {"command":"inspect","file":"src/parser.ts","line":12,"symbol":"parse","context":true,"fields":"results.context.snippets,results.diagnostics.counts"}
 ```
 
-Run `codex-lsp batch --input queries.jsonl --json`, or pipe JSONL to `codex-lsp batch --input - --json`. Input paths and query file paths use the caller's working directory or `--cwd`; each row can select another `cwd` relative to that directory. Every row requires `command` and `file`; optional fields are `cwd`, `line`, `column`, `symbol`, `query`, `limit`, `fields`, `workspace` (symbols only) and `context` (inspect only). Coordinates are one-based UTF-16. Supported commands are hover, definition, references, type-definition, implementation, signature-help, symbols, diagnostics, snippet and inspect. Batch is read-only and rejects edit commands, raw requests and unrecognized fields before starting any server.
+Run `codex-lsp batch --input queries.jsonl --json`, or pipe JSONL to `codex-lsp batch --input - --json`. Input paths and query file paths use the caller's working directory or `--cwd`; each row can select another `cwd` relative to that directory. Every row requires `command` and `file`; optional fields are `cwd`, `line`, `column`, `symbol`, `query`, `limit`, `fields`, `workspace` (symbols only), `context` (inspect only), `depth` (callers/callees), `resolve` (complete) and `baseline` (diagnostics). Coordinates are one-based UTF-16. Supported commands are hover, definition, references, type-definition, implementation, signature-help, symbols, diagnostics, snippet and inspect. Batch is read-only and rejects edit commands, raw requests and unrecognized fields before starting any server.
 
 Queries run in input order and share compatible servers and opened documents. Up to eight servers remain active; least recently used sessions close when more are needed. A batch containing inspect/diagnostics enables Rust compiler checks at startup. Healthy sessions survive a single request error or timeout; broken connections restart before the next query. Concurrent changes to an opened file fail that query and discard its session. All sessions close on completion or interruption; batch has no background daemon.
 

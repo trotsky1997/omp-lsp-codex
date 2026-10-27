@@ -30,7 +30,7 @@ export function compactText(items: Record<string, unknown>[], fields: string[], 
   };
 }
 
-const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "failedQueries", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
+const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "failedQueries", "bounded", "complete", "incomplete", "resolution", "newErrors", "baselineSaved", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
 
 export function selectFields(data: Record<string, unknown>, fields: string[]): Record<string, unknown> {
   const selected = new Map<string, unknown>(), missing: string[] = [];

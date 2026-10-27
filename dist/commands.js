@@ -13,6 +13,9 @@ import { compactText, failure, selectFields, textPrefix } from "./output.js";
 import { syntaxLanguage, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.js";
 import { batchQueries } from "./batch.js";
 import { inspectContext } from "./context.js";
+import { callHierarchy, complete } from "./semantic.js";
+import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.js";
+import { impactAnalysis } from "./impact.js";
 function outputInfo(total, limit) {
     const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
     return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
@@ -89,6 +92,8 @@ const READ_ONLY = new Set([
     "workspace/symbol",
     "textDocument/diagnostic",
     "textDocument/semanticTokens/full",
+    "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls",
+    "textDocument/completion", "completionItem/resolve",
 ]);
 const NAVIGATION = {
     definition: "textDocument/definition",
@@ -98,7 +103,7 @@ const NAVIGATION = {
     "type-definition": "textDocument/typeDefinition",
     implementation: "textDocument/implementation",
 };
-const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp"]);
+const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp", "textDocument/prepareCallHierarchy", "textDocument/completion"]);
 async function sessionClient(server, args, session) {
     const key = JSON.stringify([server, args.timeout]);
     let client = session?.clients.get(key);
@@ -766,9 +771,14 @@ export async function changedFiles(cwd) {
     return [...found].sort();
 }
 export async function diagnostics(args, shared, session) {
-    if (!!args.file === args.changed)
-        throw new Error("Choose exactly one of --file or --changed");
-    const paths = args.changed ? await changedFiles(args.cwd) : [resolveFile(args.file, args.cwd)];
+    const before = args.baseline ? loadBaseline(resolve(args.cwd, expandHome(args.baseline))) : undefined;
+    if (args.file && args.changed || !args.file && !args.changed && !before)
+        throw new Error("Choose exactly one of --file or --changed, or provide --baseline");
+    const paths = args.changed ? await changedFiles(args.cwd) : args.file ? [resolveFile(args.file, args.cwd)] : before.files.map(file => resolveFile(file.file, args.cwd));
+    const root = gitRoot(paths.length ? dirname(paths[0]) : args.cwd);
+    if (before && before.root !== root)
+        throw new Error(`Baseline workspace mismatch: expected ${root}, got ${before.root}`);
+    const sourceTexts = new Map();
     const configurationPaths = args.changed ? configPaths(args.cwd).filter(existsSync).map(file => realpathSync(file)) : [];
     const scopedConfigurationPaths = args.changed ? configPaths(args.cwd, args.globalConfigOnly).filter(existsSync).map(file => realpathSync(file)) : [];
     const configurationChecks = [];
@@ -804,11 +814,19 @@ export async function diagnostics(args, shared, session) {
             for (const file of files) {
                 const result = await client.getDiagnostics(fileUri(file)), record = records.get(file);
                 record.verified &&= result.verified;
+                if (args.baseline || args.saveBaseline) {
+                    const text = client.documents.get(fileUri(file)).text;
+                    if (sourceTexts.has(file) && sourceTexts.get(file) !== text) {
+                        record.verified = false;
+                        record.errors.push("Source changed between diagnostic servers");
+                    }
+                    sourceTexts.set(file, text);
+                }
                 if (!result.verified)
                     record.errors.push(`${server.name}: ${UNVERIFIED_DIAGNOSTICS}`);
-                const seen = new Set(record.diagnostics.map((x) => JSON.stringify([x.range, x.message, x.severity ?? 1])));
+                const seen = new Set(record.diagnostics.map((x) => JSON.stringify([x.range, x.message, x.severity ?? 1, x.code, x.source])));
                 for (const diagnostic of result.diagnostics) {
-                    const key = JSON.stringify([diagnostic.range, diagnostic.message, diagnostic.severity ?? 1]);
+                    const key = JSON.stringify([diagnostic.range, diagnostic.message, diagnostic.severity ?? 1, diagnostic.code, diagnostic.source]);
                     if (!seen.has(key)) {
                         record.diagnostics.push(diagnostic);
                         seen.add(key);
@@ -827,8 +845,25 @@ export async function diagnostics(args, shared, session) {
                 await client?.close();
         }
     }
-    const checked = [...records.values()], verified = checked.every((x) => x.verified), hasErrors = checked.some((x) => x.diagnostics.some((d) => (d.severity ?? 1) === 1));
-    const success = verified && !hasErrors && checked.every((x) => !x.errors.length);
+    const checked = [...records.values()];
+    if (args.baseline || args.saveBaseline)
+        for (const record of checked)
+            if (sourceTexts.has(record.file) && readText(record.file) !== sourceTexts.get(record.file)) {
+                record.verified = false;
+                record.errors.push("Source changed during baseline analysis; retry diagnostics");
+            }
+    const verified = checked.every((x) => x.verified), hasErrors = checked.some((x) => x.diagnostics.some((d) => (d.severity ?? 1) === 1));
+    const fingerprints = [...groups.values()].map(group => serverFingerprint(compilerDiagnostics(group.server)));
+    const snapshot = (args.baseline || args.saveBaseline) && verified ? captureBaseline(checked, root, fingerprints, sourceTexts) : undefined;
+    let baselineSaved;
+    if (args.saveBaseline) {
+        if (!snapshot)
+            throw new Error("Cannot save an unverified diagnostics baseline; existing baseline is unchanged");
+        baselineSaved = resolve(args.cwd, expandHome(args.saveBaseline));
+        saveBaseline(baselineSaved, snapshot);
+    }
+    const comparison = before ? compareBaseline(before, snapshot, checked.map(record => record.file), fingerprints, args.limit) : undefined;
+    const success = verified && checked.every((x) => !x.errors.length) && (comparison ? comparison.verified === true && comparison.newErrors === 0 : !hasErrors);
     const all = checked.flatMap((record) => record.diagnostics), summary = outputInfo(all.length, args.limit);
     const counts = { errors: 0, warnings: 0, information: 0, hints: 0 };
     for (const diagnostic of all)
@@ -868,7 +903,7 @@ export async function diagnostics(args, shared, session) {
     if (!verified)
         summary.hint = [summary.hint, UNVERIFIED_DIAGNOSTICS].filter(Boolean).join(" ");
     return {
-        data: { success, verified, hasErrors, ...summary, counts, checked: visible, ...(textTruncated ? { textTruncated: true } : {}), ...(detailsOmitted ? { detailsOmitted: true } : {}), ...(configurationChecks.length ? { configurationChecks } : {}) },
+        data: { success, verified, hasErrors, ...summary, counts, checked: visible, ...(comparison ? { comparison } : {}), ...(baselineSaved ? { baselineSaved } : {}), ...(textTruncated ? { textTruncated: true } : {}), ...(detailsOmitted ? { detailsOmitted: true } : {}), ...(configurationChecks.length ? { configurationChecks } : {}) },
         code: success ? 0 : 1,
         human: [checked.length
                 ? [`${all.length} diagnostic(s): ${counts.errors} error(s), ${counts.warnings} warning(s), ${counts.information} information, ${counts.hints} hint(s)`, ...visible
@@ -879,7 +914,9 @@ export async function diagnostics(args, shared, session) {
                     ]), summary.hint].filter(Boolean).join("\n")
                 : "No changed source files to check",
             ...configurationChecks.map(row => `${row.status === "validated" ? "Validated CLI configuration" : "Ignored project LSP configuration (global-config-only)"}: ${row.file}`),
-        ].join("\n"),
+            ...(comparison ? [comparison.verified ? `Baseline: ${JSON.stringify(comparison.counts)}; ${comparison.newErrors} new error(s). Existing diagnostics remain visible above.` : String(comparison.hint),
+                ...["new", "resolved", "existing"].flatMap(kind => (Array.isArray(object(comparison[kind]).issues) ? object(comparison[kind]).issues : []).map(issue => `${kind}: ${issue.file}:${issue.line}:${issue.column} ${issue.message}`))] : []),
+            ...(baselineSaved ? [`Baseline saved: ${baselineSaved}`] : []),].join("\n"),
     };
 }
 async function inspect(args, session) {
@@ -1153,14 +1190,14 @@ async function request(args) {
 }
 export async function run(args, session) {
     const navigation = Object.hasOwn(NAVIGATION, args.command);
-    if (navigation && args.apply)
+    if (args.apply && (navigation || ["symbols", "diagnostics", "callers", "callees", "complete", "impact"].includes(args.command)))
         throw new Error(`${args.command} is read-only; omit --apply`);
     let requestPosition = false;
     if (args.command === "request" && POSITION_METHODS.has(args.method ?? "")) {
         const payload = args.payload ? JSON.parse(args.payload) : {};
         requestPosition = !!payload && typeof payload === "object" && !Array.isArray(payload) && !("position" in payload);
     }
-    if (args.file && (navigation || ["inspect", "rename", "code-actions"].includes(args.command) ||
+    if (args.file && (navigation || ["inspect", "rename", "code-actions", "callers", "callees", "complete"].includes(args.command) ||
         requestPosition)) {
         const path = resolveFile(args.file, args.cwd);
         await position(path, readText(path), args);
@@ -1168,6 +1205,34 @@ export async function run(args, session) {
     if (navigation)
         return navigate(args, undefined, session);
     switch (args.command) {
+        case "impact": {
+            if (!args.changed || args.file || args.apply)
+                throw new Error("impact is read-only; use impact --changed");
+            const pool = session ?? { clients: new Map(), diagnostics: false };
+            try {
+                return await impactAnalysis(args, await changedFiles(args.cwd), file => fileContext({ ...args, command: "symbols", file }, true, pool));
+            }
+            finally {
+                if (!session)
+                    await Promise.allSettled([...pool.clients.values()].map(client => client.close()));
+            }
+        }
+        case "callers":
+        case "callees":
+        case "complete": {
+            if (args.apply)
+                throw new Error(`${args.command} is read-only; omit --apply`);
+            const context = await fileContext(args, true, session);
+            try {
+                const pos = await position(context.path, context.text, args);
+                return args.command === "complete" ? await complete(args, context.client, context.uri, pos)
+                    : await callHierarchy(args, context.client, context.uri, pos);
+            }
+            finally {
+                if (!session)
+                    await context.client.close();
+            }
+        }
         case "batch":
             return batch(args);
         case "snippet":

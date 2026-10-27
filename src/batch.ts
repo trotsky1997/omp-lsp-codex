@@ -4,8 +4,8 @@ import { expandHome, MAX_FILES, MAX_FILE_BYTES } from "./config.ts";
 import type { Options } from "./commands.ts";
 import { parseFields } from "./output.ts";
 
-const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect"]);
-const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context"]);
+const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect", "callers", "callees", "complete"]);
+const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context", "depth", "resolve", "baseline"]);
 
 export async function batchQueries(args: Options): Promise<{ line: number; options: Options }[]> {
   if (!args.input) throw new Error('batch requires --input PATH or --input - (JSONL); e.g. {"command":"hover","file":"src/main.ts","line":10}');
@@ -31,9 +31,12 @@ export async function batchQueries(args: Options): Promise<{ line: number; optio
       for (const field of Object.keys(row)) if (!FIELDS.has(field)) throw new Error(`Unknown batch field: ${field}; allowed: ${[...FIELDS].join(", ")}`);
       if (typeof row.command !== "string" || !COMMANDS.has(row.command)) throw new Error(`Unsupported read-only command; choose ${[...COMMANDS].join(", ")}`);
       if (typeof row.file !== "string" || !row.file.trim()) throw new Error("Each query requires file");
-      for (const field of ["cwd", "symbol", "query", "fields"]) if (row[field] !== undefined && (typeof row[field] !== "string" || !(row[field] as string).trim())) throw new Error(`${field} must be a nonempty string`);
+      for (const field of ["cwd", "symbol", "query", "fields", "baseline"]) if (row[field] !== undefined && (typeof row[field] !== "string" || !(row[field] as string).trim())) throw new Error(`${field} must be a nonempty string`);
       for (const field of ["line", "column", "limit"]) if (row[field] !== undefined && (typeof row[field] !== "number" || !Number.isSafeInteger(row[field]) || (row[field] as number) < (field === "limit" ? 0 : 1))) throw new Error(`${field} must be ${field === "limit" ? "a nonnegative" : "a positive"} integer`);
-      for (const field of ["workspace", "context"]) if (row[field] !== undefined && typeof row[field] !== "boolean") throw new Error(`${field} must be boolean`);
+      for (const field of ["workspace", "context", "resolve"]) if (row[field] !== undefined && typeof row[field] !== "boolean") throw new Error(`${field} must be boolean`);
+      if (row.depth !== undefined && (!Number.isSafeInteger(row.depth) || Number(row.depth) < 1 || Number(row.depth) > 10 || !["callers", "callees"].includes(row.command))) throw new Error("depth must be 1-10 and applies to callers/callees");
+      if (row.resolve && row.command !== "complete") throw new Error("resolve is only available for complete");
+      if (row.baseline && row.command !== "diagnostics") throw new Error("baseline is only available for diagnostics");
       if (row.context && row.command !== "inspect") throw new Error("context is only available for inspect");
       if (row.workspace && row.command !== "symbols") throw new Error("workspace is only available for symbols");
       const cwd = realpathSync(resolve(args.cwd, expandHome(typeof row.cwd === "string" ? row.cwd : ".")));
@@ -44,6 +47,7 @@ export async function batchQueries(args: Options): Promise<{ line: number; optio
         limit: row.limit as number | undefined ?? args.limit,
         workspace: !!row.workspace, context: !!row.context, input: undefined,
         fields: typeof row.fields === "string" ? parseFields(row.fields) : undefined,
+        depth: Number(row.depth ?? 1), resolveCompletion: !!row.resolve, baseline: row.baseline as string | undefined,
       } });
     } catch (error) { throw new Error(`Batch input line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`); }
   }

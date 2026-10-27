@@ -31,6 +31,7 @@ const queued: Record<string, unknown>[] = [];
 let callbackId: unknown;
 let callbackMethod: string | undefined;
 let lateId: unknown;
+let indexReady = false;
 const framer = new MessageFramer(Buffer.alloc(0));
 for await (const chunk of process.stdin) {
   framer.push(chunk);
@@ -56,7 +57,10 @@ for await (const chunk of process.stdin) {
             if (scenario.diagnosticDelay) setTimeout(publish, scenario.diagnosticDelay);
             else await publish();
           }
-          if (scenario.serverStatus) await send({ method: "experimental/serverStatus", params: scenario.serverStatus });
+          if (scenario.serverStatus) {
+            const status = () => { indexReady = true; return send({ method: "experimental/serverStatus", params: scenario.serverStatus }); };
+            if (scenario.serverStatusDelay) setTimeout(status, scenario.serverStatusDelay); else await status();
+          }
           for (const progress of scenario.progress ?? []) await send({ method: "$/progress", params: progress });
         }
         break;
@@ -121,8 +125,14 @@ for await (const chunk of process.stdin) {
             await send({ id: "server-request", ...scenario.callbacks[method] });
           } else if (count < (scenario.contentModified?.[method] ?? 0))
             await send({ id: message.id, error: { code: -32801, message: "Content Modified" } });
-          else if (scenario.errors?.[method]) await send({ id: message.id, error: scenario.errors[method] });
-          else await reply(scenario.responses?.[method] ?? null);
+          else {
+            const item = object(params.item ?? params), key = String(object(item.data).key ?? item.name ?? item.label);
+            const position = object(params.position), point = `${position.line}:${position.character}`;
+            const error = scenario.errorsByItem?.[method]?.[key] ?? scenario.errors?.[method];
+            if (error) await send({ id: message.id, error });
+            else if (scenario.requiresIndex && method === "textDocument/references" && !indexReady) await reply([]);
+            else await reply(scenario.responsesByItem?.[method]?.[key] ?? scenario.responsesByPosition?.[method]?.[point] ?? scenario.responses?.[method] ?? null);
+          }
         }
     }
   }

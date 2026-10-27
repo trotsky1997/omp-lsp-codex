@@ -30,6 +30,12 @@ export const CLIENT_CAPABILITIES = {
             dynamicRegistration: false,
             linkSupport: true,
         },
+        callHierarchy: { dynamicRegistration: false },
+        completion: {
+            dynamicRegistration: false,
+            contextSupport: true,
+            completionItem: { snippetSupport: false, documentationFormat: ["markdown", "plaintext"], resolveSupport: { properties: ["detail", "documentation"] } },
+        },
         references: {
             dynamicRegistration: false,
         },

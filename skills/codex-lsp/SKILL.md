@@ -19,6 +19,12 @@ codex-lsp snippet --file PATH --line N --symbol NAME
 codex-lsp inspect --file PATH --line N --symbol NAME
 codex-lsp inspect --file PATH --line N --symbol NAME --context
 codex-lsp batch --input queries.jsonl --json
+codex-lsp callers --file PATH --line N --symbol NAME --depth 2
+codex-lsp callees --file PATH --line N --symbol NAME --depth 2
+codex-lsp complete --file PATH --line N --column N --query NAME --resolve
+codex-lsp diagnostics --file PATH --save-baseline BASELINE.json
+codex-lsp diagnostics --baseline BASELINE.json
+codex-lsp impact --changed --json
 ```
 
 Use symbols or source search to find a current anchor. File errors suggest discovery; wrong-line errors suggest nearby matches. Positions are one-based UTF-16 columns; `NAME#2` selects a repeated token. Quote paths and pass arguments separately. Run from the project directory, or choose another with `--cwd PROJECT`.
@@ -34,6 +40,8 @@ Use `batch` for several known queries/files to reuse servers. Its JSONL rows req
 Prefer human text for reading. For automation, `--fields locations` implies JSON; symbols use `--fields symbols`, and inspect wraps sections in `results`. Check `success`, navigation `found`, and diagnostic `verified`/`hasErrors` along with the exit code. Existing diagnostic errors cause exit 1 while navigation can succeed; inspect explains this in `failedSections`.
 
 Default limits are 50 results/hover lines, 10 per inspect section and one signature. Text budgets and truncation flags describe omissions. Use `--limit 0 --json > result.json` when complete details are required. Read [output shapes](references/outputs.md) for field selection, signature cursors or large results.
+
+Use call hierarchy to follow callers/callees, completion to discover members at a cursor, a diagnostic baseline to separate new issues from existing ones, and impact for changed declarations and candidate tests with evidence. These commands are read-only with respect to source. Read [analysis workflows](references/analysis.md) for capture/compare, traversal and resolution budgets, incomplete results or removed code.
 
 ## Setup and edits
 
