@@ -1045,7 +1045,7 @@ async function request(args: Options): Promise<Result> {
   let client: LspClient | undefined,
     server: Server,
     params: unknown = args.payload ? JSON.parse(args.payload) : {};
-  let applied = false;
+  let applied = false, editFailure: unknown;
   if (args.file && args.payload && args.method.startsWith("textDocument/") &&
       (params === null || typeof params !== "object" || Array.isArray(params)))
     throw new Error("--payload with --file must contain an object for textDocument requests");
@@ -1073,9 +1073,11 @@ async function request(args: Options): Promise<Result> {
     }
     if (args.apply)
       client.applyEdit = async (edit) => {
-        applied = (await client!.edit(edit)) || applied;
+        try { applied = (await client!.edit(edit)) || applied; }
+        catch (error) { editFailure = error; throw error; }
       };
     const result = await client.request(args.method, params);
+    if (editFailure !== undefined) throw editFailure;
     if (args.apply && (object(result).changes || object(result).documentChanges)) {
       applied = (await client.edit(result as WorkspaceEdit)) || applied;
     }

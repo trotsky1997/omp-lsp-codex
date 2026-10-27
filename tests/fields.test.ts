@@ -53,6 +53,19 @@ test("fields: references keep completion metadata while omitting unrequested loc
   assert.deepStrictEqual(selected, { total: 2, shown: 1, success: true, found: true, truncated: true, hint: full.hint });
   assert.strictEqual(w.events().filter(event => event.method === "textDocument/references").length, 2);
 });
+test("fields: missing paths identify the nearest available fields without altering results", async () => {
+  const w = workspace({ responses: { "textDocument/references": [{ uri: "file:///source.fixture", range }] } });
+  assert.strictEqual(await main(["references", "--file", w.file, "--fields", "results.references.locations"]), 0);
+  const reference = decoded(); assert.strictEqual(reference.found, true); assert.deepStrictEqual(reference.missingFields, ["results.references.locations"]); assert.match(reference.hint, /locations/);
+  const data = { success: false, applied: true, hint: "Project verification pending.", results: { definition: { locations: [] }, diagnostics: { verified: false } } };
+  const selected = selectFields(data, ["results.signatureHelp"]);
+  assert.strictEqual(selected.success, false); assert.strictEqual(selected.applied, true); assert.match(String(selected.hint), /Project verification pending/); assert.match(String(selected.hint), /results\.definition/); assert.match(String(selected.hint), /results\.diagnostics/);
+  assert.strictEqual(data.hint, "Project verification pending.");
+  const array = selectFields({ success: true, locations: [] }, ["locations.file"]); assert.match(String(array.hint), /whole/);
+  const primitive = selectFields({ success: true, total: 0 }, ["total.value"]); assert.match(String(primitive.hint), /no selectable child/);
+  const empty = selectFields({ result: {} }, ["result.missing"]); assert.match(String(empty.hint), /\(none\)/);
+  const large = selectFields(Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`${i}${"x".repeat(10000)}`, true])), ["missing"]); assert.ok(String(large.hint).length < 1100);
+});
 test("fields: nested inspect selection retains diagnostic status and failure exit code", async () => {
   const w = workspace({ diagnostics: [{ range, severity: 1, message: "existing error" }] });
   assert.strictEqual(await main(["inspect", "--file", w.file, "--json", "--fields", "results.diagnostics.counts"]), 1);
@@ -78,7 +91,7 @@ test("fields: overlapping paths retain whole arrays without mutating frozen sour
   const section = Object.freeze({ success: true, locations, nullable: null, hover, absent: undefined });
   const data = Object.freeze({ success: true, results: Object.freeze({ section }), extra: "omitted" });
   const result = JSON.parse(JSON.stringify(selectFields(data, ["results.section.locations", "results.section", "results.section.hover.hover", "results.section.absent", "results.section.nullable", "results.section.locations.length", "results.section.nullable.value"])));
-  assert.deepStrictEqual(result, { success: true, results: { section: { success: true, locations, nullable: null, hover } }, missingFields: ["results.section.absent", "results.section.locations.length", "results.section.nullable.value"] });
+  assert.deepStrictEqual(result, { success: true, results: { section: { success: true, locations, nullable: null, hover } }, missingFields: ["results.section.absent", "results.section.locations.length", "results.section.nullable.value"], hint: "Available JSON fields (up to 10): results.section.success, results.section.locations, results.section.nullable, results.section.hover." });
   assert.strictEqual(section.absent, undefined); assert.strictEqual(data.extra, "omitted");
   const filtered = JSON.parse(JSON.stringify(selectFields(data, ["results.section.hover.hover"])));
   assert.strictEqual(filtered.results.section.hover.provider, "devdocs"); assert.strictEqual(filtered.results.section.locations, undefined);
@@ -89,6 +102,6 @@ test("fields: only own properties are read and prototype-shaped keys cannot poll
   const data = JSON.parse('{"success":true,"result":{"__proto__":{"polluted":"value"},"constructor":{"prototype":{"value":1}}}}');
   Object.setPrototypeOf(data, { inherited: "private" });
   const result = JSON.parse(JSON.stringify(selectFields(data, ["result.__proto__.polluted", "result.constructor.prototype.value", "inherited"])));
-  assert.deepStrictEqual(result, { success: true, result: JSON.parse('{"__proto__":{"polluted":"value"},"constructor":{"prototype":{"value":1}}}'), missingFields: ["inherited"] });
+  assert.deepStrictEqual(result, { success: true, result: JSON.parse('{"__proto__":{"polluted":"value"},"constructor":{"prototype":{"value":1}}}'), missingFields: ["inherited"], hint: "Available JSON fields (up to 10): success, result." });
   assert.strictEqual(object(Object.prototype).polluted, undefined); assert.strictEqual(object(Object.prototype).value, undefined);
 });

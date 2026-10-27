@@ -27,6 +27,7 @@ const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "
 
 export function selectFields(data: Record<string, unknown>, fields: string[]): Record<string, unknown> {
   const selected = new Map<string, unknown>(), missing: string[] = [];
+  let recovery = "";
   const state = (value: Record<string, unknown>, prefix: string) => {
     for (const key of STATE_FIELDS) if (Object.hasOwn(value, key) && value[key] !== undefined) selected.set(prefix + key, value[key]);
   };
@@ -35,7 +36,15 @@ export function selectFields(data: Record<string, unknown>, fields: string[]): R
   for (const field of fields) {
     const parts = field.split("."); let value: unknown = data, found = true;
     for (let index = 0; index < parts.length; index++) {
-      if (value === null || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, parts[index]) || (value as Record<string, unknown>)[parts[index]] === undefined) { found = false; break; }
+      if (value === null || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, parts[index]) || (value as Record<string, unknown>)[parts[index]] === undefined) {
+        if (!recovery) {
+          const parent = parts.slice(0, index).join(".");
+          recovery = value !== null && typeof value === "object" && !Array.isArray(value)
+            ? `Available JSON fields (up to 10): ${Object.keys(value).filter(key => (value as Record<string, unknown>)[key] !== undefined).slice(0, 10).map(key => textPrefix(parent ? `${parent}.${key}` : key, 100)).join(", ") || "(none)"}.`
+            : `Select ${Array.isArray(value) ? "array" : "field"} "${parent}" as a whole; it has no selectable child fields.`;
+        }
+        found = false; break;
+      }
       value = (value as Record<string, unknown>)[parts[index]];
       if (index < parts.length - 1 && value !== null && typeof value === "object" && !Array.isArray(value)) state(value as Record<string, unknown>, parts.slice(0, index + 1).join(".") + ".");
     }
@@ -52,6 +61,9 @@ export function selectFields(data: Record<string, unknown>, fields: string[]): R
     }
     target[parts.at(-1)!] = value;
   }
-  if (missing.length) result.missingFields = missing;
+  if (missing.length) {
+    result.missingFields = missing;
+    result.hint = [result.hint, recovery].filter(Boolean).join(" ");
+  }
   return result;
 }

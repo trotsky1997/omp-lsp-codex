@@ -27,6 +27,7 @@ export function compactText(items, fields, limit) {
 const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
 export function selectFields(data, fields) {
     const selected = new Map(), missing = [];
+    let recovery = "";
     const state = (value, prefix) => {
         for (const key of STATE_FIELDS)
             if (Object.hasOwn(value, key) && value[key] !== undefined)
@@ -41,6 +42,12 @@ export function selectFields(data, fields) {
         let value = data, found = true;
         for (let index = 0; index < parts.length; index++) {
             if (value === null || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, parts[index]) || value[parts[index]] === undefined) {
+                if (!recovery) {
+                    const parent = parts.slice(0, index).join(".");
+                    recovery = value !== null && typeof value === "object" && !Array.isArray(value)
+                        ? `Available JSON fields (up to 10): ${Object.keys(value).filter(key => value[key] !== undefined).slice(0, 10).map(key => textPrefix(parent ? `${parent}.${key}` : key, 100)).join(", ") || "(none)"}.`
+                        : `Select ${Array.isArray(value) ? "array" : "field"} "${parent}" as a whole; it has no selectable child fields.`;
+                }
                 found = false;
                 break;
             }
@@ -65,7 +72,9 @@ export function selectFields(data, fields) {
         }
         target[parts.at(-1)] = value;
     }
-    if (missing.length)
+    if (missing.length) {
         result.missingFields = missing;
+        result.hint = [result.hint, recovery].filter(Boolean).join(" ");
+    }
     return result;
 }

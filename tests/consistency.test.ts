@@ -150,6 +150,24 @@ test("raw request: a failure after a successful callback identifies completed ed
   await assert.rejects(run(w.args("request", "--apply", "--method", "fixture/edit")), (error) => error instanceof Error && error.message.includes(String("after applying edits")));
   assert.strictEqual(readFileSync(w.file, "utf8"), "renamed = 1\n");
 });
+test("raw request: rejected callback edits fail even when the server returns success", async () => {
+  const w = workspace(); w.setScenario({ beforeResponse: { "fixture/edit": { file: w.file, text: "external change\n" } }, callbacks: { "fixture/edit": { method: "workspace/applyEdit", params: { edit: { changes: { [w.uri]: [replacement] } } } } } });
+  await assert.rejects(run(w.args("request", "--apply", "--method", "fixture/edit")), /changed since/);
+  assert.strictEqual(readFileSync(w.file, "utf8"), "external change\n");
+  assert.strictEqual((w.events().find(event => event.direction === "receive" && event.id === "server-request")?.result as { applied: boolean }).applied, false);
+});
+test("raw request: callback synchronization failure cannot hide completed writes", async () => {
+  const w = workspace(), start = LspClient.start.bind(LspClient);
+  w.setScenario({ callbacks: { "fixture/edit": { method: "workspace/applyEdit", params: { edit: { changes: { [w.uri]: [replacement] } } } } } });
+  const inject = mock.method(LspClient, "start", async (...args: Parameters<typeof LspClient.start>) => {
+    const client = await start(...args), notify = client.notify.bind(client);
+    mock.method(client, "notify", (method: string, params: unknown) => method === "textDocument/didChange" ? Promise.reject(new Error("injected synchronization failure")) : notify(method, params));
+    return client;
+  });
+  try { await assert.rejects(run(w.args("request", "--apply", "--method", "fixture/edit")), /Edits applied.*synchronization failed/); }
+  finally { inject.mock.restore(); }
+  assert.strictEqual(readFileSync(w.file, "utf8"), "renamed = 1\n");
+});
 test("code action: rejected callback edits remain visible even if the command returns success", async () => {
   const w = workspace(); w.setScenario({ responses: { "textDocument/codeAction": [{ title: "Fix", command: "fixture.fix" }] }, beforeResponse: { "workspace/executeCommand": { file: w.file, text: "external change\n" } }, callbacks: { "workspace/executeCommand": { method: "workspace/applyEdit", params: { edit: { changes: { [w.uri]: [replacement] } } } } } });
   await assert.rejects(run(w.args("code-actions", "--apply", "--query", "0")), (error) => error instanceof Error && error.message.includes(String("changed since")));

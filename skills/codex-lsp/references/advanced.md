@@ -4,7 +4,7 @@ Read this for code actions, file moves, raw requests or custom configuration.
 
 ## Editing
 
-Rename previews include replacement spans and workspace edits. Large replacement text shares a 6,000-character preview budget while ranges remain complete; small aggregate results stay intact. Text clipping sets `textTruncated` and omits the full workspace edit. Bounded previews omit the complete edit object when truncated and set `workspaceEditOmitted`; `--limit 0 --json` retrieves all details. `--apply` always processes the complete edit set. Empty symbol renames fail.
+Rename previews include replacement spans in `edits` and a raw LSP `workspaceEdit`, which can use either `changes` or `documentChanges`. File moves use `workspaceEdits`, an array of `{server, edit}` objects. Selected code actions use `editPreview`. Large replacement text shares a 6,000-character preview budget while ranges remain complete; small aggregate results stay intact. Text clipping sets `textTruncated` and omits the full workspace edit. Bounded previews omit the complete edit object when truncated and set `workspaceEditOmitted`; `--limit 0 --json` retrieves all details. `--apply` always processes the complete edit set. Empty symbol renames fail.
 
 `code-actions --file PATH --line N` selects the whole line and includes initial diagnostics. Narrow it with `--symbol` or `--column`. Use `--query INDEX` to resolve and preview one action without executing it; a unique title also works. `editPreview` includes file count, paths, ranges and replacements; `--fields actions,editPreview` retains this scope. `editPreview.files` is an array of path strings, and `editPreview.edits` is an array of formatted summary strings. Default previews bound replacement text and omit raw workspace edits; `--limit 0 --json` includes the complete structured LSP edit in `editPreview.workspaceEdit`. `executesCommand` flags server commands, whose effects can extend beyond the preview. Add `--apply` to execute; ambiguous title matches require an original numeric index. Preview indexes retain their original meaning after filtering. A `disabledReason` explains unavailable actions. Clipped titles retain their numeric index; select it with `--query INDEX --apply` rather than copying a clipped title. Malformed initial or resolved action responses fail before any edit. Empty results suggest checking diagnostics, selection and server capabilities.
 
@@ -17,6 +17,8 @@ Language servers can omit import or re-export edits. Applied output says `verifi
 ## Raw protocol
 
 Use the focused CLI command for ordinary questions, including `signature-help` for call signatures. Raw `request` preserves full server payloads by default, including potentially large documentation; `--fields` explicitly selects emitted JSON. It requires `--apply` unless its method is read-only. Raw `textDocument/codeAction` is read-only and never executes suggestions.
+
+Raw requests propagate failures from server-initiated edit callbacks even when the server reports command success. An `Edits applied` error identifies writes completed before synchronization failed; inspect the files before retrying.
 
 ```sh
 codex-lsp request --method textDocument/signatureHelp --file PATH --line N --column N --json
