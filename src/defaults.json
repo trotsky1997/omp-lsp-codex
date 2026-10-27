@@ -144,6 +144,8 @@
     "fileTypes": [
       ".ts",
       ".tsx",
+      ".mts",
+      ".cts",
       ".js",
       ".jsx",
       ".mjs",

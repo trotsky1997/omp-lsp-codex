@@ -17,6 +17,18 @@ afterEach(async () => {
   cleanWorkspaces(); assert.strictEqual(leaked, 0);
 });
 
+for (const [extension, expected] of [["mjs", "javascript"], ["cjs", "javascript"], ["mts", "typescript"], ["cts", "typescript"]]) {
+  test(`module files: builtin discovery and didOpen language agree for .${extension}`, async () => {
+    const w = workspace({ responses: { "textDocument/hover": { contents: "const value: number" } } }), file = join(w.root, `module.${extension}`);
+    writeFileSync(join(w.root, "package.json"), '{"type":"module"}\n'); writeFileSync(file, "const value = 1;\n");
+    w.configs["typescript-language-server"] = { command: process.execPath, args: w.configs.fixture.args, disabled: false }; delete w.configs.fixture; w.saveConfig();
+    const result = await run({ ...w.args("hover", "--symbol", "value"), file });
+    assert.strictEqual(result.data.found, true); assert.strictEqual(result.data.provider, "lsp");
+    const opened = object(w.events().find(event => event.method === "textDocument/didOpen")?.params);
+    assert.partialDeepStrictEqual(opened.textDocument, { uri: fileUri(file), languageId: expected });
+  });
+}
+
 for (const [caseIndex, caseValue] of ([undefined, '{"position":{"line":0,"character":2}}']).entries()) {
   const runCase: (value: typeof caseValue) => void | Promise<void> = async (payload) => {
   const result = { signatures: [{ label: "value(name: string): void" }], activeSignature: 0 };

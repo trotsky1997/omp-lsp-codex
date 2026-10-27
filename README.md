@@ -44,6 +44,8 @@ Positions are one-based; columns use UTF-16. Use `--symbol name#2` for a repeate
 
 Run commands directly from the project directory. Relative paths, setup and changed-file checks use that directory. `--cwd PATH` explicitly selects another project when needed. The Node.js entrypoint and hooks keep the caller's working directory.
 
+JavaScript module files (`.mjs`, `.cjs`) and TypeScript module files (`.mts`, `.cts`) are discovered and sent to language servers with their standard JavaScript/TypeScript language IDs.
+
 Language-specific skills: [shared CLI](skills/codex-lsp/SKILL.md), [Rust](skills/codex-lsp-rust/SKILL.md), [Python](skills/codex-lsp-python/SKILL.md), and [TypeScript/JavaScript](skills/codex-lsp-typescript/SKILL.md). The main skill routes to the active language; output schemas and advanced setup/edit details load on demand.
 
 Start with `status --file` for quick discovery. `inspect` shares one server session across hover, definition, references, matching file symbols and diagnostics, reducing repeated cold starts. It defaults to 10 results or hover lines per section; `--limit` changes all sections. JSON `results` retains individual errors and unsupported capabilities, with `failedSections` explaining a nonzero exit. Diagnostic errors cause exit 1 with navigation results preserved. Add `--new-name NAME` for a rename preview; inspect always runs read-only.

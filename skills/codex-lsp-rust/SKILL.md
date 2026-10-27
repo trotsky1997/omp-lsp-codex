@@ -21,6 +21,6 @@ Use the discovered target: `cargo run -p PACKAGE --example NAME`, `--bin NAME`, 
 
 ## Query and verify
 
-Large cold workspaces may need `--timeout 120`. Use inspect to share startup for related questions. A no-reference response warrants checking the declaration, target membership and enabled cfg/features. For macros/generated code, check build scripts and Cargo health before trusting an empty result.
+Large cold workspaces may need `--timeout 120`. Use inspect to share startup for related questions. A no-reference response warrants checking the declaration, target membership and enabled cfg/features. For macros/generated code, check build scripts and Cargo health before trusting an empty result. Read [derived implementations](references/derives.md) for derive imports and generated names.
 
 Rust diagnostics enable Cargo check. Match `settings.rust-analyzer.cargo.features` and `noDefaultFeatures` to the intended build/test configuration. Verify a rename with the relevant Cargo target and check that tests actually run; inactive cfg hints or a zero-test run leave that branch untested.

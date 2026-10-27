@@ -19,10 +19,10 @@ A concise hover can name an alias without expanding its return type. Follow type
 
 For missing imports, list code actions, preview the selected original index with `--query INDEX`, inspect its edit scope and `executesCommand`, then apply. Check diagnostics and the project build/tests afterwards.
 
-Node can execute supported erasable TypeScript from a `.ts` file. Keep an ordinary eval driver in JavaScript, for example:
+Module suffixes `.mjs`/`.cjs` use JavaScript; `.mts`/`.cts` use TypeScript. Ensure the chosen file is in the intended project. Node can execute supported erasable TypeScript from a `.ts` or `.mts` file. Keep an ordinary eval driver in JavaScript, for example:
 
 ```sh
 node --input-type=module -e 'import("./path/probe.ts").then(m => { if (m.increment(4) !== 5) throw new Error("unexpected result"); })'
 ```
 
-Use the project's runner/build for JSX, transforms, aliases or loader requirements. Type-checking and type stripping are separate checks; run both when behavior changed.
+Use the project's runner/build for namespaces, JSX, transforms, aliases or loader requirements. Pure type stripping cannot execute a namespace. Type-checking and type stripping are separate checks; run both when behavior changed.

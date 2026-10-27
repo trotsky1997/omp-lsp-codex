@@ -9,7 +9,7 @@ Use [shared CLI essentials](../codex-lsp/SKILL.md) once for commands, output and
 
 Prepare the project's declared dependencies in its environment. Pyright/basedpyright select `.venv`, then `venv`, under the matched project root: `bin/python` on macOS/Linux, `Scripts/python.exe` on Windows. Doctor reports each server's `pythonPath` separately from the CLI's Node runtime. Explicit `settings.python.pythonPath` selects a custom environment; confirm imports with that same interpreter.
 
-Editable installation can connect the checked-out package to runtime imports. Follow the project's package manager and extras. File queries wait for initial Python analysis; if it times out, check dependencies and the suggested timeout before repeating queries.
+Editable installation can connect the checked-out package to runtime imports. Follow the project's package manager version and extras. If the installed manager is too old, use an isolated compatible version (for example uvx with the required uv version) to prepare the environment. File queries wait for initial Python analysis; if it times out, check dependencies and the suggested timeout before repeating queries.
 
 ## Static types and runtime
 
