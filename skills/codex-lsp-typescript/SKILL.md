@@ -1,0 +1,28 @@
+---
+name: codex-lsp-typescript
+description: Use codex-lsp with TypeScript or JavaScript projects for tsconfig-aware navigation, generic signatures, import actions and runtime-verified refactors.
+---
+
+Use [shared CLI essentials](../codex-lsp/SKILL.md) once for commands, output and edit boundaries.
+
+## Project and server
+
+Start from the package/tsconfig containing the file. Prepare declared dependencies and required generated sources using the project's package manager and build scripts. In a monorepo, check tsconfig inclusion, references and path aliases before interpreting missing imports or an unlinked probe. Missing generated exports can cause downstream type errors; run the declared generation/build task before recording those as baseline diagnostics.
+
+`status --file PATH` shows the actual executable. The configuration ID `typescript-language-server` can select `tsgo`. Compare command, project/compiler versions and options when editor and CLI results differ. Hooks ignore project overrides.
+
+If TypeScript Language Server cannot find TypeScript, check local `node_modules/typescript/lib/tsserver.js`, then the existing global package. Set `initOptions.tsserver.fallbackPath` when needed instead of installing a duplicate compiler. Semantic navigation defaults `tsserver.useSyntaxServer` to `never`.
+
+## Types, imports and execution
+
+A concise hover can name an alias without expanding its return type. Follow type-definition/definition or query the alias; complete output still reflects the server's abbreviations. Signature-help needs the actual target call's argument cursor: nested calls can resolve to a different function. Compare the returned callable before using the signature.
+
+For missing imports, list code actions, preview the selected original index with `--query INDEX`, inspect its edit scope and `executesCommand`, then apply. Check diagnostics and the project build/tests afterwards.
+
+Node can execute supported erasable TypeScript from a `.ts` file. Keep an ordinary eval driver in JavaScript, for example:
+
+```sh
+node --input-type=module -e 'import("./path/probe.ts").then(m => { if (m.increment(4) !== 5) throw new Error("unexpected result"); })'
+```
+
+Use the project's runner/build for JSX, transforms, aliases or loader requirements. Type-checking and type stripping are separate checks; run both when behavior changed.

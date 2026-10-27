@@ -31,6 +31,30 @@ function monorepo() {
   return { ...w, project, file, sibling, edit, args: (command: string, ...flags: string[]) => ({ ...w.args(command, ...flags), file }) };
 }
 
+test("Rust rename: missing references explain Cargo target membership before any edit", async () => {
+  for (const name of ["rust-analyzer", "fixture"]) {
+    const w = workspace({ serverStatus: { quiescent: true, health: "ok" }, errors: { "textDocument/rename": { code: -32602, message: "No references found at position" } } });
+    if (name === "rust-analyzer") { w.configs[name] = w.configs.fixture; delete w.configs.fixture; w.saveConfig(); }
+    await assert.rejects(run(w.args("rename", "--new-name", "renamed", "--apply")), error => {
+      assert.ok(error instanceof Error); assert.match(error.message, /No references found/);
+      if (name === "rust-analyzer") assert.match(error.message, /cargo metadata --no-deps --format-version 1/); else assert.doesNotMatch(error.message, /Cargo/);
+      return true;
+    });
+    assert.strictEqual(fs.readFileSync(w.file, "utf8"), "value = 1\n");
+    assert.strictEqual(w.events().some(event => event.method === "textDocument/didChange"), false);
+  }
+});
+
+test("Python doctor: discovered interpreter is reported and sent to the analysis server", async () => {
+  const w = workspace(), bin = join(w.root, ".venv", process.platform === "win32" ? "Scripts" : "bin"), python = join(bin, process.platform === "win32" ? "python.exe" : "python");
+  fs.mkdirSync(bin, { recursive: true }); fs.writeFileSync(python, "fixture interpreter\n", { mode: 0o755 });
+  w.configs.pyright = { ...w.configs.fixture, settings: { python: { analysis: { typeCheckingMode: "basic" } } } }; delete w.configs.fixture; w.saveConfig();
+  const result = await run(w.args("doctor")); assert.strictEqual(result.data.success, true);
+  assert.strictEqual(object((result.data.servers as unknown[])[0]).pythonPath, python);
+  const settings = object(object(w.events().find(event => event.method === "workspace/didChangeConfiguration")?.params).settings);
+  assert.partialDeepStrictEqual(settings.python, { pythonPath: python, analysis: { typeCheckingMode: "basic" } });
+});
+
 for (const [caseIndex, caseValue] of (["rename", "code-actions", "request", "rename-file"]).entries()) {
   const runCase: (value: typeof caseValue) => void | Promise<void> = async command => {
   const w = monorepo(), method = command === "rename" ? "textDocument/rename" : command === "code-actions" ? "textDocument/codeAction" : command === "request" ? "fixture/edit" : "workspace/willRenameFiles";

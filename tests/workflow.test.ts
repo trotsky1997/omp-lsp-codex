@@ -172,11 +172,13 @@ test("inspect: Rust compiler checks are enabled in its single server session", a
     { token: "rustAnalyzer/check", value: { kind: "begin", title: "cargo check" } },
     { token: "rustAnalyzer/check", value: { kind: "end" } },
   ] });
-  w.configs["rust-analyzer"] = { ...w.configs.fixture }; delete w.configs.fixture; w.saveConfig();
+  w.configs["rust-analyzer"] = { ...w.configs.fixture, settings: { "rust-analyzer": { checkOnSave: false, cargo: { features: ["sync"], noDefaultFeatures: true } } } }; delete w.configs.fixture; w.saveConfig();
   assert.strictEqual((await run(w.args("inspect"))).data.success, true);
   const events = w.events(); assert.strictEqual((events.filter((e) => e.method === "initialize")).length, 1);
   const settings = object(object(events.find((e) => e.method === "workspace/didChangeConfiguration")?.params).settings);
   assert.strictEqual(object(settings["rust-analyzer"]).checkOnSave, true);
+  assert.deepStrictEqual(object(settings["rust-analyzer"]).cargo, { features: ["sync"], noDefaultFeatures: true });
+  assert.strictEqual(object(w.configs["rust-analyzer"].settings?.["rust-analyzer"]).checkOnSave, false);
 });
 test("inspect: a concurrent source edit leaves diagnostics unverified and preserves the external edit", async () => {
   const w = workspace(); w.setScenario({ capabilities: { hoverProvider: true }, beforeResponse: { "textDocument/hover": { file: w.file, text: "external change\n" } }, responses: { "textDocument/hover": { contents: "old value" } } });

@@ -376,6 +376,11 @@ async function rename(args, shared) {
             human: [`${args.apply ? "Applied rename" : "Rename preview"}:\n${edits.join("\n")}`, summary.hint, args.apply ? VERIFY_EDITS : undefined].filter(Boolean).join("\n"),
         };
     }
+    catch (error) {
+        if (server.name === "rust-analyzer" && object(error).code === -32602 && /No references found/i.test(String(error)))
+            throw new Error(`${error instanceof Error ? error.message : String(error)}. Check Cargo target membership with cargo metadata --no-deps --format-version 1; confirm the file is in a target with the required features, then retry at the symbol declaration.`, { cause: error });
+        throw error;
+    }
     finally {
         if (!shared)
             await client.close();
