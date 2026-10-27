@@ -10,6 +10,7 @@
 // Reused for all full (non-streaming) decodes; each decode() resets state, so a
 // single instance is safe and avoids per-message TextDecoder allocation.
 const MESSAGE_DECODER = new TextDecoder("utf-8");
+const BODY_DECODER = new TextDecoder("utf-8", { fatal: true });
 const HEADER_TERMINATOR = [13, 10, 13, 10];
 
 // Headers carry a length and optional content type; bodies can contain entire
@@ -139,7 +140,12 @@ export class MessageFramer {
 
 			const messageEnd = this.#messageStart + this.#contentLength;
 			if (this.#pendingLen < messageEnd) break;
-			const text = MESSAGE_DECODER.decode(chunkRange(this.#pendingChunks, this.#messageStart, messageEnd));
+			let text: string;
+			try {
+				text = BODY_DECODER.decode(chunkRange(this.#pendingChunks, this.#messageStart, messageEnd));
+			} catch {
+				this.#fail("Invalid UTF-8 JSON-RPC message body");
+			}
 			this.#dropFront(messageEnd);
 			yield text;
 		}

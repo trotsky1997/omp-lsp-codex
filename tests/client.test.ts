@@ -45,7 +45,7 @@ test("wire: timeout sends cancellation, ignores a late reply, and preserves the 
   assert.strictEqual(trace.some((e) => e.direction === "receive" && e.method === "$/cancelRequest" && e.params.id === request.id), true);
   assert.strictEqual(trace.some((e) => e.direction === "send" && e.id === request.id && e.result === "late response"), true);
 });
-for (const [caseIndex, caseValue] of (["exit", "bad-json", "bad-length", ...(process.platform === "win32" ? [] : ["close-stdout"])]).entries()) {
+for (const [caseIndex, caseValue] of (["exit", "bad-json", "bad-length", "bad-utf8", ...(process.platform === "win32" ? [] : ["close-stdout"])]).entries()) {
   const runCase: (value: typeof caseValue) => void | Promise<void> = async (fault) => {
   const { server } = fixture(), client = await LspClient.start(server, 1000);
   const results = await Promise.allSettled([client.request("fixture/stall", {}), client.request(`fixture/${fault}`, {})]);

@@ -285,11 +285,13 @@ export function languageId(server, path) {
             : (LANGUAGES[extname(path).toLowerCase()] ?? (extname(path).slice(1) || "plaintext"))));
 }
 export function fileUri(path) {
+    if (!path.isWellFormed())
+        throw new Error("Invalid Unicode file path");
     return pathToFileURL(path).href;
 }
 export function uriFile(uri) {
     try {
-        return uri.startsWith("file:") ? fileURLToPath(uri) : undefined;
+        return uri.isWellFormed() && !/[\x00-\x20\x7f\\]/.test(uri) && uri.startsWith("file:") ? fileURLToPath(uri) : undefined;
     }
     catch {
         return undefined;

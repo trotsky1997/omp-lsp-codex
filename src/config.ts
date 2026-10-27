@@ -320,11 +320,12 @@ export function languageId(server: ServerConfig, path: string): string {
   );
 }
 export function fileUri(path: string): string {
+  if (!path.isWellFormed()) throw new Error("Invalid Unicode file path");
   return pathToFileURL(path).href;
 }
 export function uriFile(uri: string): string | undefined {
   try {
-    return uri.startsWith("file:") ? fileURLToPath(uri) : undefined;
+    return uri.isWellFormed() && !/[\x00-\x20\x7f\\]/.test(uri) && uri.startsWith("file:") ? fileURLToPath(uri) : undefined;
   } catch {
     return undefined;
   }

@@ -18,7 +18,15 @@ const send = async (message: Record<string, unknown>) => {
     }
   } else process.stdout.write(frame);
 };
+const corruptUtf8 = (message: Record<string, unknown>) => {
+  const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...message }));
+  const marker = body.indexOf("INVALID_UTF8");
+  if (marker < 0) throw new Error("Missing UTF-8 fault marker");
+  body[marker] = 0xff;
+  process.stdout.write(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]));
+};
 if (mode === "hang") { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }
+if (mode === "ast-flood") { process.on("SIGTERM", () => {}); process.stdout.write("x".repeat(4096)); setInterval(() => {}, 1000); }
 const queued: Record<string, unknown>[] = [];
 let callbackId: unknown;
 let callbackMethod: string | undefined;
@@ -29,7 +37,11 @@ for await (const chunk of process.stdin) {
   for (const text of framer.drain(() => {})) {
     const message = object(JSON.parse(text)), params = object(message.params);
     trace("receive", message);
-    const reply = (result: unknown) => send({ id: message.id, result });
+    const reply = async (result: unknown) => {
+      if (scenario.corruptUtf8 === message.method) {
+        corruptUtf8({ id: message.id, result });
+      } else await send({ id: message.id, result });
+    };
     switch (message.method) {
       case "initialize":
         if (mode === "exit-init") { process.stderr.write("fixture initialization failed\n"); process.exit(17); }
@@ -76,6 +88,7 @@ for await (const chunk of process.stdin) {
       }
       case "fixture/bad-json": process.stdout.write("Content-Length: 1\r\n\r\n{"); break;
       case "fixture/bad-length": process.stdout.write("Content-Length: -1\r\n\r\n"); break;
+      case "fixture/bad-utf8": corruptUtf8({ id: message.id, result: "INVALID_UTF8" }); break;
       case "fixture/stderr": process.stderr.write("x".repeat(20000) + "\nfixture stderr tail\n"); await reply(true); break;
       case "fixture/notification": await send({ method: params.method, params: params.params }); await reply(true); break;
       case "fixture/callback":

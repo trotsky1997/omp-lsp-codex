@@ -1,4 +1,5 @@
 import childProcess from "node:child_process";
+import { isUtf8 } from "node:buffer";
 import { dirname, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { object, resolveCommand, type ObjectValue } from "./config.ts";
@@ -41,9 +42,9 @@ function symbolSpec(value: string) {
 }
 function decodeNode(value: unknown, source: Buffer): Node {
   const item = object(value), bytes = object(object(item.range).byteOffset);
-  const start = Number(bytes.start), end = Number(bytes.end);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > source.length ||
-      typeof item.text !== "string" || source.subarray(start, end).toString("utf8") !== item.text)
+  const start = bytes.start, end = bytes.end;
+  if (typeof start !== "number" || typeof end !== "number" || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > source.length ||
+      typeof item.text !== "string" || !isUtf8(source.subarray(start, end)) || source.subarray(start, end).toString("utf8") !== item.text)
     throw new Error("Invalid ast-grep source range");
   return { text: item.text, start, end };
 }
@@ -87,13 +88,16 @@ async function scan(path: string, text: string, mode: "symbol" | "call" | "snipp
     ? windowsCommand(command, args) : { command, args, windowsVerbatimArguments: false };
   const stdout = await new Promise<string>((resolve, reject) => {
     const proc = childProcess.execFile(invocation.command, invocation.args, {
-      cwd: tmpdir(), encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 * 1024,
+      cwd: tmpdir(), encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     }, (error, stdout, stderr) => {
       if (error) reject(new Error(`ast-grep failed: ${String(stderr || error.message).slice(0, 1000)}; ${INSTALL}`));
       else resolve(stdout);
     });
-    proc.stdin?.on("error", () => {});
+    proc.stdin?.on("error", error => {
+      proc.kill("SIGKILL");
+      reject(new Error(`ast-grep input failed: ${String(error).slice(0, 1000)}`));
+    });
     proc.stdin?.end(text);
   });
   const values: unknown = JSON.parse(stdout);
@@ -101,9 +105,16 @@ async function scan(path: string, text: string, mode: "symbol" | "call" | "snipp
   const source = Buffer.from(text);
   return values.map(value => {
     const item = object(value), single = object(object(item.metaVariables).single);
-    return { ...decodeNode(item, source), rule: String(item.ruleId), captures: Object.fromEntries(
+    const node = decodeNode(item, source);
+    if (typeof item.ruleId !== "string" || !rules.some(rule => rule.id === item.ruleId)) throw new Error("Invalid ast-grep rule result");
+    const captures = Object.fromEntries(
       Object.entries(single).map(([key, value]) => [key, decodeNode(value, source)]),
-    ) };
+    );
+    if (Object.values(captures).some(capture => capture.start < node.start || capture.end > node.end)) throw new Error("Invalid ast-grep capture range");
+    if (item.ruleId === "call" && (!captures.CALLEE?.text || !captures.ARGS || captures.CALLEE.end > captures.ARGS.start ||
+        !(captures.ARGS.text.startsWith("(") || ["TypeScript", "JavaScript"].includes(family) && captures.ARGS.text.startsWith("`"))))
+      throw new Error("Invalid ast-grep call captures");
+    return { ...node, rule: item.ruleId, captures };
   });
 }
 function selectSymbol(matches: Match[], source: Buffer, line: number, spec: string): Node {

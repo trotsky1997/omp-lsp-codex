@@ -124,7 +124,7 @@ export async function applyWorkspaceEdit(
       if (
         start.line > end.line ||
         (start.line === end.line && start.character > end.character) ||
-        typeof item.newText !== "string"
+        typeof item.newText !== "string" || !item.newText.isWellFormed()
       )
         throw new Error("Invalid LSP text edit");
     }

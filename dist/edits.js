@@ -103,7 +103,7 @@ export async function applyWorkspaceEdit(edit, root, documents) {
             const { start, end } = item.range;
             if (start.line > end.line ||
                 (start.line === end.line && start.character > end.character) ||
-                typeof item.newText !== "string")
+                typeof item.newText !== "string" || !item.newText.isWellFormed())
                 throw new Error("Invalid LSP text edit");
         }
         const updated = Buffer.from(applyTextEditsToString(text, edits));
