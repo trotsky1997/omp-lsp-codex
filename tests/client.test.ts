@@ -22,6 +22,15 @@ afterEach(async () => {
   assert.strictEqual(LspClient.active.size, 0);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+test("wire: a TypeScript rename UI request is acknowledged read-only without changing source or suggesting an edit", async () => {
+  const { server, root } = fixture(), file = join(root, "source.ts"); writeFileSync(file, "const value = 1;\n");
+  const client = await LspClient.start(server, 1000); await client.open(file);
+  const response = await client.request<{ result?: unknown; error?: unknown }>("fixture/callback", { method: "_typescript.rename", params: { textDocument: { uri: fileUri(file) }, position: { line: 0, character: 6 } } });
+  assert.equal(response.error, undefined); assert.equal(response.result, null);
+  assert.equal((client as LspClient & { renameTarget?: unknown }).renameTarget, undefined);
+  assert.equal(readFileSync(file, "utf8"), "const value = 1;\n"); await client.close();
+});
 test("wire: fragmented Unicode responses and concurrent out-of-order IDs", async () => {
   const { server, events } = fixture("fragmented"), client = await LspClient.start(server, 1000);
   assert.deepStrictEqual(await client.request("fixture/echo", { text: "中文😀" }), { text: "中文😀" });

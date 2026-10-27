@@ -17,7 +17,7 @@ function validDiagnostics(value) {
             (item.severity === undefined || (Number.isInteger(item.severity) && Number(item.severity) >= 1 && Number(item.severity) <= 4));
     });
 }
-// Extracted from OMP's async stdio client; the standalone CLI owns one process per invocation.
+// Extracted from OMP's async stdio client; a batch or stdio session can reuse it.
 export class LspClient {
     server;
     timeoutMs;
@@ -32,6 +32,7 @@ export class LspClient {
     capabilities = {};
     serverStatus;
     applyEdit;
+    renameTarget;
     #pending = new Map();
     #listeners = new Set();
     #requestId = 0;
@@ -249,6 +250,17 @@ export class LspClient {
                     }
                 }
                 break;
+            // Refactoring can request editor rename UI; retain the generated name and expose its anchor.
+            case "_typescript.rename": {
+                const uri = object(params.textDocument).uri, point = object(params.position);
+                const document = typeof uri === "string" ? this.documents.get(uri) : undefined;
+                const lines = document?.text.split("\n").map(line => line.replace(/\r$/, ""));
+                const line = Number(point.line), character = Number(point.character);
+                if (this.allowApply && typeof uri === "string" && uriFile(uri) && Number.isSafeInteger(point.line) && Number.isSafeInteger(point.character) && line >= 0 && character >= 0 &&
+                    lines?.[line] !== undefined && character <= lines[line].length && !(lines[line].charCodeAt(character) >= 0xdc00 && lines[line].charCodeAt(character) <= 0xdfff))
+                    this.renameTarget = { file: uriFile(uri), line: line + 1, column: character + 1 };
+                break;
+            }
             case "client/registerCapability":
                 for (const item of Array.isArray(params.registrations) ? params.registrations : []) {
                     if (object(item).method === "textDocument/diagnostic")
@@ -324,28 +336,58 @@ export class LspClient {
             throw new Error("This invocation is read-only");
         const updated = await applyWorkspaceEdit(edit, gitRoot(this.server.root), this.documents);
         try {
-            for (const [uri, text] of updated) {
-                const document = this.documents.get(uri);
-                if (!document)
-                    continue;
-                const version = document.version + 1;
-                this.documents.set(uri, { text, version });
-                this.diagnostics.delete(uri);
-                const sync = this.capabilities.textDocumentSync;
-                const incremental = (typeof sync === "number" ? sync : object(sync).change) === 2;
-                const lines = document.text.split("\n");
-                await this.notify("textDocument/didChange", {
-                    textDocument: { uri, version }, contentChanges: [{
-                            ...(incremental ? { range: { start: { line: 0, character: 0 }, end: { line: lines.length - 1, character: lines.at(-1).length } } } : {}),
-                            text,
-                        }],
-                });
-            }
+            for (const [uri, text] of updated)
+                await this.#syncDocument(uri, text);
         }
         catch (error) {
             throw new Error(`Edits applied, but LSP synchronization failed: ${error}`);
         }
         return updated.size > 0;
+    }
+    async #syncDocument(uri, text) {
+        const document = this.documents.get(uri);
+        if (!document)
+            return;
+        const version = document.version + 1;
+        this.documents.set(uri, { text, version });
+        this.diagnostics.delete(uri);
+        const sync = this.capabilities.textDocumentSync, change = typeof sync === "number" ? sync : object(sync).change;
+        if (change === 0) {
+            await this.notify("textDocument/didClose", { textDocument: { uri } });
+            await this.notify("textDocument/didOpen", { textDocument: { uri, languageId: languageId(this.server, uriFile(uri)), version, text } });
+        }
+        else {
+            const lines = document.text.split("\n");
+            await this.notify("textDocument/didChange", { textDocument: { uri, version }, contentChanges: [{
+                        ...(change === 2 ? { range: { start: { line: 0, character: 0 }, end: { line: lines.length - 1, character: lines.at(-1).length } } } : {}), text,
+                    }] });
+        }
+    }
+    async refresh() {
+        let refreshed = 0;
+        for (const [uri, document] of [...this.documents]) {
+            const path = uriFile(uri);
+            let text;
+            try {
+                text = readText(path);
+            }
+            catch (error) {
+                if (!["ENOENT", "ENOTDIR"].includes(String(object(error).code)))
+                    throw error;
+                await this.notify("textDocument/didClose", { textDocument: { uri } });
+                this.documents.delete(uri);
+                this.diagnostics.delete(uri);
+                refreshed++;
+                continue;
+            }
+            if (text !== document.text) {
+                await this.#syncDocument(uri, text);
+                if (this.server.name === "rust-analyzer")
+                    await this.notify("textDocument/didSave", { textDocument: { uri } });
+                refreshed++;
+            }
+        }
+        return refreshed;
     }
     async waitDiagnostics(uri, timeoutMs = this.timeoutMs) {
         await this.#waitUntil(() => this.diagnostics.has(uri), timeoutMs, "file analysis");

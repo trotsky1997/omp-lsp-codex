@@ -161,12 +161,15 @@ test("completion: label details share the preview budget and resolution has a ha
 });
 test("new raw methods are read-only and position methods fill missing document/anchor context", async () => {
   const w = workspace();
-  for (const method of ["textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls", "textDocument/completion", "completionItem/resolve"]) {
+  for (const method of ["textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls", "textDocument/completion", "completionItem/resolve", "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes", "typeHierarchy/subtypes", "inlayHint/resolve", "codeAction/resolve"]) {
     const result = await run(w.args("request", "--method", method, "--line", "1", "--column", "2"));
     assert.equal(result.data.applied, false);
     const event = w.events().findLast(e => e.method === method);
     if (method.startsWith("textDocument/")) assert.partialDeepStrictEqual(event?.params, { textDocument: { uri: w.uri }, position: { line: 0, character: 1 } });
   }
+  const hints = await run(w.args("request", "--method", "textDocument/inlayHint", "--payload", JSON.stringify({ range })));
+  assert.equal(hints.data.applied, false);
+  assert.partialDeepStrictEqual(w.events().findLast(event => event.method === "textDocument/inlayHint")?.params, { textDocument: { uri: w.uri }, range });
 });
 test("semantic queries: ContentModified retries and CLI depth/resolve validation stay bounded", async () => {
   const w = workspace({ capabilities: { completionProvider: {} }, contentModified: { "textDocument/completion": 1 }, responses: { "textDocument/completion": [{ label: "ok" }] } });

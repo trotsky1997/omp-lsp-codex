@@ -21,6 +21,8 @@ A concise hover can name an alias without expanding its return type. Follow type
 
 For missing imports, list code actions, preview the selected original index with `--query INDEX`, inspect its edit scope and `executesCommand`, then apply. Check diagnostics and the project build/tests afterwards.
 
+For extraction, select the expression or statements inside the function body with `code-actions --range ... --kind refactor.extract`. An entire declaration can expose move actions or no extraction. Check returned kinds and disabled reasons before applying. Type hierarchy and hint/resolve support vary by executable; check capabilities on the actual server. An already installed TypeScript Language Server can provide refactors or inlay hints missing from another backend; use an isolated project override for a comparison and preserve the original configuration.
+
 Module suffixes `.mjs`/`.cjs` use JavaScript; `.mts`/`.cts` use TypeScript. Ensure the chosen file is in the intended project. Node can execute supported erasable TypeScript from a `.ts` or `.mts` file. Keep an ordinary eval driver in JavaScript, for example:
 
 ```sh

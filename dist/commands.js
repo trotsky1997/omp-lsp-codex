@@ -16,6 +16,13 @@ import { inspectContext } from "./context.js";
 import { callHierarchy, complete } from "./semantic.js";
 import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.js";
 import { impactAnalysis } from "./impact.js";
+import { typeHierarchy, inlayHints, unsupportedFeature } from "./type-hints.js";
+import { firstPage, nextPage } from "./pagination.js";
+import { budgetData } from "./budget.js";
+export function outputData(data, args) {
+    const selected = args.fields ? selectFields(data, args.fields) : data;
+    return args.budget === undefined ? selected : budgetData(selected, args.budget);
+}
 function outputInfo(total, limit) {
     const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
     return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
@@ -94,6 +101,8 @@ const READ_ONLY = new Set([
     "textDocument/semanticTokens/full",
     "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls",
     "textDocument/completion", "completionItem/resolve",
+    "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes", "typeHierarchy/subtypes",
+    "textDocument/inlayHint", "inlayHint/resolve", "codeAction/resolve",
 ]);
 const NAVIGATION = {
     definition: "textDocument/definition",
@@ -103,7 +112,7 @@ const NAVIGATION = {
     "type-definition": "textDocument/typeDefinition",
     implementation: "textDocument/implementation",
 };
-const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp", "textDocument/prepareCallHierarchy", "textDocument/completion"]);
+const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp", "textDocument/prepareCallHierarchy", "textDocument/prepareTypeHierarchy", "textDocument/completion"]);
 async function sessionClient(server, args, session) {
     const key = JSON.stringify([server, args.timeout]);
     let client = session?.clients.get(key);
@@ -255,6 +264,8 @@ async function navigate(args, shared, session) {
                 result = await client.request(method, params, remaining);
             }
             catch (error) {
+                if (object(error).code === -32601)
+                    return unsupportedFeature(client, { "type-definition": "typeDefinitionProvider", "signature-help": "signatureHelpProvider" }[args.command] ?? `${args.command}Provider`);
                 if (Date.now() >= deadline && String(error).includes(`LSP request ${method} timed out after`)) {
                     timedOut = true;
                     break;
@@ -323,6 +334,11 @@ async function navigate(args, shared, session) {
             return signatureHelp(result, server.name, args.limit, {
                 line: pos.line + 1, column: pos.character + 1, automatic: args.column === undefined && !!syntaxLanguage(path),
             });
+        if (args.pageSize !== undefined) {
+            const data = firstPage({ cwd: args.cwd, sourceFile: path, sourceText: text, pageSize: args.pageSize }, { success: true, found: !!locations.length, server: server.name, locations });
+            return { data, human: [`References: ${data.shown} of ${data.total} (snapshot page)`, ...locationLines(data.locations, gitRoot(server.root)), data.hint,
+                    ...(data.nextCursor ? [`Next: codex-lsp next --cursor ${data.nextCursor}`] : [])].filter(Boolean).join("\n") };
+        }
         const summary = outputInfo(locations.length, args.limit);
         locations = locations.slice(0, summary.shown);
         return {
@@ -458,12 +474,12 @@ async function rename(args, shared) {
             await client.close();
     }
 }
-async function codeActions(args) {
-    const { server, path, client, uri, text } = await fileContext(args);
+async function codeActions(args, session) {
+    const { server, path, client, uri, text } = await fileContext(args, true, session);
     let edited = false;
     let editFailure;
     try {
-        const pos = await position(path, text, args);
+        const pos = args.range?.start ?? await position(path, text, args);
         let diagnostics = client.diagnostics.get(uri) ?? [];
         if (client.capabilities.diagnosticProvider && server.name !== "rust-analyzer")
             diagnostics = (await client.getDiagnostics(uri)).diagnostics;
@@ -473,13 +489,13 @@ async function codeActions(args) {
             }
             catch { /* Actions can be available without published diagnostics. */ }
         }
-        const actionRange = args.column === undefined && !args.symbol
+        const actionRange = args.range ?? (args.column === undefined && !args.symbol
             ? { start: { line: pos.line, character: 0 }, end: { line: pos.line, character: text.split("\n")[pos.line].replace(/\r$/, "").length } }
-            : { start: pos, end: pos };
+            : { start: pos, end: pos });
         const actions = (await client.request("textDocument/codeAction", {
             textDocument: { uri },
             range: actionRange,
-            context: { diagnostics },
+            context: { diagnostics, triggerKind: 1, ...(args.kind ? { only: [args.kind] } : {}) },
         })) ?? [];
         const invalidAction = (item) => {
             const row = object(item);
@@ -487,7 +503,8 @@ async function codeActions(args) {
         };
         if (!Array.isArray(actions) || actions.some(invalidAction))
             throw new Error(`Invalid code action response from ${server.name}`);
-        const matches = actions.map((action, index) => ({ action, index })).filter(({ action, index }) => !args.query || (/^\d+$/.test(args.query) ? index === Number(args.query) : action.title.toLowerCase().includes(args.query.toLowerCase())));
+        const matches = actions.map((action, index) => ({ action, index })).filter(({ action, index }) => (!args.kind || "kind" in action && typeof action.kind === "string" && (action.kind === args.kind || action.kind.startsWith(args.kind + "."))) &&
+            (!args.query || (/^\d+$/.test(args.query) ? index === Number(args.query) : action.title.toLowerCase().includes(args.query.toLowerCase()))));
         if (args.apply && matches.length > 1)
             throw new Error("Multiple code actions match; choose the original index with --query INDEX");
         let chosen = args.query && matches.length === 1 ? matches[0].action : undefined;
@@ -515,7 +532,7 @@ async function codeActions(args) {
                 editPreview = { fileCount: changes.size, files: [...changes.keys()].slice(0, args.limit || Infinity).map(uri => uriFile(uri) ?? uri), ...info, truncated: info.truncated || details.textTruncated, edits: details.lines, ...(details.textTruncated ? { textTruncated: true, hint: "Replacement text clipped. Use --limit 0 --json for complete edits." } : {}), ...(args.limit ? { workspaceEditOmitted: true } : { workspaceEdit: chosen.edit }) };
             }
             const executesCommand = chosen ? !!chosen.command : undefined;
-            const hint = [preview.hint ?? summary.hint, !items.length ? "No applicable actions for this range; check diagnostics and server capabilities, or select a different line/position." : chosen
+            const hint = [preview.hint ?? summary.hint, !items.length ? `No ${args.kind ?? "applicable"} actions for this range from ${server.resolvedCommand}. ${args.kind?.startsWith("refactor.extract") ? "Select an expression or statements inside the function body; try --kind refactor to inspect other available refactors." : "Check diagnostics and server capabilities, or select a different range/position."}` : chosen
                     ? "disabled" in chosen && chosen.disabled ? `Selected action is disabled: ${selected[0].disabledReason}` : "Use --apply to execute this action."
                     : "Use --query INDEX to preview edit scope, then add --apply to execute.", executesCommand ? "This action executes a server command; its file scope can extend beyond the edit preview." : "", editPreview?.hint].filter(Boolean).join(" ");
             return {
@@ -556,9 +573,10 @@ async function codeActions(args) {
         if (editFailure !== undefined)
             throw editFailure;
         const { items: selected, ...preview } = compactText([{ title: chosen.title }], ["title"], args.limit);
+        const renameHint = client.renameTarget ? "Generated helper name retained; renameTarget identifies an optional follow-up rename." : undefined;
         return {
-            data: { success: true, applied: true, server: server.name, ...preview, title: selected[0].title, ...editVerification(true, preview.hint) },
-            human: [`Applied ${selected[0].title}`, preview.hint, VERIFY_EDITS].filter(Boolean).join("\n"),
+            data: { success: true, applied: true, server: server.name, ...preview, title: selected[0].title, ...(client.renameTarget ? { renameTarget: client.renameTarget } : {}), ...editVerification(true, [preview.hint, renameHint].filter(Boolean).join(" ") || undefined) },
+            human: [`Applied ${selected[0].title}`, preview.hint, renameHint, VERIFY_EDITS].filter(Boolean).join("\n"),
         };
     }
     catch (error) {
@@ -567,7 +585,8 @@ async function codeActions(args) {
         throw error;
     }
     finally {
-        await client.close();
+        if (!session)
+            await client.close();
     }
 }
 export function status(args) {
@@ -982,19 +1001,28 @@ async function batch(args) {
     const session = { clients: new Map(), diagnostics: queries.some(query => ["inspect", "diagnostics"].includes(query.options.command)) };
     try {
         for (const { line, options } of queries) {
-            let result;
+            let result, data;
             try {
                 result = await run(options, session);
+                data = outputData(result.data, { fields: options.fields });
             }
             catch (error) {
-                const data = failure(error, options.limit);
+                data = failure(error, options.limit);
                 result = { data, human: [data.error, data.hint].filter(Boolean).join("\n"), code: 2 };
             }
-            const code = result.code ?? 0;
-            const data = options.fields ? selectFields(result.data, options.fields) : result.data;
-            results.push({ index: results.length, inputLine: line, command: options.command, file: options.file, line: options.line,
-                ...(options.symbol ? { symbol: options.symbol } : {}), code, ...data });
-            human.push(`[${results.length}] ${options.command} ${options.file} (exit ${code})\n${options.fields ? JSON.stringify(data) : result.human}`);
+            let code = result.code ?? 0;
+            const metadata = { index: results.length, inputLine: line, command: options.command, file: options.file, line: options.line, ...(options.symbol ? { symbol: options.symbol } : {}) };
+            let row = { ...metadata, code, ...data };
+            try {
+                row = outputData(row, { budget: options.budget });
+            }
+            catch (error) {
+                code = 2;
+                data = failure(error, options.limit);
+                row = { ...metadata, code, ...data };
+            }
+            results.push(row);
+            human.push(`[${results.length}] ${options.command} ${options.file ?? ""} (exit ${code})\n${options.fields || options.budget ? JSON.stringify(row) : result.human}`);
         }
         const failedQueries = results.filter(row => row.code !== 0).map(row => ({ index: row.index, inputLine: row.inputLine, code: row.code, ...(row.failedSections ? { failedSections: row.failedSections } : {}) })), failed = failedQueries.length;
         const hint = failed ? `${failed}/${results.length} queries failed. Successful results remain available; failedQueries maps each results[index] to its inputLine and failedSections.` : undefined;
@@ -1190,21 +1218,35 @@ async function request(args) {
 }
 export async function run(args, session) {
     const navigation = Object.hasOwn(NAVIGATION, args.command);
-    if (args.apply && (navigation || ["symbols", "diagnostics", "callers", "callees", "complete", "impact"].includes(args.command)))
+    if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next"].includes(args.command)))
         throw new Error(`${args.command} is read-only; omit --apply`);
+    if (args.command === "inlay-hints" && !args.range)
+        throw new Error("inlay-hints requires --range START_LINE:COL-END_LINE:COL");
     let requestPosition = false;
     if (args.command === "request" && POSITION_METHODS.has(args.method ?? "")) {
         const payload = args.payload ? JSON.parse(args.payload) : {};
         requestPosition = !!payload && typeof payload === "object" && !Array.isArray(payload) && !("position" in payload);
     }
-    if (args.file && (navigation || ["inspect", "rename", "code-actions", "callers", "callees", "complete"].includes(args.command) ||
+    if (args.file && (navigation || ["inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete"].includes(args.command) ||
         requestPosition)) {
         const path = resolveFile(args.file, args.cwd);
-        await position(path, readText(path), args);
+        const text = readText(path);
+        if (args.range)
+            for (const point of [args.range.start, args.range.end])
+                await position(path, text, { line: point.line + 1, column: point.character + 1 });
+        else
+            await position(path, text, args);
     }
     if (navigation)
         return navigate(args, undefined, session);
     switch (args.command) {
+        case "next": {
+            if (!args.cursor || args.file || args.changed || args.symbol || args.query || args.column || args.line !== 1 || args.workspace)
+                throw new Error("Use next --cursor ID from a references page, in the same workspace");
+            const data = nextPage({ cwd: args.cwd, cursor: args.cursor });
+            return { data, human: [`References: ${data.shown} of ${data.total} (snapshot offset ${data.offset})`, ...locationLines(data.locations, gitRoot(args.cwd)), data.hint,
+                    ...(data.nextCursor ? [`Next: codex-lsp next --cursor ${data.nextCursor}`] : [])].filter(Boolean).join("\n") };
+        }
         case "impact": {
             if (!args.changed || args.file || args.apply)
                 throw new Error("impact is read-only; use impact --changed");
@@ -1219,14 +1261,20 @@ export async function run(args, session) {
         }
         case "callers":
         case "callees":
+        case "supertypes":
+        case "subtypes":
+        case "inlay-hints":
         case "complete": {
             if (args.apply)
                 throw new Error(`${args.command} is read-only; omit --apply`);
             const context = await fileContext(args, true, session);
             try {
+                if (args.command === "inlay-hints")
+                    return await inlayHints(args, context.client, context.uri, args.range);
                 const pos = await position(context.path, context.text, args);
                 return args.command === "complete" ? await complete(args, context.client, context.uri, pos)
-                    : await callHierarchy(args, context.client, context.uri, pos);
+                    : ["supertypes", "subtypes"].includes(args.command) ? await typeHierarchy(args, context.client, context.uri, pos)
+                        : await callHierarchy(args, context.client, context.uri, pos);
             }
             finally {
                 if (!session)
@@ -1254,7 +1302,7 @@ export async function run(args, session) {
         case "rename-file":
             return renameFile(args);
         case "code-actions":
-            return codeActions(args);
+            return codeActions(args, session);
         case "request":
             return request(args);
         case "capabilities": {

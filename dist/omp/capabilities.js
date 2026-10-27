@@ -31,6 +31,8 @@ export const CLIENT_CAPABILITIES = {
             linkSupport: true,
         },
         callHierarchy: { dynamicRegistration: false },
+        typeHierarchy: { dynamicRegistration: false },
+        inlayHint: { dynamicRegistration: false, resolveSupport: { properties: ["tooltip", "label.tooltip", "label.location"] } },
         completion: {
             dynamicRegistration: false,
             contextSupport: true,

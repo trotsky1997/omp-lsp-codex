@@ -70,6 +70,25 @@ Start with `status --file` for quick discovery. `inspect` shares one server sess
 
 Add `inspect --context` when you need source bodies alongside navigation. It includes type-definition results and `results.context.snippets` with enclosing source, definitions, types and sampled references. Repeated enclosing declarations merge their `roles`. Default context follows up to three locations per section, returns up to `--limit` distinct snippets and shares a 6,000-character code budget. Each snippet has its file, one-based range, provider and character counts; `omittedLocations`, `truncated` and hints describe sampling/clipping. With ast-grep unavailable or a declaration unresolved, context returns nearby lines with `provider: "lines"` and a hint. Unreadable or concurrently changed files fail the context section while preserving the other results. `--limit 0 --json` retrieves complete snippets and follows all returned locations.
 
+### Interactive exploration and bounded output
+
+```sh
+codex-lsp session --stdio
+codex-lsp references --file src/client.ts --line 20 --symbol open --page-size 20 --json
+codex-lsp next --cursor CURSOR_FROM_nextCursor --json
+codex-lsp inspect --file src/client.ts --line 20 --context --budget 3000
+codex-lsp code-actions --file src/client.ts --range 20:1-35:1 --kind refactor.extract
+codex-lsp supertypes --file src/client.ts --line 20 --symbol Client --depth 2
+codex-lsp subtypes --file src/client.ts --line 20 --symbol Client --depth 2
+codex-lsp inlay-hints --file src/client.ts --range 20:1-60:1 --resolve
+```
+
+Session accepts one JSONL query and emits its result before waiting for the next, preserving compatible language servers. Choose each question from the previous reply. Opened files refresh from disk with versioned notifications; source changes during a query discard stale results. Responses retain query IDs, codes and measured elapsedMs. Send `{"command":"close"}` or close stdin to release servers. Source-writing actions use the ordinary CLI with an explicit apply.
+
+References pages share a private ten-minute snapshot, including across CLI invocations. `nextCursor` survives field selection; source/reference changes invalidate continuation. `--budget` implies JSON and bounds the complete inspect response in UTF-16 characters, preserving verification/errors/counts and marking clipping. Batch and session support the matching row fields. Read [sessions, pages and budgets](skills/codex-lsp/references/sessions.md) for schema, limits and recovery.
+
+Multiline code actions select an end-exclusive one-based UTF-16 range and filter action kinds while retaining original indexes. Preview a selected action before a requested apply. Optional TypeScript interactive rename UI is acknowledged without changing the generated name; `renameTarget` gives an optional follow-up anchor. Type hierarchy and inlay hint/resolve support follow server capabilities; unsupported results identify the executable and offer capability-filtered alternatives. Read [analysis](skills/codex-lsp/references/analysis.md) and [advanced edits](skills/codex-lsp/references/advanced.md).
+
 ### Calls, completions, baselines and impact
 
 Call graphs store each file on its node. Edge `locations` contain `line`/`column`; resolve their file through the caller node (`nodes.find(node => node.id === edge.from).file`). `totalEdges` and `shownEdges` expose edge sampling alongside node counts.

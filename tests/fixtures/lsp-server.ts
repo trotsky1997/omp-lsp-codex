@@ -49,15 +49,17 @@ for await (const chunk of process.stdin) {
         if (mode === "stall-init") break;
         await reply({ capabilities: scenario.capabilities ?? { diagnosticProvider: mode.startsWith("pull"), hoverProvider: true } });
         break;
+      case "textDocument/didChange":
+        if (!scenario.diagnosticVersionFromDocument) break;
       case "textDocument/didOpen":
         if (mode === "scenario") {
           if (scenario.afterOpen) writeFileSync(scenario.afterOpen.file, scenario.afterOpen.text);
           if (scenario.diagnostics !== false) {
-            const publish = () => send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [], ...("diagnosticVersion" in scenario ? { version: scenario.diagnosticVersion } : {}) } });
+            const publish = () => send({ method: "textDocument/publishDiagnostics", params: { uri: object(params.textDocument).uri, diagnostics: scenario.diagnostics ?? [], ...(scenario.diagnosticVersionFromDocument ? { version: object(params.textDocument).version } : "diagnosticVersion" in scenario ? { version: scenario.diagnosticVersion } : {}) } });
             if (scenario.diagnosticDelay) setTimeout(publish, scenario.diagnosticDelay);
             else await publish();
           }
-          if (scenario.serverStatus) {
+          if (scenario.serverStatus && (message.method === "textDocument/didOpen" || scenario.serverStatusOnChange)) {
             const status = () => { indexReady = true; return send({ method: "experimental/serverStatus", params: scenario.serverStatus }); };
             if (scenario.serverStatusDelay) setTimeout(status, scenario.serverStatusDelay); else await status();
           }
@@ -131,6 +133,7 @@ for await (const chunk of process.stdin) {
             const error = scenario.errorsByItem?.[method]?.[key] ?? scenario.errors?.[method];
             if (error) await send({ id: message.id, error });
             else if (scenario.requiresIndex && method === "textDocument/references" && !indexReady) await reply([]);
+            else if (scenario.manualCodeActions && method === "textDocument/codeAction" && object(params.context).triggerKind !== 1) await reply([]);
             else await reply(scenario.responsesByItem?.[method]?.[key] ?? scenario.responsesByPosition?.[method]?.[point] ?? scenario.responses?.[method] ?? null);
           }
         }

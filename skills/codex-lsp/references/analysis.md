@@ -11,6 +11,10 @@ Call hierarchy retains opaque items between prepare/incoming/outgoing requests i
 
 ## Discover API candidates
 
+`supertypes` and `subtypes` use the same file/line/symbol/depth anchors to traverse inheritance. Check `supported`; server support varies. Unsupported results include the actual executable and capability-filtered `alternatives`. Graph edges point from subtype to supertype for both directions, with response-local node IDs, full counts, bounded previews and partial errors. Protocol items stay opaque between prepare and relationship requests. When unsupported, definition/implementation can still answer focused navigation questions.
+
+`inlay-hints --file PATH --range START:COL-END:COL [--resolve]` returns inferred type and parameter labels for a one-based UTF-16 range. The JSONL field is `range` as the same string. Output positions and range are one-based; `--limit 0` additionally retains original provider fields. Resolve retrieves tooltips while commands/edits remain data. Check `supported`, `found`, `resolution`, errors and truncation. Empty output suggests checking server hint settings or using hover; it does not establish that types are absent.
+
 ```sh
 codex-lsp complete --file src/client.ts --line 25 --column 12 --query open --resolve --json
 ```

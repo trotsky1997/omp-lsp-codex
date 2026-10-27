@@ -7,6 +7,8 @@ Prefer human text for reading; JSON is useful for checking states and composing 
 | definition/references/type-definition/implementation | `locations` |
 | hover | `hover` |
 | callers/callees | `nodes,edges,roots` |
+| supertypes/subtypes | `nodes,edges,roots` |
+| inlay-hints | `hints,resolution` |
 | complete | `items,resolution` |
 | diagnostics --baseline | `comparison.counts,comparison.new` |
 | impact | `counts,changedSymbols,candidateTests` |
@@ -37,7 +39,7 @@ When hover uses an external DevDocs reference, `provider` identifies it. Check t
 
 ## Batch and source context
 
-`batch --input PATH|-` reads JSONL and emits one result object. Each row requires `command` and `file`; optional fields are `cwd`, `line`, `column`, `symbol`, `query`, `limit`, `fields`, `workspace`, `context`, `depth`, `resolve` and `baseline`. `workspace` applies to symbols; `context` applies to inspect. Commands also include callers, callees and complete; depth, resolve and diagnostic baseline are available as row fields. Baseline capture and workspace-wide impact run outside batch. Coordinates are one-based UTF-16. `cwd` is relative to the batch invocation directory, and query files are relative to their selected cwd. The input schema is validated before servers start; edits, raw requests, unknown fields and nested batches are rejected.
+`batch --input PATH|-` reads JSONL and emits one result object. Each row requires `command` and `file`, with file omitted for `next` continuations. Optional fields are `cwd`, `line`, `column`, `symbol`, `query`, `limit`, `fields`, `workspace`, `context`, `depth`, `resolve`, `baseline`, `range`, `kind`, `pageSize`, `cursor` and `budget`. `workspace` applies to symbols; `context` and `budget` apply to inspect. Commands include callers/callees, supertypes/subtypes, complete, inlay-hints and code-actions previews. Range is a `START:COL-END:COL` string. Baseline capture and workspace-wide impact run outside batch. Coordinates are one-based UTF-16. `cwd` is relative to the batch invocation directory, and query files are relative to their selected cwd. The input schema is validated before servers start; edits, raw requests, unknown fields and nested batches are rejected. [Sessions, pages and budgets](sessions.md) describe interactive rows and snapshot continuation.
 
 Batch `results` is an ordered array. Rows retain zero-based `index`, physical `inputLine`, `command`, `file`, source `line`, optional `symbol`, `code` and the command's own fields. Check each row's `success`, `found` or diagnostic `verified`; top-level `failed` counts nonzero row codes, with `failedQueries` mapping each zero-based result `index` to its one-based `inputLine`, `code` and optional `failedSections`. A failure hint confirms that successful rows remain available. Exit 1 preserves successes beside failures; exit 2 reports invalid input. A batch accepts at most 200 queries / 16 MiB. Default limit is 10 per query; a row limit overrides the CLI limit, and limit 0 requests full output. Servers are shared by configuration/root and close when the batch ends; up to eight remain active. Mixed Rust inspection/diagnostics enables compiler checks from startup. File changes invalidate a shared document and fail that query; retry with a current anchor.
 

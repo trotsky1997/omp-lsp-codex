@@ -30,7 +30,7 @@ export function compactText(items, fields, limit) {
         truncated: true, textTruncated: true, hint: "Text clipped; use --limit 0 --json for complete output.",
     };
 }
-const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "failedQueries", "bounded", "complete", "incomplete", "resolution", "newErrors", "baselineSaved", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted"];
+const STATE_FIELDS = ["success", "found", "supported", "provider", "verified", "hasErrors", "applied", "executesCommand", "verification", "failedSections", "failedQueries", "bounded", "complete", "incomplete", "resolution", "newErrors", "baselineSaved", "error", "errors", "hint", "truncated", "textTruncated", "errorTruncated", "documentationOmitted", "detailsOmitted", "workspaceEditOmitted", "alternatives", "nextCursor", "snapshot", "pageSize", "offset", "budget"];
 export function selectFields(data, fields) {
     const selected = new Map(), missing = [];
     let recovery = "";
@@ -40,7 +40,7 @@ export function selectFields(data, fields) {
                 selected.set(prefix + key, value[key]);
     };
     state(data, "");
-    for (const key of ["source", "destination", "importUpdates"])
+    for (const key of ["source", "destination", "importUpdates", "renameTarget"])
         if (Object.hasOwn(data, key) && data[key] !== undefined)
             selected.set(key, data[key]);
     for (const field of fields) {

@@ -4,13 +4,15 @@ Read this for selected code actions, file moves, raw methods or custom configura
 
 ## Code actions and file moves
 
-`code-actions --file PATH --line N` selects the whole line and includes initial diagnostics. `--symbol` or `--column` narrows it to a point. List choices, then use `--query INDEX` to resolve and preview one without executing it. A unique title works; ambiguous titles require an original index. Filtering preserves indexes, including when titles are clipped.
+`code-actions --file PATH --line N` selects the whole line and includes initial diagnostics. `--symbol` or `--column` narrows it to a point. Use `--range START_LINE:COL-END_LINE:COL` for multiline extraction/inline refactors, choosing range or line/column/symbol anchors. `--kind refactor.extract` sends the server's kind filter and retains that kind and descendants. List choices, then use `--query INDEX` to resolve and preview one without executing it. A unique title works; ambiguous titles require an original index. Filtering preserves indexes, including when titles are clipped.
 
 Inspect the selected `editPreview` and `executesCommand`. Server commands can affect files beyond the shown edit scope. Add `--apply` for the requested action. `disabledReason` explains unavailable choices; disabled or malformed actions fail before editing. Empty results suggest checking diagnostics, selection and capabilities.
 
 `rename-file --file PATH --new-name PATH` previews the move and server-provided import changes. Relative destinations start at the source file directory; their parent must exist. Existing destinations are protected. The dedicated command manages moving and rollback; resource operations inside workspace edits are rejected.
 
 Read `importUpdates`: `provided`, `none`, or `unavailable`. The latter two require checking and updating affected imports manually. File-only moves remain possible. Applied output marks project verification pending; use relevant build/tests, diagnostics and import actions to finish the change.
+
+TypeScript extraction can request optional interactive rename UI after applying its edits. The CLI keeps the generated name and returns one-based `renameTarget` (file/line/column); use the ordinary rename command with that anchor if the user requested a different name. Verification remains pending until project checks run.
 
 Snapshots and document versions must match. If analysis becomes stale, inspect current files before another query. Errors containing `after applying edits`, `Edits applied`, or `File renamed and edits applied` identify completed writes followed by failure. Rollback conflicts identify both paths and preserve both files.
 

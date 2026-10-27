@@ -2,12 +2,14 @@
 import { parseArgs } from "node:util";
 import { realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { run } from "./commands.js";
+import { run, outputData } from "./commands.js";
 import { hook } from "./hooks.js";
 import { LspClient } from "./client.js";
-import { expandHome } from "./config.js";
+import { expandHome, MAX_FILE_BYTES } from "./config.js";
 import { version } from "./version.js";
-import { failure, parseFields, selectFields } from "./output.js";
+import { failure, parseFields } from "./output.js";
+import { parseRange } from "./range.js";
+import { stdioSession } from "./session.js";
 const HELP = `codex-lsp ${version} — Multi-language LSP tools for agents (Node ${process.versions.node})
 
 Commands:
@@ -15,11 +17,15 @@ Commands:
   status [--file PATH]    List available servers for the workspace or target file
   doctor [--file PATH]    Check configuration, runtime and workspace health
   batch --input PATH|-   Run read-only JSONL queries with shared language servers
+  session --stdio       Interactive JSONL queries; one result per line, shared servers
+  next --cursor ID      Read the next cached references page without starting a server
   inspect                --file PATH --line N [--symbol NAME] [--context] [--new-name NAME]
                          Hover, definition, references, symbols and diagnostics in one session
   diagnostics            --file PATH or --changed
                          [--baseline PATH] [--save-baseline PATH]
   callers / callees      --file PATH --line N [--symbol NAME] [--depth N]
+  supertypes / subtypes  --file PATH --line N [--symbol NAME] [--depth N]
+  inlay-hints            --file PATH --range START:COL-END:COL [--resolve]
   complete               --file PATH --line N [--column N] [--query NAME] [--resolve]
   impact --changed       Find changed declarations, references and candidate tests
   definition             --file PATH --line N [--symbol NAME | --column N]
@@ -33,7 +39,8 @@ Commands:
   symbols                --file PATH [--query NAME], or --workspace --query NAME [--file PATH]
   rename                 --file PATH --line N --symbol NAME --new-name NAME [--apply]
   rename-file            --file PATH --new-name PATH [--apply]
-  code-actions           --file PATH --line N [--symbol NAME] [--query INDEX|TITLE] [--apply]
+  code-actions           --file PATH [--line N | --range START:COL-END:COL]
+                         [--kind refactor.extract] [--query INDEX|TITLE] [--apply]
   capabilities           [--file PATH]
   request                --method METHOD [--file PATH] [--payload JSON] [--apply]
 
@@ -42,6 +49,8 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --limit N             Max results/hover lines (default 50, inspect/batch/impact 10, signature-help 1; 0 shows all)
   --fields A,B          Select JSON object paths (implies --json), e.g. total,results.diagnostics.counts
                         Keeps status/error/truncation metadata; arrays are selected whole
+  --page-size N         References per snapshot page (1-1000); follow nextCursor with next
+  --budget N            Inspect JSON character budget (512-16777216, implies --json)
   --context             Include enclosing source, definitions, types and sampled references in inspect
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 ast-grep improves --symbol and selects call arguments for signature-help --symbol.
@@ -52,6 +61,8 @@ code-actions --query INDEX previews edit scope and flags server commands before 
 inspect is read-only; --new-name adds a rename preview. Each section honors --limit.
 Batch rows: {"command":"hover","file":"src/main.ts","line":10,"symbol":"parse"}
 Optional row fields: cwd, column, symbol, query, limit, fields, workspace; context is available for inspect.
+Rows also support range/kind, depth, resolve, pageSize, cursor and budget for matching commands.
+Session replies before EOF; send {"command":"close"} or close stdin to release servers.
 Batch continues after query errors; inspect --context shares a 6,000-character snippet budget.
 `;
 export function parseOptions(argv, cwd = process.cwd()) {
@@ -71,6 +82,12 @@ export function parseOptions(argv, cwd = process.cwd()) {
             payload: { type: "string" },
             input: { type: "string" },
             context: { type: "boolean" },
+            stdio: { type: "boolean" },
+            range: { type: "string" },
+            kind: { type: "string" },
+            "page-size": { type: "string" },
+            cursor: { type: "string" },
+            budget: { type: "string" },
             depth: { type: "string" },
             resolve: { type: "boolean" },
             baseline: { type: "string" },
@@ -89,7 +106,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
             version: { type: "boolean" },
         },
     });
-    const timeout = Number(v.timeout ?? 20), limit = Number(v.limit ?? (["inspect", "batch", "impact"].includes(positionals[0]) ? 10 : positionals[0] === "signature-help" ? 1 : 50)), line = Number(v.line ?? 1), column = v.column === undefined ? undefined : Number(v.column);
+    const timeout = Number(v.timeout ?? 20), limit = Number(v.limit ?? (["inspect", "batch", "session", "impact"].includes(positionals[0]) ? 10 : positionals[0] === "signature-help" ? 1 : 50)), line = Number(v.line ?? 1), column = v.column === undefined ? undefined : Number(v.column);
     if (!Number.isFinite(timeout))
         throw new Error("--timeout must be a number");
     if (!Number.isSafeInteger(limit) || limit < 0)
@@ -102,10 +119,29 @@ export function parseOptions(argv, cwd = process.cwd()) {
     const depth = Number(v.depth ?? 1);
     if (!Number.isSafeInteger(depth) || depth < 1 || depth > 10)
         throw new Error("--depth must be an integer from 1 to 10");
-    if (v.depth !== undefined && !["callers", "callees"].includes(command))
-        throw new Error("--depth is only available for callers/callees");
-    if (v.resolve && command !== "complete")
-        throw new Error("--resolve is only available for complete");
+    if (v.depth !== undefined && !["callers", "callees", "supertypes", "subtypes"].includes(command))
+        throw new Error("--depth is only available for callers/callees/supertypes/subtypes");
+    if (v.resolve && !["complete", "inlay-hints"].includes(command))
+        throw new Error("--resolve is only available for complete/inlay-hints");
+    const range = v.range === undefined ? undefined : parseRange(v.range);
+    if (range && !["code-actions", "inlay-hints"].includes(command))
+        throw new Error("--range is only available for code-actions/inlay-hints");
+    if (range && (v.line !== undefined || v.column !== undefined || v.symbol !== undefined))
+        throw new Error("Choose --range or --line/--column/--symbol");
+    if (v.kind !== undefined && (command !== "code-actions" || !/^[\w-]+(?:\.[\w-]+)*$/.test(v.kind)))
+        throw new Error("--kind requires code-actions and an action kind such as refactor.extract");
+    const pageSize = v["page-size"] === undefined ? undefined : Number(v["page-size"]);
+    if (pageSize !== undefined && (command !== "references" || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000))
+        throw new Error("--page-size requires references and an integer from 1 to 1000");
+    if (pageSize !== undefined && v.limit !== undefined)
+        throw new Error("Choose --page-size or --limit");
+    if (v.cursor !== undefined && (command !== "next" || !v.cursor.trim()))
+        throw new Error("--cursor requires next and a nonempty snapshot cursor");
+    const budget = v.budget === undefined ? undefined : Number(v.budget);
+    if (budget !== undefined && (command !== "inspect" || !Number.isSafeInteger(budget) || budget < 512 || budget > MAX_FILE_BYTES))
+        throw new Error(`--budget requires inspect and an integer from 512 to ${MAX_FILE_BYTES}`);
+    if (v.stdio && command !== "session")
+        throw new Error("--stdio is only available for session");
     if ((v.baseline !== undefined || v["save-baseline"] !== undefined) && command !== "diagnostics")
         throw new Error("Baseline flags are only available for diagnostics");
     if (v.baseline === "" || v["save-baseline"] === "")
@@ -131,7 +167,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
         languages,
         cwd: context,
         file: v.file,
-        line,
+        line: range ? range.start.line + 1 : line,
         column,
         symbol: v.symbol,
         query: v.query,
@@ -144,9 +180,10 @@ export function parseOptions(argv, cwd = process.cwd()) {
         resolveCompletion: !!v.resolve,
         baseline: v.baseline,
         saveBaseline: v["save-baseline"],
+        range, kind: v.kind, pageSize, cursor: v.cursor, budget, stdio: !!v.stdio,
         timeout: Math.max(5, Math.min(300, timeout)) * 1000,
         limit,
-        json: !!v.json || fields !== undefined,
+        json: !!v.json || fields !== undefined || budget !== undefined || !!v.stdio,
         fields,
         changed: !!v.changed,
         workspace: !!v.workspace,
@@ -160,7 +197,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
 }
 export async function main(argv = process.argv.slice(2)) {
     let limit = 50;
-    const json = argv.includes("--json") || argv.some(arg => arg === "--fields" || arg.startsWith("--fields="));
+    const json = argv[0] === "session" || argv.includes("--json") || argv.some(arg => arg === "--fields" || arg.startsWith("--fields=") || arg === "--budget" || arg.startsWith("--budget="));
     try {
         const args = parseOptions(argv);
         limit = args.limit;
@@ -176,8 +213,10 @@ export async function main(argv = process.argv.slice(2)) {
             await hook(args);
             return 0;
         }
+        if (args.command === "session")
+            return await stdioSession(args);
         const result = await run(args);
-        console.log(args.json ? JSON.stringify(args.fields ? selectFields(result.data, args.fields) : result.data) : result.human);
+        console.log(args.json ? JSON.stringify(outputData(result.data, args)) : result.human);
         return result.code ?? 0;
     }
     catch (error) {

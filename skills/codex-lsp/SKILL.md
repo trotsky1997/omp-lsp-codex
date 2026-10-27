@@ -25,6 +25,14 @@ codex-lsp complete --file PATH --line N --column N --query NAME --resolve
 codex-lsp diagnostics --file PATH --save-baseline BASELINE.json
 codex-lsp diagnostics --baseline BASELINE.json
 codex-lsp impact --changed --json
+codex-lsp session --stdio
+codex-lsp references --file PATH --line N --symbol NAME --page-size 20 --json
+codex-lsp next --cursor CURSOR --json
+codex-lsp inspect --file PATH --line N --context --budget 3000
+codex-lsp code-actions --file PATH --range 20:1-35:1 --kind refactor.extract
+codex-lsp supertypes --file PATH --line N --symbol NAME --depth 2
+codex-lsp subtypes --file PATH --line N --symbol NAME --depth 2
+codex-lsp inlay-hints --file PATH --range 20:1-60:1 --resolve
 ```
 
 Use symbols or source search to find a current anchor. File errors suggest discovery; wrong-line errors suggest nearby matches. Positions are one-based UTF-16 columns; `NAME#2` selects a repeated token. Quote paths and pass arguments separately. Run from the project directory, or choose another with `--cwd PROJECT`.
@@ -39,6 +47,8 @@ Use `batch` for several known queries/files to reuse servers. Its JSONL rows req
 
 Prefer human text for reading. For automation, `--fields locations` implies JSON; symbols use `--fields symbols`, and inspect wraps sections in `results`. Check `success`, navigation `found`, and diagnostic `verified`/`hasErrors` along with the exit code. Existing diagnostic errors cause exit 1 while navigation can succeed; inspect explains this in `failedSections`.
 
+Use `session --stdio` for questions chosen from earlier replies: write one JSONL row, read its response before sending the next, then close stdin or send `{"command":"close"}`. It reuses compatible servers and refreshes opened files after external edits. References accept `--page-size N`; follow `nextCursor` with `next --cursor ID` to read a cached page without another server request. `inspect --budget N` bounds the complete JSON response; it preserves state and clips content explicitly. Read [sessions, paging and budgets](references/sessions.md) for streaming, row fields, cache lifetime and recovery.
+
 Default limits are 50 results/hover lines, 10 per inspect section and one signature. Text budgets and truncation flags describe omissions. Use `--limit 0 --json > result.json` when complete details are required. Read [output shapes](references/outputs.md) for field selection, signature cursors or large results.
 
 Use call hierarchy to follow callers/callees, completion to discover members at a cursor, a diagnostic baseline to separate new issues from existing ones, and impact for changed declarations and candidate tests with evidence. These commands are read-only with respect to source. Read [analysis workflows](references/analysis.md) for capture/compare, traversal and resolution budgets, incomplete results or removed code.
@@ -48,6 +58,8 @@ Use call hierarchy to follow callers/callees, completion to discover members at 
 `status --file PATH` discovers servers; `doctor --file PATH` checks readiness. `setup LANGUAGE...` registers available servers and emits missing-server installation commands with official documentation. Read [setup](references/setup.md) for installation or configuration failures.
 
 Rename, file moves and code actions preview by default. Add `--apply` for a requested change after checking the target files and replacements. Applied output reports `verification: pending`: run relevant project checks and confirm they execute. Existing diagnostics alone cannot verify runtime behavior. If an error says edits were applied, inspect files before retrying.
+
+For a multiline refactor use `code-actions --range START:COL-END:COL --kind refactor.extract` or `refactor.inline`; choose range or line/symbol anchors. Kinds filter server actions while preserving their original indexes for `--query`. `supertypes`/`subtypes` traverse type relationships; `inlay-hints --range ...` collects inferred types/parameter names in one request. Their availability follows server capabilities and settings; [analysis workflows](references/analysis.md) cover empty/unsupported results.
 
 Edits validate ranges, versions and snapshots within one Git checkout, excluding nested repositories and escaping symlinks. Outside Git they use the language project. Resource operations in workspace edits are rejected. Read [advanced edits](references/advanced.md) for code actions, file moves, raw methods or custom server settings.
 
