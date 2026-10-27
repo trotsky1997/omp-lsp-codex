@@ -96,6 +96,9 @@ codex-lsp symbols --file src/client.ts --query Client --targets --fields targets
 codex-lsp inspect --target TARGET_ID --context --budget 3000
 codex-lsp diagnostics --file src/client.ts --watch --jsonl --budget 3000
 codex-lsp fix --changed --plan /tmp/codex-lsp-fixes.json --budget 4000
+codex-lsp lint --changed --plan /tmp/codex-lsp-lint.json --budget 3000
+codex-lsp format --changed --check --budget 2000
+codex-lsp format --changed --plan /tmp/codex-lsp-format.json --budget 3000
 codex-lsp fix --file src/client.ts --kind quickfix --query INDEX --plan /tmp/codex-lsp-reviewed-fix.json
 codex-lsp apply --plan /tmp/codex-lsp-fixes.json --json
 codex-lsp api-diff --base HEAD --file src/client.ts --budget 4000
@@ -105,6 +108,8 @@ codex-lsp dependencies --file src/client.ts --reverse --depth 2 --budget 3000
 Location handles are opt-in, private and bound to the workspace and current source hash. Reuse them across CLI calls or session rows; changed or expired source requires a fresh query. `--fields targets` gives compact IDs. Watch emits `starting`, the initial `snapshot`, then `diagnostics` events with new/resolved/updated issues, and a final `closed` row on SIGINT/SIGTERM. Unverified analysis retains the last verified issues; unchanged output stays quiet.
 
 `fix` saves a reviewable pure-text plan while leaving source unchanged. It defaults to `source.fixAll`; automatic quickfixes require one preferred action, while explicit `--file --query` selects a reviewed original index/title. Commands, ambiguous alternatives and resource operations remain individual code-action workflows. `apply --plan` checks the private receipt and source snapshots, applies the saved edit once, and reports a diagnostic baseline comparison. Project build/runtime verification remains pending. Output failures after editing preserve `applied` and application state; inspect files before another action.
+
+`lint` and `format` select project-configured CLI tools or LSP providers. Ruff, ESLint, Biome and Clippy provide lint diagnostics/safe repairs; Ruff, Prettier, Biome and rustfmt provide formatting. Choose `--tool NAME` or `--server NAME` to pin a backend. Formatting uses one provider per file and previews a diff; `--check` returns a concise non-writing check. Save changes with `--plan PATH.json`, review, then `apply --plan PATH.json`. Application validates source, configuration and provider state, then verifies formatter idempotence or compares lint diagnostics. Read [lint and formatting](skills/codex-lsp/references/tooling.md) for installation, ignore rules, safe fixes, range formatting and batch/session use.
 
 API diff and dependency graphs use ast-grep/Git for Rust, Python and TypeScript/JavaScript. API output retains `evidence:syntax`, `compatibility:unverified`, and separate `surfaceComplete`/`callsComplete`. Dependencies follow relative imports and re-exports, distinguish external/unresolved modules and bound reverse analysis to relevant AST candidates. Graphs remain partial when file/node/time limits are reached; aliases, cfg and dynamic loading need project checks.
 
@@ -216,7 +221,7 @@ SessionStart reports available servers. Stop checks changed files using built-in
 
 To test an initial Stop event manually, pipe `{"cwd":"/absolute/project/path"}` into `codex-lsp hook stop`. Omit `stop_hook_active` or set it to `false`. A value of `true` activates the recursion guard and skips the check, allowing an agent to finish after responding to a previous hook block.
 
-Each invocation owns and closes its language-server processes. This extraction excludes OMP's UI, agent runtime, persistent mux and custom linter adapters. Workspace-symbol coverage depends on each server's indexing. Language servers and project dependencies are installed separately.
+Each invocation owns and closes its language-server processes. This extraction excludes OMP's UI, agent runtime and persistent mux. Workspace-symbol coverage depends on each server's indexing. Language servers, linter/formatter executables and project dependencies are installed separately.
 
 ## Development
 

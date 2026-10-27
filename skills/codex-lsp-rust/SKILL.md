@@ -21,6 +21,8 @@ Use the discovered target: `cargo run -p PACKAGE --example NAME`, `--bin NAME`, 
 
 ## Query and verify
 
+Use `lint --file PATH --tool clippy` for Cargo/Clippy diagnostics and `format --file PATH --tool rustfmt --check` for project-edition formatting. Prepare locked dependencies and the installed toolchain first. Save machine-applicable lint fixes or format edits with `--plan PATH.json`, review, then apply; verify the actual Cargo target afterwards. The CLI shares a Clippy run across selected files in one manifest. See [lint/format workflows](../codex-lsp/references/tooling.md).
+
 `snippet --file PATH --line N --symbol NAME` reads the enclosing Rust item without Cargo/RA startup. It shows source syntax before macro expansion. `signature-help --symbol NAME` belongs on a call-site line; ast-grep handles qualified/turbofish calls and picks that call's arguments. Use an explicit column for later active parameters.
 
 For local bindings, find the current line with snippet/ast-grep and use `hover --symbol NAME`; document-symbol results follow the server's item outline.

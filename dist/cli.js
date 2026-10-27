@@ -26,7 +26,10 @@ Commands:
                          [--baseline PATH] [--save-baseline PATH]
                          [--watch --jsonl] Stream verified diagnostic changes
   fix --changed | --file PATH --plan PATH [--kind source.fixAll|quickfix] Save pure-text repairs
-  apply --plan PATH      Apply a reviewed unchanged plan and compare diagnostics
+  lint                   --file PATH or --changed [--tool NAME | --server NAME] [--plan PATH]
+  format                 --file PATH or --changed [--tool NAME | --server NAME] [--check | --plan PATH]
+                         Preview edits; --check exits 1 when formatting changes are needed
+  apply --plan PATH      Apply a reviewed unchanged plan and verify its selected providers
   api-diff --base REF    [--file PATH] Compare public syntax against a Git revision
   dependencies           --file PATH [--reverse] [--depth N] Import/re-export evidence graph
   callers / callees      --file PATH --line N [--symbol NAME] [--depth N]
@@ -60,11 +63,15 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --targets             Return reusable location IDs (implies --json); --fields targets gives compact handles
   --target ID           Reuse a location from --targets in the same workspace; source version is checked
   --context             Include enclosing source, definitions, types and sampled references in inspect
+  --tool NAME           Select CLI backend: ruff, eslint, biome, prettier, rustfmt, clippy
+  --server NAME         Select an LSP provider for lint/format/fix/diagnostics/code-actions/request/capabilities
+Lint/format fields: --fields checked (providers), diagnostics (lint), files (diff), changedFiles,needsFormatting
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 ast-grep improves --symbol and selects call arguments for signature-help --symbol.
 Install it with npm install --global @ast-grep/cli. Explicit --column stays exact.
 --project is a flag without a path; run setup from the intended project directory.
 Rename and code-actions preview by default. Add --apply to write changes.
+Lint repairs and formatting use --plan PATH followed by apply --plan PATH.
 code-actions --query INDEX previews edit scope and flags server commands before execution.
 inspect is read-only; --new-name adds a rename preview. Each section honors --limit.
 Batch rows: {"command":"hover","file":"src/main.ts","line":10,"symbol":"parse"}
@@ -98,6 +105,9 @@ export function parseOptions(argv, cwd = process.cwd()) {
             plan: { type: "string" },
             base: { type: "string" },
             reverse: { type: "boolean" },
+            tool: { type: "string" },
+            server: { type: "string" },
+            check: { type: "boolean" },
             range: { type: "string" },
             kind: { type: "string" },
             "page-size": { type: "string" },
@@ -139,8 +149,8 @@ export function parseOptions(argv, cwd = process.cwd()) {
     if (v.resolve && !["complete", "inlay-hints"].includes(command))
         throw new Error("--resolve is only available for complete/inlay-hints");
     const range = v.range === undefined ? undefined : parseRange(v.range);
-    if (range && !["code-actions", "inlay-hints"].includes(command))
-        throw new Error("--range is only available for code-actions/inlay-hints");
+    if (range && !["code-actions", "inlay-hints", "format"].includes(command))
+        throw new Error("--range is only available for code-actions/inlay-hints/format");
     if (range && (v.line !== undefined || v.column !== undefined || v.symbol !== undefined))
         throw new Error("Choose --range or --line/--column/--symbol");
     if (v.kind !== undefined && (!["code-actions", "fix"].includes(command) || !/^[\w-]+(?:\.[\w-]+)*$/.test(v.kind)))
@@ -159,8 +169,16 @@ export function parseOptions(argv, cwd = process.cwd()) {
         throw new Error("--watch is only available for diagnostics");
     if (v.jsonl && (command !== "diagnostics" || !v.watch))
         throw new Error("Use diagnostics --watch --jsonl");
-    if (v.plan !== undefined && (!["fix", "apply"].includes(command) || !v.plan.trim()))
-        throw new Error("--plan requires fix/apply and a nonempty path");
+    if (v.plan !== undefined && (!["fix", "apply", "lint", "format"].includes(command) || !v.plan.trim()))
+        throw new Error("--plan requires fix/apply/lint/format and a nonempty path");
+    if (v.tool !== undefined && (!["lint", "format", "fix"].includes(command) || !v.tool.trim()))
+        throw new Error("--tool requires lint/format/fix and a nonempty backend name");
+    if (v.server !== undefined && (!["lint", "format", "fix", "diagnostics", "code-actions", "request", "capabilities"].includes(command) || !v.server.trim()))
+        throw new Error("--server requires lint/format/fix/diagnostics/code-actions/request/capabilities and a nonempty provider name");
+    if (v.tool !== undefined && v.server !== undefined)
+        throw new Error("Choose --tool NAME or --server NAME");
+    if (v.check && (command !== "format" || v.plan !== undefined))
+        throw new Error("--check requires format; choose --check or --plan");
     if (v.base !== undefined && (command !== "api-diff" || !v.base.trim()))
         throw new Error("--base requires api-diff and a nonempty Git revision");
     if (v.reverse && command !== "dependencies")
@@ -212,6 +230,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
         range, kind: v.kind, pageSize, cursor: v.cursor, budget, stdio: !!v.stdio,
         target: v.target, targets: !!v.targets, watch: !!v.watch, jsonl: !!v.jsonl || !!v.watch,
         plan: v.plan, base: v.base, reverse: !!v.reverse,
+        tool: v.tool, server: v.server, check: !!v.check,
         timeout: Math.max(5, Math.min(300, timeout)) * 1000,
         limit,
         json: !!v.json || fields !== undefined || budget !== undefined || !!v.stdio || !!v.targets || !!v.watch,
@@ -268,7 +287,7 @@ export async function main(argv = process.argv.slice(2)) {
         return result.code ?? 0;
     }
     catch (error) {
-        const state = Object.fromEntries(["applied", "applicationState", "verification", "diagnosticVerification", "plan"].filter(key => completed?.data[key] !== undefined).map(key => [key, completed.data[key]]));
+        const state = Object.fromEntries(["applied", "applicationState", "verification", "diagnosticVerification", "toolVerification", "saved", "needsFormatting", "plan"].filter(key => completed?.data[key] !== undefined).map(key => [key, completed.data[key]]));
         const changed = state.applied === true || state.applied === null;
         const message = { ...failure(error, limit), ...state, ...(changed ? { hint: "Output failed after editing. Inspect applied/file states and rerun diagnostics; do not retry the edit." } : {}) };
         let result;

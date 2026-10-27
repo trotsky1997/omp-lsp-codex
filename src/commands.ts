@@ -51,12 +51,13 @@ import { attachTargets, resolveTarget } from "./targets.ts";
 import { apiDiff, dependencies } from "./analysis.ts";
 import { applyPlan, fixPlan } from "./fixes.ts";
 import { inspectContext } from "./context.ts";
-import { callHierarchy, complete } from "./semantic.ts";
-import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.ts";
+import { callHierarchy, complete, normalizeCodeAction, requestedActionKinds } from "./semantic.ts";
+import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint, type Baseline } from "./baseline.ts";
 import { impactAnalysis } from "./impact.ts";
 import { typeHierarchy, inlayHints, unsupportedFeature } from "./type-hints.ts";
 import { firstPage, nextPage } from "./pagination.ts";
 import { budgetData } from "./budget.ts";
+import { runTooling, validateToolPlan, verifyToolPlan } from "./tooling.ts";
 
 export interface Options {
   command: string;
@@ -90,6 +91,9 @@ export interface Options {
   plan?: string;
   base?: string;
   reverse?: boolean;
+  tool?: string;
+  server?: string;
+  check?: boolean;
   timeout: number;
   limit: number;
   json: boolean;
@@ -183,6 +187,7 @@ const READ_ONLY = new Set([
   "textDocument/completion", "completionItem/resolve",
   "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes", "typeHierarchy/subtypes",
   "textDocument/inlayHint", "inlayHint/resolve", "codeAction/resolve",
+  "textDocument/formatting", "textDocument/rangeFormatting",
 ]);
 const NAVIGATION: Record<string, string> = {
   definition: "textDocument/definition",
@@ -205,7 +210,7 @@ export interface Session {
   clients: Map<string, LspClient>;
   diagnostics: boolean;
 }
-async function sessionClient(server: Server, args: Options, session?: Session) {
+export async function sessionClient(server: Server, args: Options, session?: Session) {
   const key = JSON.stringify([server, args.timeout]);
   let client = session?.clients.get(key);
   if (client && !client.reusable) { await client.close(); session!.clients.delete(key); client = undefined; }
@@ -226,6 +231,17 @@ function compilerDiagnostics(server: Server): Server {
     },
   } : server;
 }
+function validateFixProviders(baseline: Baseline, args: Options) {
+  if (!Array.isArray(baseline.servers) || !baseline.servers.length || !Array.isArray(baseline.files)) throw new Error("Invalid fix-plan provider baseline");
+  const expected = new Set(baseline.servers), found = new Set<string>();
+  for (const { file } of baseline.files) {
+    const matches = fileServers(availableServers(loadConfig(dirname(file), args.globalConfigOnly), dirname(file), args.globalBinsOnly), file)
+      .map(server => serverFingerprint(compilerDiagnostics(server))).filter(value => expected.has(value));
+    if (!matches.length) throw new Error(`Fix provider configuration changed for ${file}; generate a fresh plan using the same configuration flags`);
+    matches.forEach(value => found.add(value));
+  }
+  if ([...expected].some(value => !found.has(value))) throw new Error("Fix provider configuration changed; generate a fresh plan");
+}
 async function fileContext(args: Options, semantic = true, session?: Session): Promise<FileContext> {
   if (!args.file) throw new Error("--file is required");
   const path = resolveFile(args.file, args.cwd);
@@ -236,9 +252,9 @@ async function fileContext(args: Options, semantic = true, session?: Session): P
       args.globalBinsOnly,
     ),
     path,
-  )[0];
+  ).find(server => !args.server || server.name === args.server);
   if (!server)
-    throw new Error(`No available language server matches ${path}; run codex-lsp setup <language> --project from the project root`);
+    throw new Error(`No available language server${args.server ? ` named ${args.server}` : ""} matches ${path}; run codex-lsp setup <language> --project from the project root`);
   if (args.command === "inspect" || session?.diagnostics) server = compilerDiagnostics(server);
   const client = await sessionClient(server, args, session);
   try {
@@ -584,7 +600,7 @@ async function codeActions(args: Options, session?: Session): Promise<Result> {
       (await client.request<(CodeAction | Command)[]>("textDocument/codeAction", {
         textDocument: { uri },
         range: actionRange,
-        context: { diagnostics, triggerKind: 1, ...(args.kind ? { only: [args.kind] } : {}) },
+        context: { diagnostics, triggerKind: 1, ...(args.kind ? { only: requestedActionKinds(client, args.kind) } : {}) },
       })) ?? [];
     const invalidAction = (item: unknown) => {
       const row = object(item);
@@ -600,6 +616,7 @@ async function codeActions(args: Options, session?: Session): Promise<Result> {
       chosen = await client.request<CodeAction>("codeAction/resolve", chosen);
       if (invalidAction(chosen)) throw new Error(`Invalid resolved code action from ${server.name}`);
     }
+    if (chosen && "kind" in chosen) chosen = normalizeCodeAction(chosen, uri, text);
     if (!args.apply) {
       const items = matches
         .map(({ action, index }) => {
@@ -882,7 +899,7 @@ export async function changedFiles(cwd: string): Promise<string[]> {
   return [...found].sort();
 }
 
-export async function diagnostics(args: Options, shared?: FileContext, session?: Session): Promise<Result> {
+export async function diagnostics(args: Options, shared?: FileContext, session?: Session, providers?: ReadonlySet<string>): Promise<Result> {
   const before = args.baseline ? loadBaseline(resolve(args.cwd, expandHome(args.baseline))) : undefined;
   if (args.file && args.changed || !args.file && !args.changed && !before) throw new Error("Choose exactly one of --file or --changed, or provide --baseline");
   const paths = args.changed ? await changedFiles(args.cwd) : args.file ? [resolveFile(args.file, args.cwd)] : before!.files.map(file => resolveFile(file.file, args.cwd));
@@ -911,7 +928,7 @@ export async function diagnostics(args: Options, shared?: FileContext, session?:
         args.globalBinsOnly,
       ),
       path,
-    );
+    ).filter(server => (!args.server || server.name === args.server) && (!providers || providers.has(serverFingerprint(compilerDiagnostics(server)))));
     records.set(path, {
       file: path, diagnostics: [], verified: !!servers.length,
       errors: servers.length ? [] : ["No available language server matches this file. Run codex-lsp status --file <path>, then codex-lsp setup <language> for installation and configuration guidance; use diagnostics --file <source-file> to check an individual supported file."],
@@ -1236,7 +1253,7 @@ async function request(args: Options): Promise<Result> {
           };
       }
     } else {
-      const servers = availableServers(loadConfig(args.cwd, args.globalConfigOnly), args.cwd, args.globalBinsOnly);
+      const servers = availableServers(loadConfig(args.cwd, args.globalConfigOnly), args.cwd, args.globalBinsOnly).filter(server => !args.server || server.name === args.server);
       server = servers.find((x) => !x.isLinter) ?? servers[0];
       if (!server) throw new Error("No available language server for this workspace");
       client = await LspClient.start(server, args.timeout, args.apply);
@@ -1271,7 +1288,7 @@ export async function run(args: Options, session?: Session): Promise<Result> {
 
 async function runQuery(args: Options, session?: Session): Promise<Result> {
   const navigation = Object.hasOwn(NAVIGATION, args.command);
-  if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix"].includes(args.command))) throw new Error(`${args.command} is read-only; omit --apply`);
+  if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix", "lint", "format"].includes(args.command))) throw new Error(`${args.command} is read-only; omit --apply`);
   if (args.command === "inlay-hints" && !args.range) throw new Error("inlay-hints requires --range START_LINE:COL-END_LINE:COL");
   let requestPosition = false;
   if (args.command === "request" && POSITION_METHODS.has(args.method ?? "")) {
@@ -1287,17 +1304,27 @@ async function runQuery(args: Options, session?: Session): Promise<Result> {
   }
   if (navigation) return navigate(args, undefined, session);
   switch (args.command) {
+    case "lint":
+    case "format":
+      return runTooling(args, session);
     case "api-diff":
       return apiDiff(args);
     case "dependencies":
       return dependencies(args);
     case "fix": {
+      if (args.tool) return runTooling({ ...args, command: "lint" });
       const pool: Session = { clients: new Map(), diagnostics: true };
       try { return await fixPlan(args, file => fileContext({ ...args, file }, true, pool)); }
       finally { await Promise.allSettled([...pool.clients.values()].map(client => client.close())); }
     }
     case "apply":
-      return applyPlan(args, (_files, baseline) => diagnostics({ ...args, command: "diagnostics", file: undefined, changed: false, apply: false, baseline, saveBaseline: undefined, limit: 0 }));
+      return applyPlan(args, (files, baseline, verification) => verification
+        ? verifyToolPlan(files, verification, args)
+        : diagnostics({ ...args, command: "diagnostics", file: undefined, changed: false, apply: false, baseline, saveBaseline: undefined, limit: 0 }, undefined, undefined, new Set(loadBaseline(baseline!).servers)),
+        async (files, verification, baseline) => {
+          if (verification) await validateToolPlan(files, verification, args);
+          else if (baseline) validateFixProviders(baseline, args);
+        });
     case "next": {
       if (!args.cursor || args.file || args.changed || args.symbol || args.query || args.column || args.line !== 1 || args.workspace) throw new Error("Use next --cursor ID from a references page, in the same workspace");
       const data = nextPage({ cwd: args.cwd, cursor: args.cursor });
@@ -1355,7 +1382,7 @@ async function runQuery(args: Options, session?: Session): Promise<Result> {
       const path = args.file ? resolveFile(args.file, args.cwd) : undefined,
         cwd = path ? dirname(path) : args.cwd;
       const all = availableServers(loadConfig(cwd, args.globalConfigOnly), cwd, args.globalBinsOnly),
-        servers = path ? fileServers(all, path) : all;
+        servers = (path ? fileServers(all, path) : all).filter(server => !args.server || server.name === args.server);
       if (!servers.length) throw new Error("No available language server");
       const results: ObjectValue[] = [];
       for (const server of servers) {

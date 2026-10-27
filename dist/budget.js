@@ -81,7 +81,8 @@ export function budgetData(data, maximum) {
             }
         }
         for (const array of arrays) {
-            if (["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "changes"].includes(array.key) && Object.hasOwn(array.owner, "shown"))
+            const filePreview = Array.isArray(array.owner.files) && (typeof array.owner.saved === "boolean" || array.owner.command === "format" && array.owner.check === true);
+            if (Object.hasOwn(array.owner, "shown") && (array.key === "files" && filePreview || ["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "changes"].includes(array.key) && !(array.key === "diagnostics" && filePreview)))
                 array.owner.shown = array.items.length;
             if (array.items.length < array.length) {
                 array.owner.truncated = true;
@@ -92,7 +93,7 @@ export function budgetData(data, maximum) {
             }
         }
         for (const owner of initialFlags.keys()) {
-            if (Array.isArray(owner.checked) && Object.hasOwn(owner, "shown"))
+            if (Array.isArray(owner.checked) && owner.checked.some(row => Array.isArray(row?.diagnostics)) && Object.hasOwn(owner, "shown"))
                 owner.shown = owner.checked.reduce((sum, row) => sum + (Array.isArray(row.diagnostics) ? row.diagnostics.length : 0), 0);
             if (Array.isArray(owner.nodes)) {
                 const edges = arrays.find(array => array.owner === owner && array.key === "edges");

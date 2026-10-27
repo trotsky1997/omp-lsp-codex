@@ -6,6 +6,8 @@ import { run } from "../src/commands.ts";
 import { parseOptions } from "../src/cli.ts";
 import { LspClient } from "../src/client.ts";
 import { object, MAX_FILES } from "../src/config.ts";
+import { normalizeCodeAction, requestedActionKinds } from "../src/semantic.ts";
+import type { CodeAction } from "../src/omp/types.ts";
 import { cleanWorkspaces, isolateGlobalConfig, range, workspace } from "./fixtures/workspace.ts";
 
 let restore: () => void;
@@ -13,6 +15,24 @@ before(() => { restore = isolateGlobalConfig(); }); after(() => restore());
 afterEach(async () => { const leaked = LspClient.active.size; await Promise.all([...LspClient.active].map(c => c.close())); cleanWorkspaces(); assert.equal(leaked, 0); });
 const list = (value: unknown) => value as Record<string, unknown>[];
 function item(uri: string, name: string, line = 0) { return { uri, name, kind: 12, range: { start: { line, character: 0 }, end: { line, character: 9 } }, selectionRange: { start: { line, character: 0 }, end: { line, character: 5 } }, data: { key: name, opaque: [1, { keep: true }] } }; }
+
+test("action kinds: prefer advertised matching children and retain a parent fallback", () => {
+  const client = { capabilities: { codeActionProvider: { codeActionKinds: ["quickfix.biome", "source.fixAll.biome", "source.fixAll.biome", "source.organizeImports.biome"] } } };
+  assert.deepEqual(requestedActionKinds(client, "source.fixAll"), ["source.fixAll.biome"]);
+  assert.deepEqual(requestedActionKinds(client, "quickfix"), ["quickfix.biome"]);
+  assert.deepEqual(requestedActionKinds(client, "source.fixAll.ruff"), ["source.fixAll.ruff"]);
+  assert.deepEqual(requestedActionKinds({ capabilities: { codeActionProvider: true } }, "source.fixAll"), ["source.fixAll"]);
+});
+
+test("action edits: only Biome's single full-document virtual EOF is normalized", () => {
+  const uri = "file:///source.ts", text = "let value=1;\n", action: CodeAction = { title: "fix", kind: "source.fixAll.biome", edit: { changes: { [uri]: [{ range: { start: { line: 0, character: 0 }, end: { line: 2, character: 0 } }, newText: "const value=1;\n" }] } } };
+  assert.deepEqual(normalizeCodeAction(action, uri, text).edit!.changes![uri][0].range.end, { line: 1, character: 0 });
+  assert.deepEqual(action.edit!.changes![uri][0].range.end, { line: 2, character: 0 });
+  assert.equal(normalizeCodeAction({ ...action, kind: "quickfix.biome" }, uri, text).edit, action.edit);
+  assert.equal(normalizeCodeAction(action, "file:///other.ts", text), action);
+  const malformed = { ...action, edit: { changes: { [uri]: [{ ...action.edit!.changes![uri][0], range: { start: { line: 0, character: 0 }, end: { line: 99, character: 0 } } }] } } };
+  assert.equal(normalizeCodeAction(malformed, uri, text), malformed);
+});
 
 test("read-only commands reject --apply before opening a server or authorizing callbacks", async () => {
   const w = workspace();

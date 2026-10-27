@@ -60,6 +60,7 @@ export class LspClient {
   #diagnosticSizes = new WeakMap<Diagnostic[], number>();
   #diagnosticLimit?: Error;
   #diagnosticOverflow = 0;
+  #configurationInitialized = false;
   #closed = false;
   #closing?: Promise<void>;
 
@@ -103,7 +104,7 @@ export class LspClient {
     capabilities.workspace.workspaceEdit.resourceOperations = [];
     capabilities.textDocument.diagnostic.dynamicRegistration = false;
     try {
-      const result = await client.request<{ capabilities?: ObjectValue }>(
+      const result = await client.request<{ capabilities?: ObjectValue; serverInfo?: { name?: string } }>(
         "initialize",
         {
           processId: process.pid,
@@ -124,7 +125,11 @@ export class LspClient {
       if (client.capabilities.positionEncoding !== undefined && client.capabilities.positionEncoding !== "utf-16")
         throw new Error(`Unsupported LSP position encoding: ${client.capabilities.positionEncoding}; codex-lsp requires utf-16`);
       await client.notify("initialized", {});
-      await client.notify("workspace/didChangeConfiguration", { settings: server.settings ?? {} });
+      // Biome pulls initial settings itself; a concurrent reload publishes provisional empty diagnostics.
+      if (server.name === "biome" || result?.serverInfo?.name === "biome_lsp")
+        await client.#waitUntil(() => client.#configurationInitialized, Math.max(timeoutMs, server.warmupTimeoutMs ?? 5000), "configuration initialization");
+      else if (Object.keys(server.settings ?? {}).length)
+        await client.notify("workspace/didChangeConfiguration", { settings: server.settings });
       return client;
     } catch (error) {
       await client.close();
@@ -247,6 +252,7 @@ export class LspClient {
       if (value.kind === "end") this.progress.delete(token);
       else this.progress.add(token);
     } else if (["window/logMessage", "window/showMessage"].includes(message.method)) {
+      if (message.method === "window/logMessage" && params.type === 3 && /^Server initialized with PID: \d+$/.test(String(params.message))) this.#configurationInitialized = true;
       this.#stderr = (this.#stderr + `\n${String(params.message ?? "")}`).slice(-8192);
     }
     for (const wake of [...this.#listeners]) wake();

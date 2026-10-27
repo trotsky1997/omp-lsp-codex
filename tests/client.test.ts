@@ -341,6 +341,35 @@ test("wire: configuration sections and workspace folder callbacks preserve value
   const folders = await client.request<{ result: unknown }>("fixture/callback", { method: "workspace/workspaceFolders" });
   assert.deepStrictEqual(folders.result, [{ uri: fileUri(server.root), name: server.root.split(/[\\/]/).at(-1) }]);
 });
+test("wire: empty initial settings omit reload notifications while nonempty settings retain push delivery", async () => {
+  for (const settings of [undefined, {}, { custom: true }]) {
+    const { server, events } = fixture(); server.settings = settings;
+    const client = await LspClient.start(server, 1000); await client.request("fixture/echo", {});
+    assert.equal(events().some(event => event.method === "workspace/didChangeConfiguration"), !!settings && Object.keys(settings).length > 0);
+    await client.close();
+  }
+});
+test("wire: Biome pulls configured settings once and avoids provisional empty diagnostics from a concurrent reload", async () => {
+  const { server, root, events } = fixture("normal", "custom-biome"), script = join(root, "biome-handshake.mjs"), trace = server.args![2];
+  writeFileSync(script, `import {readFileSync,appendFileSync} from 'node:fs';import {MessageFramer,encodeMessageFrame} from ${JSON.stringify(new URL("../src/omp/message-framing.js", import.meta.url).href)};
+const framer=new MessageFramer(Buffer.alloc(0));let reloading=false,uri,version,configuration;const trace=message=>appendFileSync(${JSON.stringify(trace)},JSON.stringify(message)+'\\n'),send=message=>{trace({direction:'send',...message});process.stdout.write(encodeMessageFrame(message));};
+const publish=()=>{if(uri&&configuration)send({method:'textDocument/publishDiagnostics',params:{uri,version,diagnostics:reloading?[]:[{message:'configured lint',range:{start:{line:0,character:0},end:{line:0,character:1}},data:configuration}]}});};
+for await(const chunk of process.stdin){framer.push(chunk);for(const text of framer.drain(()=>{})){const m=JSON.parse(text);trace({direction:'receive',...m});if(m.method==='initialize')send({id:m.id,result:{capabilities:{},serverInfo:{name:'biome_lsp',version:'2.6.3'}}});else if(m.method==='initialized')send({id:'settings',method:'workspace/configuration',params:{items:[{section:'biome'}]}});else if(m.method==='workspace/didChangeConfiguration')reloading=true;else if(m.method==='textDocument/didOpen'){uri=m.params.textDocument.uri;version=m.params.textDocument.version;publish();}else if(m.id==='settings'){configuration=m.result[0];send({method:'window/logMessage',params:{type:3,message:'Server initialized with PID: '+process.pid}});publish();}else if(m.method==='shutdown')send({id:m.id,result:null});else if(m.method==='exit')process.exit(0);}}
+`);
+  server.args = [script]; server.settings = { biome: { linting: { enabled: true } } };
+  const file = join(root, "source.ts"); writeFileSync(file, "let value=1\n");
+  const client = await LspClient.start(server, 1000), opened = await client.open(file), report = await client.getDiagnostics(opened.uri);
+  assert.equal(report.verified, true); assert.equal(report.diagnostics.length, 1); assert.deepEqual(report.diagnostics[0].data, server.settings.biome);
+  const wire = events();
+  assert.equal(wire.some(event => event.method === "workspace/didChangeConfiguration"), false);
+  assert.ok(wire.findIndex(event => event.method === "window/logMessage") < wire.findIndex(event => event.method === "textDocument/didOpen"));
+});
+test("wire: Biome initialization without a configuration-ready notification times out and reaps its child", async () => {
+  const { server, events } = fixture("normal", "biome"); server.settings = undefined;
+  await assert.rejects(LspClient.start(server, 1000), /configuration initialization/);
+  const pid = events().find(event => event.direction === "lifecycle").pid;
+  assert.throws(() => process.kill(pid, 0)); assert.equal(LspClient.active.size, 0);
+});
 test("wire: dynamic diagnostics registration is honored and benign callbacks are acknowledged", async () => {
   const { server } = fixture(), client = await LspClient.start(server, 1000);
   await client.request("fixture/callback", { method: "client/registerCapability", params: { registrations: [{ method: "textDocument/diagnostic", registerOptions: { interFileDependencies: true } }] } });

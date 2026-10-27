@@ -23,6 +23,25 @@ export async function requestBefore(client, method, params, deadline) {
     }
     throw new Error(`Timed out waiting for ${method}`);
 }
+export function requestedActionKinds(client, kind) {
+    const advertised = object(client.capabilities.codeActionProvider).codeActionKinds;
+    const matches = Array.isArray(advertised) ? [...new Set(advertised.filter((value) => typeof value === "string" && (value === kind || value.startsWith(kind + "."))))] : [];
+    if (matches.length > MAX_FILES)
+        throw new Error("Matching code action kinds exceed 200; select a more specific --kind");
+    return matches.length ? matches : [kind];
+}
+export function normalizeCodeAction(action, uri, text) {
+    if (action.kind !== "source.fixAll.biome" || !action.edit || action.edit.documentChanges !== undefined || action.command)
+        return action;
+    const entries = Object.entries(action.edit.changes ?? {}), edits = entries[0]?.[1], lines = text.split("\n");
+    if (entries.length !== 1 || entries[0][0] !== uri || !Array.isArray(edits) || edits.length !== 1)
+        return action;
+    const edit = edits[0];
+    if (!validRange(edit?.range) || edit.range.start.line !== 0 || edit.range.start.character !== 0 || edit.range.end.line !== lines.length || edit.range.end.character !== 0)
+        return action;
+    // Biome fixAll encodes EOF as (line_count, 0); bind this full-document edit to the captured source EOF.
+    return { ...action, edit: { ...action.edit, changes: { [uri]: [{ ...edit, range: { start: edit.range.start, end: { line: lines.length - 1, character: lines.at(-1).length } } }] } } };
+}
 function unsupported(client, feature) {
     const hint = `${client.server.name} does not advertise ${feature}; check capabilities or select another configured server`;
     return { data: { success: false, supported: false, found: false, server: client.server.name, hint }, code: 1, human: hint };

@@ -17,6 +17,8 @@ If TypeScript Language Server cannot find TypeScript, check local `node_modules/
 
 ## Types, imports and execution
 
+Use `lint --file PATH` for the project's ESLint/Biome rules and `format --file PATH --check` for Prettier/Biome formatting. Local tools and project config/plugins take precedence. A project declaring multiple formatters needs `--tool prettier` or `--tool biome`; an LSP provider uses `--server NAME`. Save requested fixes/formatting with `--plan PATH.json`, review, then apply. `--range` requires LSP range formatting. See [lint/format workflows](../codex-lsp/references/tooling.md).
+
 A concise hover can name an alias without expanding its return type. Follow type-definition/definition or query the alias; complete output still reflects the server's abbreviations. Use `signature-help --symbol NAME` on the target call's line so ast-grep finds its argument list, including generics and nested calls. Explicit `--column` selects an exact active-parameter position. Compare the returned callable before using the signature. `snippet` reads the enclosing function/method/class directly from syntax without starting tsserver.
 
 For missing imports, list code actions, preview the selected original index with `--query INDEX`, inspect its edit scope and `executesCommand`, then apply. Check diagnostics and the project build/tests afterwards.

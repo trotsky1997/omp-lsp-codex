@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { captureBaseline, serverFingerprint } from "./baseline.js";
 import { applyWorkspaceEdit, atomicWrite, textChanges } from "./edits.js";
 import { applyTextEditsToString } from "./omp/text-edits.js";
 import { availableServers, fileServers, fileUri, gitRoot, insideWorkspace, loadConfig, MAX_FILE_BYTES, MAX_FILES, object, readText, resolveFile, uriFile } from "./config.js";
-import { validRange, requestBefore } from "./semantic.js";
+import { validRange, requestBefore, requestedActionKinds, normalizeCodeAction } from "./semantic.js";
 import { changedFiles } from "./commands.js";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const UID = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -48,7 +48,7 @@ function sourceFile(root, path) {
         throw new Error(`Unsupported fix target: ${path}`);
     return readText(path);
 }
-function validateEdits(text, edits) {
+export function validateEdits(text, edits) {
     const lines = text.split("\n");
     for (const edit of edits) {
         if (!validRange(edit.range) || typeof edit.newText !== "string" || !edit.newText.isWellFormed())
@@ -61,7 +61,7 @@ function validateEdits(text, edits) {
     }
     return applyTextEditsToString(text, edits);
 }
-function normalizedEdits(edit) {
+export function normalizedEdits(edit) {
     if (!edit || typeof edit !== "object" || Array.isArray(edit))
         throw new Error("Invalid fix workspace edit");
     const value = object(edit);
@@ -105,10 +105,90 @@ function planDestination(args) {
     if (!args.plan || extname(args.plan).toLowerCase() !== ".json")
         throw new Error("Fix plans require --plan PATH.json");
     const path = resolve(args.cwd, args.plan), parent = realpathSync(dirname(path));
-    const destination = join(parent, path.slice(path.lastIndexOf(sep) + 1));
+    const destination = join(parent, basename(path));
     if (existsSync(destination))
         throw new Error(`Fix plan destination already exists: ${destination}; choose a new artifact path`);
     return destination;
+}
+function checkGuards(guards = []) {
+    if (!Array.isArray(guards) || guards.length > MAX_FILES)
+        throw new Error("Invalid edit-plan configuration guards");
+    const seen = new Set();
+    for (const guard of guards) {
+        if (typeof guard?.file !== "string" || guard.file !== resolve(guard.file) || seen.has(guard.file) || guard.sha256 !== null && (typeof guard.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(guard.sha256)))
+            throw new Error("Invalid edit-plan configuration guard");
+        seen.add(guard.file);
+        if (guard.sha256 === null) {
+            try {
+                lstatSync(guard.file);
+            }
+            catch (error) {
+                if (object(error).code === "ENOENT")
+                    continue;
+                throw error;
+            }
+            throw new Error(`Configuration changed since edit planning: ${guard.file}; generate a fresh plan`);
+        }
+        if (!existsSync(guard.file))
+            throw new Error(`Configuration changed since edit planning: ${guard.file}; generate a fresh plan`);
+        const info = lstatSync(guard.file);
+        if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_FILE_BYTES || realpathSync(guard.file) !== guard.file || hash(readFileSync(guard.file)) !== guard.sha256)
+            throw new Error(`Configuration changed since edit planning: ${guard.file}; generate a fresh plan`);
+    }
+}
+async function persistPlan(args, plan, destination) {
+    if (destination && plan.files.some(file => file.file === destination))
+        throw new Error("Edit plan cannot overwrite analyzed source");
+    checkGuards(plan.guards);
+    for (const file of plan.files)
+        if (sourceFile(plan.root, file.file) !== file.original)
+            throw new Error(`Source changed during edit planning: ${file.file}`);
+    const edited = plan.files.filter(file => file.original !== file.updated), shown = args.limit ? edited.slice(0, args.limit) : edited;
+    if (!edited.length)
+        return { data: { success: true, applied: false, saved: false, complete: !plan.skipped.length, actions: plan.actions, skipped: plan.skipped, files: [], total: 0 }, human: "No text changes; no plan was written." };
+    if (destination) {
+        if (!plan.baseline && !plan.verification)
+            throw new Error("Edit plans require a post-apply verification provider");
+        const bytes = Buffer.from(JSON.stringify(plan, null, 2) + "\n");
+        if (bytes.length > MAX_FILE_BYTES)
+            throw new Error("Edit plan exceeds 16 MiB; narrow the source scope");
+        const receiptPath = join(privateStore(), plan.id + ".json"), receipt = { digest: hash(bytes), root: plan.root, path: destination, state: "planned" };
+        writeFileSync(receiptPath, JSON.stringify(receipt), { flag: "wx", mode: 0o600 });
+        try {
+            writeFileSync(destination, bytes, { flag: "wx", mode: 0o600 });
+        }
+        catch (error) {
+            rmSync(receiptPath, { force: true });
+            throw error;
+        }
+    }
+    return { data: { success: true, applied: false, saved: !!destination, ...(destination ? { plan: destination, id: plan.id } : {}), kind: plan.kind, complete: !plan.skipped.length, actions: plan.actions, skipped: plan.skipped, total: edited.length, shown: shown.length, truncated: shown.length < edited.length, files: shown.map(({ file, edits, diff }) => ({ file, editCount: edits.length, diff })), hint: destination ? "Review the plan diff, then run codex-lsp apply --plan PATH. Source and configuration hashes are checked before applying." : "Preview only. Add --plan PATH.json to save a reviewed, source-bound edit plan." }, human: [destination ? `Edit plan saved: ${destination}` : "Edit preview:", ...shown.map(file => file.diff), destination ? "Review, then run codex-lsp apply --plan PATH." : "Add --plan PATH.json to save this preview."].join("\n") };
+}
+export async function saveEditPlan(args, input) {
+    if (args.apply)
+        throw new Error("Review edits with --plan PATH.json, then use apply --plan PATH.json");
+    if (!input || typeof input.kind !== "string" || !input.kind || !Array.isArray(input.files) || input.files.length > MAX_FILES)
+        throw new Error("Invalid edit-plan input or scope exceeds 200 files");
+    if (input.verification !== undefined && (!input.verification || typeof input.verification !== "object" || Array.isArray(input.verification)))
+        throw new Error("Invalid edit-plan verification provider");
+    const destination = args.plan ? planDestination(args) : undefined, root = realpathSync(gitRoot(args.cwd)), deadline = Date.now() + args.timeout, files = [], seen = new Set();
+    let snapshotBytes = 0;
+    for (const source of input.files) {
+        if (typeof source?.file !== "string" || seen.has(source.file) || typeof source.original !== "string" || typeof source.updated !== "string" || !source.updated.isWellFormed())
+            throw new Error("Invalid or duplicate edit-plan source");
+        seen.add(source.file);
+        const actual = sourceFile(root, source.file);
+        if (actual !== source.original)
+            throw new Error(`Source changed during edit planning: ${source.file}`);
+        snapshotBytes += Buffer.byteLength(source.original) + Buffer.byteLength(source.updated);
+        if (snapshotBytes > MAX_FILE_BYTES)
+            throw new Error("Edit source snapshots exceed 16 MiB; narrow the source scope");
+        const lines = actual.split("\n"), edits = actual === source.updated ? [] : [{ range: { start: { line: 0, character: 0 }, end: { line: lines.length - 1, character: lines.at(-1).length } }, newText: source.updated }];
+        if (validateEdits(actual, edits) !== source.updated)
+            throw new Error("Edit plan does not match its source preview");
+        files.push({ ...source, sha256: hash(actual), edits, version: 1, diff: actual === source.updated ? "" : await unifiedDiff(root, source.file, actual, source.updated, deadline) });
+    }
+    return persistPlan(args, { schema: 1, id: randomUUID(), root, createdAt: new Date().toISOString(), kind: input.kind, files, actions: input.actions ?? [], skipped: input.skipped ?? [], ...(input.baseline ? { baseline: input.baseline } : {}), ...(input.verification ? { verification: input.verification } : {}), ...(input.guards ? { guards: input.guards } : {}) }, destination);
 }
 export async function fixPlan(args, acquire) {
     if (args.apply || args.file && args.changed || !args.file && !args.changed)
@@ -159,7 +239,7 @@ export async function fixPlan(args, acquire) {
         }
         const lines = current.text.split("\n"), diagnosticItems = records.get(file).diagnostics;
         const selectionRange = `1:1-${lines.length}:${lines.at(-1).replace(/\r$/, "").length + 1}`;
-        const response = await requestBefore(current.client, "textDocument/codeAction", { textDocument: { uri: current.uri }, range: { start: { line: 0, character: 0 }, end: { line: lines.length - 1, character: lines.at(-1).replace(/\r$/, "").length } }, context: { diagnostics: diagnosticItems, only: [kind], triggerKind: 1 } }, deadline);
+        const response = await requestBefore(current.client, "textDocument/codeAction", { textDocument: { uri: current.uri }, range: { start: { line: 0, character: 0 }, end: { line: lines.length - 1, character: lines.at(-1).replace(/\r$/, "").length } }, context: { diagnostics: diagnosticItems, only: requestedActionKinds(current.client, kind), triggerKind: 1 } }, deadline);
         if (response !== null && !Array.isArray(response))
             throw new Error(`Invalid code actions from ${current.server.name}`);
         if (Array.isArray(response) && response.length > MAX_FILES)
@@ -190,7 +270,7 @@ export async function fixPlan(args, acquire) {
         if (!selected.length && (candidates.length || args.query !== undefined))
             skipped.push({ file, range: selectionRange, kind, needsSelection: true, reason: args.query !== undefined ? "Query must select one persistent text action; inspect the original indexes below" : candidates.length > 1 ? "Multiple fixes match; preview code-actions, then use fix --file PATH --query INDEX with this range and original index" : "Quickfix is not marked preferred; preview code-actions, then use fix --file PATH --query INDEX with this range and original index", actions: candidates.map(({ action, index }) => ({ index, title: action.title, preferred: !!action.isPreferred })) });
         for (const { action, index } of selected) {
-            const edits = normalizedEdits(action.edit);
+            const edits = normalizedEdits(normalizeCodeAction(action, current.uri, current.text).edit);
             for (const [uri, items] of edits) {
                 const path = uriFile(uri);
                 await context(path);
@@ -217,29 +297,15 @@ export async function fixPlan(args, acquire) {
         const needsSelection = skipped.some(item => item.needsSelection === true);
         return { code: needsSelection ? 1 : 0, data: { success: !needsSelection, applied: false, saved: false, complete: skipped.length === 0, actions: [], skipped, files: [], total: 0, hint: "No persistent text fixes selected. Review skipped actions with code-actions; no plan was written." }, human: "No persistent text fixes selected; no plan was written. Review skipped actions with code-actions." };
     }
-    if (files.some(file => file.file === destination))
-        throw new Error("Fix plan cannot overwrite analyzed source");
     const baseline = captureBaseline([...records.values()], root, [...fingerprints], originals);
     const plan = { schema: 1, id: randomUUID(), root, createdAt: new Date().toISOString(), kind, baseline, files, actions, skipped };
-    const bytes = Buffer.from(JSON.stringify(plan, null, 2) + "\n");
-    if (bytes.length > MAX_FILE_BYTES)
-        throw new Error("Fix plan exceeds 16 MiB; narrow the source scope");
-    const receiptPath = join(privateStore(), plan.id + ".json"), receipt = { digest: hash(bytes), root, path: destination, state: "planned" };
-    writeFileSync(receiptPath, JSON.stringify(receipt), { flag: "wx", mode: 0o600 });
-    try {
-        writeFileSync(destination, bytes, { flag: "wx", mode: 0o600 });
-    }
-    catch (error) {
-        rmSync(receiptPath, { force: true });
-        throw error;
-    }
-    const edited = files.filter(file => file.original !== file.updated), shown = args.limit ? edited.slice(0, args.limit) : edited;
-    return { data: { success: true, applied: false, saved: true, plan: destination, id: plan.id, complete: skipped.length === 0, actions, skipped, total: edited.length, shown: shown.length, truncated: shown.length < edited.length, files: shown.map(({ file, edits, diff }) => ({ file, editCount: edits.length, diff })), hint: "Review the plan diff, then run codex-lsp apply --plan PATH. Source hashes and diagnostics baseline are checked before applying." }, human: [`Fix plan saved: ${destination}`, ...shown.map(file => file.diff), "Review, then run codex-lsp apply --plan PATH."].join("\n") };
+    return persistPlan(args, plan, destination);
 }
-export async function applyPlan(args, verify) {
+export async function applyPlan(args, verify, preflight) {
     if (!args.plan || args.file || args.changed || args.apply)
         throw new Error("Use apply --plan PATH.json; review the saved fix plan first");
-    const path = resolve(args.cwd, args.plan), bytes = ownedFile(path), value = object(JSON.parse(bytes.toString("utf8")));
+    const requested = resolve(args.cwd, args.plan), path = join(realpathSync(dirname(requested)), basename(requested));
+    const bytes = ownedFile(path), value = object(JSON.parse(bytes.toString("utf8")));
     if (value.schema !== 1 || typeof value.id !== "string" || !/^[0-9a-f-]{36}$/.test(value.id) || typeof value.root !== "string" || !Array.isArray(value.files) || value.files.length < 1 || value.files.length > MAX_FILES)
         throw new Error("Invalid fix plan; create a new plan with fix");
     const plan = value, root = realpathSync(gitRoot(args.cwd)), store = privateStore(), receiptPath = join(store, plan.id + ".json");
@@ -250,6 +316,9 @@ export async function applyPlan(args, verify) {
         throw new Error("Fix plan was modified, moved or belongs to another workspace; generate a fresh plan");
     if (receipt.state !== "planned")
         throw new Error(`Fix plan is ${receipt.state}; inspect the files and generate a fresh plan before retrying`);
+    if (!plan.baseline && (!plan.verification || typeof plan.verification !== "object" || Array.isArray(plan.verification)))
+        throw new Error("Edit plan has no verification provider; generate a fresh plan");
+    checkGuards(plan.guards);
     const documents = new Map(), changes = {}, seen = new Set();
     for (const file of plan.files) {
         if (typeof file.file !== "string" || seen.has(file.file) || typeof file.original !== "string" || typeof file.updated !== "string" || !Array.isArray(file.edits) || !Number.isSafeInteger(file.version) || file.version < 1 || hash(file.original) !== file.sha256)
@@ -276,12 +345,17 @@ export async function applyPlan(args, verify) {
             throw new Error("Fix plan is already being applied; inspect it before retrying");
         throw error;
     }
-    const baselinePath = join(store, plan.id + ".baseline.json");
+    const baselinePath = plan.baseline ? join(store, plan.id + ".baseline.json") : undefined;
     let applied = false;
     try {
         if (JSON.parse(ownedFile(receiptPath).toString("utf8")).state !== "planned")
             throw new Error("Fix plan state changed; generate a fresh plan");
-        writeFileSync(baselinePath, JSON.stringify(plan.baseline), { flag: "wx", mode: 0o600 });
+        checkGuards(plan.guards);
+        if (preflight)
+            await preflight(plan.files.map(file => file.file), plan.verification, plan.baseline);
+        checkGuards(plan.guards);
+        if (baselinePath)
+            writeFileSync(baselinePath, JSON.stringify(plan.baseline), { flag: "wx", mode: 0o600 });
         receipt.state = "applying";
         atomicWrite(receiptPath, Buffer.from(JSON.stringify(receipt)));
         const updated = await applyWorkspaceEdit({ changes }, root, documents);
@@ -290,10 +364,14 @@ export async function applyPlan(args, verify) {
         atomicWrite(receiptPath, Buffer.from(JSON.stringify(receipt)));
         let result;
         try {
-            result = await verify(plan.files.map(file => file.file), baselinePath);
+            result = await verify(plan.files.map(file => file.file), baselinePath, plan.verification);
         }
         catch (error) {
-            return { code: 1, data: { success: false, applied, applicationState: "applied", plan: path, verification: "pending", diagnosticVerification: "failed", error: String(error), files: [...updated.keys()].map(uriFile), hint: "Edits were applied. Inspect files and retry diagnostics; project build/tests are still pending." }, human: `Edits applied; diagnostics failed: ${error}. Inspect files before retrying.` };
+            return { code: 1, data: { success: false, applied, applicationState: "applied", plan: path, verification: "pending", [plan.baseline ? "diagnosticVerification" : "toolVerification"]: "failed", error: String(error), files: [...updated.keys()].map(uriFile), hint: "Edits were applied. Inspect files and retry verification; project build/tests are still pending." }, human: `Edits applied; verification failed: ${error}. Inspect files before retrying.` };
+        }
+        if (!plan.baseline) {
+            const verified = result.data.verified === true, success = verified && result.data.hasErrors === false && (result.code ?? 0) === 0;
+            return { code: success ? 0 : 1, data: { success, applied, applicationState: "applied", plan: path, verification: "pending", toolVerification: verified ? "verified" : "unverified", ...(result.data.comparison !== undefined ? { comparison: result.data.comparison } : {}), toolResults: result.data, files: [...updated.keys()].map(uriFile), hint: "Edits applied. Review tool verification and run relevant project build/tests; the plan is single-use." }, human: `Applied ${updated.size} file(s). Tool verification: ${verified ? success ? "passed" : "failed" : "unverified"}. Project build/tests pending.` };
         }
         const comparison = object(result.data.comparison), verified = result.data.verified === true && comparison.verified === true;
         const success = verified && comparison.newErrors === 0;
@@ -322,6 +400,7 @@ export async function applyPlan(args, verify) {
     finally {
         closeSync(descriptor);
         rmSync(lock, { force: true });
-        rmSync(baselinePath, { force: true });
+        if (baselinePath)
+            rmSync(baselinePath, { force: true });
     }
 }

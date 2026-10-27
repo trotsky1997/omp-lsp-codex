@@ -16,12 +16,13 @@ import { attachTargets, resolveTarget } from "./targets.js";
 import { apiDiff, dependencies } from "./analysis.js";
 import { applyPlan, fixPlan } from "./fixes.js";
 import { inspectContext } from "./context.js";
-import { callHierarchy, complete } from "./semantic.js";
+import { callHierarchy, complete, normalizeCodeAction, requestedActionKinds } from "./semantic.js";
 import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.js";
 import { impactAnalysis } from "./impact.js";
 import { typeHierarchy, inlayHints, unsupportedFeature } from "./type-hints.js";
 import { firstPage, nextPage } from "./pagination.js";
 import { budgetData } from "./budget.js";
+import { runTooling, validateToolPlan, verifyToolPlan } from "./tooling.js";
 export function outputData(data, args) {
     const selected = args.fields ? selectFields(data, args.fields) : data;
     return args.budget === undefined ? selected : budgetData(selected, args.budget);
@@ -106,6 +107,7 @@ const READ_ONLY = new Set([
     "textDocument/completion", "completionItem/resolve",
     "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes", "typeHierarchy/subtypes",
     "textDocument/inlayHint", "inlayHint/resolve", "codeAction/resolve",
+    "textDocument/formatting", "textDocument/rangeFormatting",
 ]);
 const NAVIGATION = {
     definition: "textDocument/definition",
@@ -116,7 +118,7 @@ const NAVIGATION = {
     implementation: "textDocument/implementation",
 };
 const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp", "textDocument/prepareCallHierarchy", "textDocument/prepareTypeHierarchy", "textDocument/completion"]);
-async function sessionClient(server, args, session) {
+export async function sessionClient(server, args, session) {
     const key = JSON.stringify([server, args.timeout]);
     let client = session?.clients.get(key);
     if (client && !client.reusable) {
@@ -145,13 +147,27 @@ function compilerDiagnostics(server) {
         },
     } : server;
 }
+function validateFixProviders(baseline, args) {
+    if (!Array.isArray(baseline.servers) || !baseline.servers.length || !Array.isArray(baseline.files))
+        throw new Error("Invalid fix-plan provider baseline");
+    const expected = new Set(baseline.servers), found = new Set();
+    for (const { file } of baseline.files) {
+        const matches = fileServers(availableServers(loadConfig(dirname(file), args.globalConfigOnly), dirname(file), args.globalBinsOnly), file)
+            .map(server => serverFingerprint(compilerDiagnostics(server))).filter(value => expected.has(value));
+        if (!matches.length)
+            throw new Error(`Fix provider configuration changed for ${file}; generate a fresh plan using the same configuration flags`);
+        matches.forEach(value => found.add(value));
+    }
+    if ([...expected].some(value => !found.has(value)))
+        throw new Error("Fix provider configuration changed; generate a fresh plan");
+}
 async function fileContext(args, semantic = true, session) {
     if (!args.file)
         throw new Error("--file is required");
     const path = resolveFile(args.file, args.cwd);
-    let server = fileServers(availableServers(loadConfig(dirname(path), args.globalConfigOnly), dirname(path), args.globalBinsOnly), path)[0];
+    let server = fileServers(availableServers(loadConfig(dirname(path), args.globalConfigOnly), dirname(path), args.globalBinsOnly), path).find(server => !args.server || server.name === args.server);
     if (!server)
-        throw new Error(`No available language server matches ${path}; run codex-lsp setup <language> --project from the project root`);
+        throw new Error(`No available language server${args.server ? ` named ${args.server}` : ""} matches ${path}; run codex-lsp setup <language> --project from the project root`);
     if (args.command === "inspect" || session?.diagnostics)
         server = compilerDiagnostics(server);
     const client = await sessionClient(server, args, session);
@@ -498,7 +514,7 @@ async function codeActions(args, session) {
         const actions = (await client.request("textDocument/codeAction", {
             textDocument: { uri },
             range: actionRange,
-            context: { diagnostics, triggerKind: 1, ...(args.kind ? { only: [args.kind] } : {}) },
+            context: { diagnostics, triggerKind: 1, ...(args.kind ? { only: requestedActionKinds(client, args.kind) } : {}) },
         })) ?? [];
         const invalidAction = (item) => {
             const row = object(item);
@@ -516,6 +532,8 @@ async function codeActions(args, session) {
             if (invalidAction(chosen))
                 throw new Error(`Invalid resolved code action from ${server.name}`);
         }
+        if (chosen && "kind" in chosen)
+            chosen = normalizeCodeAction(chosen, uri, text);
         if (!args.apply) {
             const items = matches
                 .map(({ action, index }) => {
@@ -793,7 +811,7 @@ export async function changedFiles(cwd) {
         throw new Error(`Changed files exceed the ${MAX_FILES} file limit; use --file to check individual files`);
     return [...found].sort();
 }
-export async function diagnostics(args, shared, session) {
+export async function diagnostics(args, shared, session, providers) {
     const before = args.baseline ? loadBaseline(resolve(args.cwd, expandHome(args.baseline))) : undefined;
     if (args.file && args.changed || !args.file && !args.changed && !before)
         throw new Error("Choose exactly one of --file or --changed, or provide --baseline");
@@ -814,7 +832,7 @@ export async function diagnostics(args, shared, session) {
             configurationChecks.push({ file: path, status: scopedConfigurationPaths.includes(path) ? "validated" : "ignored" });
             continue;
         }
-        const servers = fileServers(availableServers(configs, dirname(path), args.globalBinsOnly), path);
+        const servers = fileServers(availableServers(configs, dirname(path), args.globalBinsOnly), path).filter(server => (!args.server || server.name === args.server) && (!providers || providers.has(serverFingerprint(compilerDiagnostics(server)))));
         records.set(path, {
             file: path, diagnostics: [], verified: !!servers.length,
             errors: servers.length ? [] : ["No available language server matches this file. Run codex-lsp status --file <path>, then codex-lsp setup <language> for installation and configuration guidance; use diagnostics --file <source-file> to check an individual supported file."],
@@ -1188,7 +1206,7 @@ async function request(args) {
             }
         }
         else {
-            const servers = availableServers(loadConfig(args.cwd, args.globalConfigOnly), args.cwd, args.globalBinsOnly);
+            const servers = availableServers(loadConfig(args.cwd, args.globalConfigOnly), args.cwd, args.globalBinsOnly).filter(server => !args.server || server.name === args.server);
             server = servers.find((x) => !x.isLinter) ?? servers[0];
             if (!server)
                 throw new Error("No available language server for this workspace");
@@ -1235,7 +1253,7 @@ export async function run(args, session) {
 }
 async function runQuery(args, session) {
     const navigation = Object.hasOwn(NAVIGATION, args.command);
-    if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix"].includes(args.command)))
+    if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix", "lint", "format"].includes(args.command)))
         throw new Error(`${args.command} is read-only; omit --apply`);
     if (args.command === "inlay-hints" && !args.range)
         throw new Error("inlay-hints requires --range START_LINE:COL-END_LINE:COL");
@@ -1257,11 +1275,16 @@ async function runQuery(args, session) {
     if (navigation)
         return navigate(args, undefined, session);
     switch (args.command) {
+        case "lint":
+        case "format":
+            return runTooling(args, session);
         case "api-diff":
             return apiDiff(args);
         case "dependencies":
             return dependencies(args);
         case "fix": {
+            if (args.tool)
+                return runTooling({ ...args, command: "lint" });
             const pool = { clients: new Map(), diagnostics: true };
             try {
                 return await fixPlan(args, file => fileContext({ ...args, file }, true, pool));
@@ -1271,7 +1294,14 @@ async function runQuery(args, session) {
             }
         }
         case "apply":
-            return applyPlan(args, (_files, baseline) => diagnostics({ ...args, command: "diagnostics", file: undefined, changed: false, apply: false, baseline, saveBaseline: undefined, limit: 0 }));
+            return applyPlan(args, (files, baseline, verification) => verification
+                ? verifyToolPlan(files, verification, args)
+                : diagnostics({ ...args, command: "diagnostics", file: undefined, changed: false, apply: false, baseline, saveBaseline: undefined, limit: 0 }, undefined, undefined, new Set(loadBaseline(baseline).servers)), async (files, verification, baseline) => {
+                if (verification)
+                    await validateToolPlan(files, verification, args);
+                else if (baseline)
+                    validateFixProviders(baseline, args);
+            });
         case "next": {
             if (!args.cursor || args.file || args.changed || args.symbol || args.query || args.column || args.line !== 1 || args.workspace)
                 throw new Error("Use next --cursor ID from a references page, in the same workspace");
@@ -1339,7 +1369,7 @@ async function runQuery(args, session) {
             return request(args);
         case "capabilities": {
             const path = args.file ? resolveFile(args.file, args.cwd) : undefined, cwd = path ? dirname(path) : args.cwd;
-            const all = availableServers(loadConfig(cwd, args.globalConfigOnly), cwd, args.globalBinsOnly), servers = path ? fileServers(all, path) : all;
+            const all = availableServers(loadConfig(cwd, args.globalConfigOnly), cwd, args.globalBinsOnly), servers = (path ? fileServers(all, path) : all).filter(server => !args.server || server.name === args.server);
             if (!servers.length)
                 throw new Error("No available language server");
             const results = [];

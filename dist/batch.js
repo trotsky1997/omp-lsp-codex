@@ -3,8 +3,8 @@ import { resolve } from "node:path";
 import { expandHome, MAX_FILES, MAX_FILE_BYTES } from "./config.js";
 import { parseFields } from "./output.js";
 import { parseRange } from "./range.js";
-const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect", "callers", "callees", "complete", "supertypes", "subtypes", "inlay-hints", "code-actions", "next", "dependencies", "api-diff"]);
-const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context", "depth", "resolve", "baseline", "range", "kind", "pageSize", "cursor", "budget", "target", "targets", "base", "reverse"]);
+const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect", "callers", "callees", "complete", "supertypes", "subtypes", "inlay-hints", "code-actions", "next", "dependencies", "api-diff", "lint", "format"]);
+const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context", "depth", "resolve", "baseline", "range", "kind", "pageSize", "cursor", "budget", "target", "targets", "base", "reverse", "tool", "server", "check"]);
 export async function batchQueries(args) {
     if (!args.input)
         throw new Error('batch requires --input PATH or --input - (JSONL); e.g. {"command":"hover","file":"src/main.ts","line":10}');
@@ -49,15 +49,23 @@ export function queryOptions(args, value, session = false) {
         throw new Error(`Unsupported read-only command; choose ${[...COMMANDS].join(", ")}${session ? ", close" : ""}`);
     if (!["next", "api-diff"].includes(row.command) && row.target === undefined && (typeof row.file !== "string" || !row.file.trim()))
         throw new Error("Each query requires file or target");
-    for (const field of ["cwd", "symbol", "query", "fields", "baseline", "range", "kind", "cursor", "target", "base"])
+    for (const field of ["cwd", "symbol", "query", "fields", "baseline", "range", "kind", "cursor", "target", "base", "tool", "server"])
         if (row[field] !== undefined && (typeof row[field] !== "string" || !row[field].trim()))
             throw new Error(`${field} must be a nonempty string`);
     for (const field of ["line", "column", "limit"])
         if (row[field] !== undefined && (typeof row[field] !== "number" || !Number.isSafeInteger(row[field]) || row[field] < (field === "limit" ? 0 : 1)))
             throw new Error(`${field} must be ${field === "limit" ? "a nonnegative" : "a positive"} integer`);
-    for (const field of ["workspace", "context", "resolve", "targets", "reverse"])
+    for (const field of ["workspace", "context", "resolve", "targets", "reverse", "check"])
         if (row[field] !== undefined && typeof row[field] !== "boolean")
             throw new Error(`${field} must be boolean`);
+    if (row.tool !== undefined && !["lint", "format"].includes(row.command))
+        throw new Error("tool is only available for lint/format");
+    if (row.server !== undefined && !["lint", "format", "diagnostics", "code-actions"].includes(row.command))
+        throw new Error("server is only available for lint/format/diagnostics/code-actions");
+    if (row.tool !== undefined && row.server !== undefined)
+        throw new Error("Choose tool or server");
+    if (row.check !== undefined && row.command !== "format")
+        throw new Error("check is only available for format");
     if (row.depth !== undefined && (!Number.isSafeInteger(row.depth) || Number(row.depth) < 1 || Number(row.depth) > 10 || !["callers", "callees", "supertypes", "subtypes", "dependencies"].includes(row.command)))
         throw new Error("depth must be 1-10 and applies to callers/callees/supertypes/subtypes/dependencies");
     if (row.resolve && !["complete", "inlay-hints"].includes(row.command))
@@ -69,8 +77,8 @@ export function queryOptions(args, value, session = false) {
     if (row.workspace && row.command !== "symbols")
         throw new Error("workspace is only available for symbols");
     const range = typeof row.range === "string" ? parseRange(row.range) : undefined;
-    if (range && (!["code-actions", "inlay-hints"].includes(row.command) || row.line !== undefined || row.column !== undefined || row.symbol !== undefined))
-        throw new Error("range is for code-actions/inlay-hints; choose range or line/column/symbol");
+    if (range && (!["code-actions", "inlay-hints", "format"].includes(row.command) || row.line !== undefined || row.column !== undefined || row.symbol !== undefined))
+        throw new Error("range is for code-actions/inlay-hints/format; choose range or line/column/symbol");
     if (row.kind !== undefined && (row.command !== "code-actions" || !/^[\w-]+(?:\.[\w-]+)*$/.test(String(row.kind))))
         throw new Error("kind requires code-actions and an action kind such as refactor.extract");
     if (row.pageSize !== undefined && (row.command !== "references" || !Number.isSafeInteger(row.pageSize) || Number(row.pageSize) < 1 || Number(row.pageSize) > 1000 || row.limit !== undefined))
@@ -83,7 +91,7 @@ export function queryOptions(args, value, session = false) {
         throw new Error("reverse is only available for dependencies");
     if (row.target !== undefined && (row.file !== undefined || row.line !== undefined || row.column !== undefined || row.symbol !== undefined || row.range !== undefined))
         throw new Error("Choose target or file/line/column/symbol/range");
-    if (row.target !== undefined && ["next", "api-diff", "dependencies", "diagnostics", "symbols"].includes(row.command))
+    if (row.target !== undefined && ["next", "api-diff", "dependencies", "diagnostics", "symbols", "lint", "format"].includes(row.command))
         throw new Error("target requires a position-based query");
     if (row.cursor !== undefined && row.command !== "next")
         throw new Error("cursor is only available for next");
@@ -109,5 +117,6 @@ export function queryOptions(args, value, session = false) {
         range, kind: row.kind, pageSize: row.pageSize,
         cursor: row.cursor, budget: row.budget ?? (session ? args.budget : undefined),
         target: row.target, targets: row.targets ?? (session ? args.targets : false),
-        base: row.base, reverse: !!row.reverse, };
+        base: row.base, reverse: !!row.reverse,
+        tool: row.tool, server: row.server, check: !!row.check, plan: undefined, };
 }

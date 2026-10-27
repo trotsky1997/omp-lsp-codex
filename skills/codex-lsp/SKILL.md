@@ -23,6 +23,10 @@ codex-lsp symbols --file PATH --query NAME --targets --fields targets
 codex-lsp inspect --target ID --context --budget 3000
 codex-lsp diagnostics --file PATH --watch --jsonl
 codex-lsp fix --changed --plan /tmp/codex-lsp-fixes.json
+codex-lsp lint --changed --budget 3000
+codex-lsp lint --changed --plan /tmp/codex-lsp-lint.json --budget 3000
+codex-lsp format --changed --check --budget 2000
+codex-lsp format --changed --plan /tmp/codex-lsp-format.json --budget 3000
 codex-lsp apply --plan /tmp/codex-lsp-fixes.json
 codex-lsp api-diff --base HEAD --file PATH
 codex-lsp dependencies --file PATH --reverse --depth 2
@@ -51,6 +55,8 @@ Use call hierarchy to follow callers/callees, completion to discover members at 
 ## Setup and edits
 
 `status --file PATH` discovers servers; `doctor --file PATH` checks readiness. `setup LANGUAGE...` registers available servers and emits missing-server installation commands with official documentation. Read [setup](references/setup.md) for installation or configuration failures.
+
+Use `lint` for project linter diagnostics and `format` for a read-only diff. Project configuration selects the backend; choose `--tool ruff|eslint|biome|prettier|rustfmt|clippy` for a CLI or `--server NAME` for an LSP. A file uses one formatter. `format --check` exits 1 when changes are needed; check `verified` and `errors` to distinguish tool failure. Use `--fields checked` for each file's `providers`, `--fields diagnostics` for lint issues, or `--fields files` for diffs; `changedFiles`, `needsFormatting` and `diagnosticCount` give compact counts/state. Save requested lint fixes/formatting with `--plan PATH.json`, review its diff, then `apply --plan PATH.json`. Source/configuration/provider changes require a fresh plan. Read [lint and formatting](references/tooling.md) for tool installation, ignore rules, supported repairs and post-apply verification.
 
 Rename, file moves and code actions preview by default. Add `--apply` for a requested change after checking the target files and replacements. Applied output reports `verification: pending`: run relevant project checks and confirm they execute. Existing diagnostics alone cannot verify runtime behavior. If an error says edits were applied, inspect files before retrying.
 

@@ -37,7 +37,10 @@ async function collect(w: Workspace, options = args(w)) {
     });
   } finally { await Promise.all([...clients.values()].map(client => client.close())); }
 }
-const verify = (w: Workspace) => async (_files: string[], baseline: string) => diagnostics({ ...parseOptions(["diagnostics", "--baseline", baseline], w.root), timeout: 2000, limit: 0 });
+const verify = (w: Workspace) => async (_files: string[], baseline?: string) => {
+  assert.ok(baseline);
+  return diagnostics({ ...parseOptions(["diagnostics", "--baseline", baseline], w.root), timeout: 2000, limit: 0 });
+};
 function configure(w: Workspace, actions: unknown[]) { w.setScenario({ capabilities, responses: { "textDocument/codeAction": actions } }); }
 function plan(w: Workspace) { return JSON.parse(readFileSync(join(w.root, "fixes.json"), "utf8")); }
 

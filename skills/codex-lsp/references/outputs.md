@@ -11,6 +11,9 @@ Prefer human text for reading; JSON is useful for checking states and composing 
 | inlay-hints | `hints,resolution` |
 | complete | `items,resolution` |
 | diagnostics --baseline | `comparison.counts,comparison.new` |
+| lint | `checked` (per-file `providers`), `diagnostics`, `diagnosticCount` |
+| format --check | `checked`, `changedFiles,needsFormatting,ignoredFiles` |
+| lint/format --plan or format preview | `files` (each `file,editCount,diff`), `saved,plan` |
 | impact | `counts,changedSymbols,candidateTests` |
 | snippet | `snippet,range` |
 | signature-help | `signatures,activeParameterLabel` |
@@ -38,6 +41,8 @@ Snippet output includes `provider: "ast-grep"`, absolute `file`, one-based UTF-1
 When hover uses an external DevDocs reference, `provider` identifies it. Check that attribution before treating external documentation as a project signature.
 
 ## Batch and source context
+
+Lint/format rows also accept `tool` or `server`, with `check` and `range` available for formatting. Plans and applying edits use the ordinary CLI. The full command's `checked` array holds per-file `providers` (`kind`, `name`, optional CLI `command`, `verified` and `ignored`). Choose a backend with `--tool` or `--server`; read its name through `checked`. Lint/format preserve `verified`, `hasErrors`, `errors`, `needsFormatting`, `saved`, `plan` and actual application state through field selection. Ignore/skip counts are `ignoredFiles` and `skippedCount`.
 
 `batch --input PATH|-` reads JSONL and emits one result object. Each row requires `command` and `file`, with file omitted for `next` continuations. Optional fields are `cwd`, `line`, `column`, `symbol`, `query`, `limit`, `fields`, `workspace`, `context`, `depth`, `resolve`, `baseline`, `range`, `kind`, `pageSize`, `cursor` and `budget`. `workspace` applies to symbols; `context` and `budget` apply to inspect. Commands include callers/callees, supertypes/subtypes, complete, inlay-hints and code-actions previews. Range is a `START:COL-END:COL` string. Baseline capture and workspace-wide impact run outside batch. Coordinates are one-based UTF-16. `cwd` is relative to the batch invocation directory, and query files are relative to their selected cwd. The input schema is validated before servers start; edits, raw requests, unknown fields and nested batches are rejected. [Sessions, pages and budgets](sessions.md) describe interactive rows and snapshot continuation.
 

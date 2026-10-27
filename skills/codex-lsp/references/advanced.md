@@ -24,6 +24,8 @@ Payload positions use zero-based UTF-16 coordinates. For document requests, `--f
 
 Raw requests propagate rejected edit callbacks even if the server returns command success. Synchronization errors identify completed writes; inspect before retrying.
 
+Raw `textDocument/formatting` and `textDocument/rangeFormatting` are read-only requests returning `TextEdit[]`. Use dedicated `format --plan PATH.json` then `apply --plan PATH.json` to review and apply formatting through the guarded plan workflow. Select a specific provider with `--server NAME`.
+
 ## Configuration
 
 The CLI merges built-ins, `~/.codex/lsp.json`, then `<git-root>/.codex/lsp.json`. Outside Git it uses the nearest parent configuration; project setup adds it as a root marker. Server fields include `command`, `args`, `fileTypes`, `rootMarkers`, optional `languageId`, `initOptions` and `settings`.
