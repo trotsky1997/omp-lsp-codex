@@ -10,6 +10,7 @@ import { findReference, symbolAt } from "./devdocs.js";
 import { resolveSymbolColumn } from "./omp/symbol-column.js";
 import { version } from "./version.js";
 import { compactText, failure, textPrefix } from "./output.js";
+import { syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.js";
 function outputInfo(total, limit) {
     const shown = limit ? Math.min(total, limit) : total, truncated = shown < total;
     return { total, shown, truncated, ...(truncated ? { hint: `Showing ${shown} of ${total}. Use --limit 0 for the complete result; redirect --json output to a file for large results.` } : {}) };
@@ -126,19 +127,44 @@ export async function position(path, text, args) {
     const lines = text.split("\n");
     if (!Number.isInteger(args.line) || args.line < 1 || args.line > lines.length)
         throw new Error(`Line ${args.line} is outside this file`);
-    const character = args.symbol
+    const syntax = args.column === undefined || args.symbol
+        ? await syntaxPosition(path, text, args.line, args.symbol, args.command === "signature-help" && args.column === undefined, args.globalBinsOnly)
+        : undefined;
+    const character = syntax?.character ?? (args.symbol
         ? await resolveSymbolColumn(path, args.line, args.symbol)
         : args.column === undefined
             ? lines[args.line - 1].search(/\S/) < 0
                 ? 0
                 : lines[args.line - 1].search(/\S/)
-            : args.column - 1;
-    if (!Number.isInteger(character) || character < 0 || character > lines[args.line - 1].length)
+            : args.column - 1);
+    const targetLine = syntax?.line ?? args.line - 1;
+    if (!Number.isInteger(character) || character < 0 || character > lines[targetLine].length)
         throw new Error("Column is outside this line");
-    const unit = lines[args.line - 1].charCodeAt(character);
+    const unit = lines[targetLine].charCodeAt(character);
     if (unit >= 0xdc00 && unit <= 0xdfff)
         throw new Error("Column splits a UTF-16 surrogate pair");
-    return { line: args.line - 1, character };
+    return syntax ?? { line: args.line - 1, character };
+}
+async function snippet(args) {
+    if (args.apply)
+        throw new Error("snippet is read-only; omit --apply");
+    if (!args.file)
+        throw new Error("--file is required");
+    const path = resolveFile(args.file, args.cwd), text = readText(path);
+    const pos = await position(path, text, { line: args.line, column: args.column });
+    const selected = await syntaxSnippet(path, text, args.line, pos.character + 1, args.symbol, args.globalBinsOnly);
+    const lines = selected.text.split("\n"), summary = outputInfo(lines.length, args.limit);
+    const preview = lines.slice(0, summary.shown).join("\n"), code = args.limit ? textPrefix(preview, 6000) : preview;
+    summary.truncated ||= code.length < preview.length;
+    summary.shown = code.split("\n").length;
+    const range = { start: { line: selected.start.line + 1, column: selected.start.character + 1 },
+        end: { line: selected.end.line + 1, column: selected.end.character + 1 } };
+    const hint = summary.truncated ? "Snippet clipped; use --limit 0 for the complete declaration." : undefined;
+    return { data: { success: true, found: true, provider: "ast-grep", file: path, range, snippet: code, ...summary,
+            characters: { total: selected.text.length, shown: code.length }, ...(hint ? { hint } : {}) },
+        human: [`${path}:${range.start.line}:${range.start.column}`,
+            hint ? `Preview: ${summary.shown}/${summary.total} lines, ${code.length}/${selected.text.length} characters. ${hint}` : undefined,
+            code].filter(Boolean).join("\n") };
 }
 export function location(value) {
     const entry = object(value), uri = entry.uri ?? entry.targetUri;
@@ -518,6 +544,7 @@ export function status(args) {
 }
 async function doctor(args) {
     const path = args.file ? resolveFile(args.file, args.cwd) : undefined, cwd = path ? dirname(path) : args.cwd;
+    const syntax = syntaxTool(cwd, args.globalBinsOnly);
     let configs = loadConfig(cwd, args.globalConfigOnly);
     if (path)
         configs = Object.fromEntries(Object.entries(configs).filter(([, config]) => matchesFile(config, path)));
@@ -577,6 +604,7 @@ async function doctor(args) {
         data: {
             success,
             runtime: { version, node: process.versions.node, executable: process.execPath },
+            syntax,
             configFiles: configPaths(cwd, args.globalConfigOnly).filter(existsSync),
             servers,
             issues,
@@ -584,6 +612,7 @@ async function doctor(args) {
         code: success ? 0 : 1,
         human: [
             `codex-lsp doctor (${version}, Node ${process.versions.node})`,
+            `Optional ast-grep: ${syntax.command ?? syntax.hint}`,
             ...servers.map((row) => `${row.status === "ok" ? "OK" : "ERROR"} ${row.name}: ${row.error ?? row.message ?? row.command} (root: ${row.root})${row.pythonPath ? `\n  Analysis Python: ${row.pythonPath}` : ""}${row.hint ? `\n  ${row.hint}` : ""}`),
             ...issues.filter((x) => x.severity === "warning").map((x) => `WARNING: ${x.message}`),
             success ? "Doctor result: OK" : "Doctor result: needs attention",
@@ -1061,6 +1090,8 @@ export async function run(args) {
     if (navigation)
         return navigate(args);
     switch (args.command) {
+        case "snippet":
+            return snippet(args);
         case "inspect":
             return inspect(args);
         case "status":

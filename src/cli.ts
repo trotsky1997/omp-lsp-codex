@@ -21,7 +21,9 @@ Commands:
   definition             --file PATH --line N [--symbol NAME | --column N]
   references             --file PATH --line N [--symbol NAME | --column N]
   hover                  --file PATH --line N [--symbol NAME | --column N]
-  signature-help         --file PATH --line N --column N
+  signature-help         --file PATH --line N [--symbol NAME | --column N]
+  snippet                --file PATH --line N [--symbol NAME | --column N]
+                         Extract the enclosing declaration through ast-grep, without LSP
   type-definition        Find symbol types
   implementation         Find implementations
   symbols                --file PATH [--query NAME], or --workspace --query NAME [--file PATH]
@@ -37,6 +39,8 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --fields A,B          Select JSON object paths (implies --json), e.g. total,results.diagnostics.counts
                         Keeps status/error/truncation metadata; arrays are selected whole
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
+ast-grep improves --symbol and selects call arguments for signature-help --symbol.
+Install it with npm install --global @ast-grep/cli. Explicit --column stays exact.
 --project is a flag without a path; run setup from the intended project directory.
 Rename and code-actions preview by default. Add --apply to write changes.
 code-actions --query INDEX previews edit scope and flags server commands before execution.

@@ -1,6 +1,6 @@
 {
   "name": "codex-lsp",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Standalone TypeScript LSP CLI, skills and hooks for coding agents",
   "license": "MIT",
   "repository": "https://github.com/trotsky1997/omp-lsp-codex",

@@ -14,11 +14,14 @@ codex-lsp symbols --file PATH --query NAME
 codex-lsp definition --file PATH --line N --symbol NAME
 codex-lsp hover --file PATH --line N --symbol NAME
 codex-lsp references --file PATH --line N --symbol NAME
-codex-lsp signature-help --file PATH --line N --column N
+codex-lsp signature-help --file PATH --line N --symbol NAME
+codex-lsp snippet --file PATH --line N --symbol NAME
 codex-lsp inspect --file PATH --line N --symbol NAME
 ```
 
 Use symbols or source search to find a current anchor. File errors suggest discovery; wrong-line errors suggest nearby matches. Positions are one-based UTF-16 columns; `NAME#2` selects a repeated token. Quote paths and pass arguments separately. Run from the project directory, or choose another with `--cwd PROJECT`.
+
+Install `npm install --global @ast-grep/cli` for syntax anchors, automatic signature cursors and snippets. With it, `--symbol` excludes comments/string contents. For signature-help, select the callable on a call-site line; the CLI finds its argument cursor, including nested/generic calls. An explicit `--column` inside arguments selects a later parameter. `snippet` returns the smallest enclosing declaration without LSP; use it to read a body before fetching semantic details. Missing ast-grep keeps textual navigation and gives installation guidance for automatic signatures/snippets.
 
 Use one focused command for one question. `inspect` shares a server session across hover, definition, references, matching symbols and diagnostics when all are useful. Use `symbols --workspace --file PATH --query NAME` for cross-file discovery in the selected language.
 

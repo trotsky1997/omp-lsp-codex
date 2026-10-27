@@ -6,6 +6,7 @@ Prefer human text for reading; JSON is useful for checking states and composing 
 | --- | --- |
 | definition/references/type-definition/implementation | `locations` |
 | hover | `hover` |
+| snippet | `snippet,range` |
 | signature-help | `signatures,activeParameterLabel` |
 | symbols | `symbols` |
 | inspect | `results.definition.locations,results.references.locations,results.diagnostics.counts` |
@@ -20,6 +21,8 @@ Status, provider, error, write and truncation metadata remain visible at the roo
 
 Defaults show 50 results/hover lines, 10 per inspect section and one signature. Text budgets are 6,000 characters for common previews. Check truncated/textTruncated/documentationOmitted/detailsOmitted/errorTruncated/workspaceEditOmitted and hints. Diagnostic previews prioritize errors; counts and verification cover all diagnostics. Limits affect display; applications process complete validated edits. Use `--limit 0 --json > result.json` for omitted details. Raw request results remain complete unless fields are selected.
 
-Signature-help prioritizes the active overload and parameter, omitting bulk documentation. Put the cursor just after the intended call's `(` or an argument-separating comma. Some servers return no help inside string literals. If empty, hover on the callable. JSON signature indices are zero-based; CLI positions are one-based UTF-16 columns. Use complete output for all overloads/documentation. Server type aliases can remain abbreviated.
+Signature-help prioritizes the active overload and parameter, omitting bulk documentation. Prefer `--symbol NAME` at the call site: ast-grep positions the cursor just after that call's `(`. Use an explicit `--column` after a later argument-separating comma to select that parameter. Some servers return no help inside string literals. If empty, hover on the callable. JSON signature indices are zero-based; CLI positions are one-based UTF-16 columns. Use complete output for all overloads/documentation. Server type aliases can remain abbreviated.
+
+Snippet output includes `provider: "ast-grep"`, absolute `file`, one-based UTF-16 `range` with exclusive end, `snippet`, line totals and character counts. Truncation describes only the returned preview; `--limit 0` retrieves the complete enclosing source declaration. It does not start LSP or expand macros.
 
 When hover uses an external DevDocs reference, `provider` identifies it. Check that attribution before treating external documentation as a project signature.

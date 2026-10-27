@@ -13,6 +13,8 @@ Editable installation can connect the checked-out package to runtime imports. Fo
 
 ## Static types and runtime
 
+Use `snippet --file PATH --line N --symbol NAME` to read a local function/class without Pyright startup. `signature-help --symbol NAME` on a call-site line lets ast-grep choose the intended nested call's argument cursor; explicit columns select later parameters. Interpreter preparation remains necessary for semantic answers.
+
 Find anchors with `symbols --file PATH --query NAME` after source edits. Definition can land in `.pyi` or a dependency stub; inspect its path, then navigate into the implementation/package source when the task needs behavior. A stub is useful evidence for the declared API.
 
 Pyright diagnostics can differ from a project's own checker, plugins or generated typing setup. Keep baseline errors visible, distinguish them from a changed file's diagnostics and run the project's relevant checks. Type-only imports guarded by `TYPE_CHECKING` may be required by the project's existing pattern; import and execute the changed code to verify its runtime path as well.

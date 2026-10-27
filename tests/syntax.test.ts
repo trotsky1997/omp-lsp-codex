@@ -1,0 +1,150 @@
+import assert from "node:assert/strict";
+import { after, afterEach, before, mock, test } from "node:test";
+import childProcess from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { position, run } from "../src/commands.ts";
+import { parseOptions } from "../src/cli.ts";
+import { resolveCommand, type ObjectValue } from "../src/config.ts";
+import { syntaxPosition, syntaxSnippet } from "../src/syntax.ts";
+import { cleanWorkspaces, isolateGlobalConfig, workspace } from "./fixtures/workspace.ts";
+
+let root: string, restore: () => void;
+before(() => { root = mkdtempSync(join(tmpdir(), "codex-lsp syntax ")); restore = isolateGlobalConfig(); });
+after(() => { restore(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { mock.restoreAll(); cleanWorkspaces(); });
+const installed = !!resolveCommand("ast-grep", tmpdir());
+const real = { skip: installed ? false : "Install @ast-grep/cli for real syntax integration tests" };
+function file(text: string, extension = "ts") { const path = join(root, `source.${extension}`); writeFileSync(path, text); return path; }
+
+for (const [extension, text, line] of [
+  ["ts", 'const s = "target"; /* target */ const 汉字 = "😀"; target(target);', 1],
+  ["tsx", 'const s = "target"; /* target */ const 汉字 = "😀"; target(target);', 1],
+  ["js", 'const s = "target"; /* target */ const 汉字 = "😀"; target(target);', 1],
+  ["jsx", 'const s = "target"; /* target */ const 汉字 = "😀"; target(target);', 1],
+  ["mts", 'const s = "target"; /* target */ const 汉字 = "😀"; target(target);', 1],
+  ["cts", 'const s = "target"; /* target */ const 汉字 = "😀"; target(target);', 1],
+  ["py", 's = "target"; 汉字 = "😀"; target(target) # target', 1],
+  ["rs", 'fn main() { let s = "target"; /* target */ let 汉字 = "😀"; target(target); }', 1],
+] as const) test(`syntax: ${extension} excludes comments/strings and preserves UTF-16`, real, async () => {
+  const path = file(text, extension), expected = text.indexOf("target(target)");
+  assert.deepStrictEqual(await position(path, text, { line, symbol: "target" }), { line: 0, character: expected });
+  assert.deepStrictEqual(await position(path, text, { line, symbol: "target#2" }), { line: 0, character: expected + 7 });
+  await assert.rejects(position(path, text, { line, symbol: "target#3" }), /out of bounds.*found 2/);
+  assert.strictEqual(readFileSync(path, "utf8"), text);
+});
+test("syntax: nearby suggestions exclude comments and strings", real, async () => {
+  const text = '// target\nconst s = "target";\n\nfunction target() {}\ntarget();';
+  const path = file(text);
+  await assert.rejects(position(path, text, { line: 1, symbol: "target" }), /nearest matching lines: 4, 5/);
+});
+test("syntax: source snapshots are used instead of rereading disk", real, async () => {
+  const path = file("target();");
+  assert.deepStrictEqual(await position(path, 'const s = "target"; target();', { line: 1, symbol: "target" }), { line: 0, character: 20 });
+});
+test("syntax: private fields and Unicode identifiers are literal anchors", real, async () => {
+  const text = "class X { #私有 = 1; value() { return this.#私有; } }";
+  const path = file(text);
+  assert.deepStrictEqual(await position(path, text, { line: 1, symbol: "#私有#2" }), { line: 0, character: text.lastIndexOf("#私有") });
+});
+for (const [extension, text, line, name, cursor] of [
+  ["ts", 'expect(foo<number>("x", bar(1)));', 1, "foo", '("x"'],
+  ["ts", 'expect(new Foo("x"));', 1, "Foo", '("x"'],
+  ["ts", 'class X { field: Foo = this.register(new Foo("x")); }', 1, "Foo", '("x"'],
+  ["ts", 'class X { field: Foo<T> = this.register(new Foo<T>("x")); }', 1, "Foo", '("x"'],
+  ["ts", 'const value: Foo = Foo("x", Foo);', 1, "Foo", '("x"'],
+  ["ts", 'foo("x")();', 1, "foo", '("x"'],
+  ["py", 'expect(foo("x", bar(1)))', 1, "foo", '("x"'],
+  ["rs", 'fn main() { expect(foo::<u32>(42, bar(1))); }', 1, "foo", "(42"],
+  ["ts", 'foo\r\n(\r\n  "😀"\r\n);', 1, "foo", "(\r\n"],
+  ["ts", 'foo\n            (\n  "😀"\n);', 1, "foo", "(\n"],
+] as const) test(`signature: ${extension} selects ${name} argument cursor`, real, async () => {
+  const path = file(text, extension), offset = text.indexOf(cursor) + 1, prefix = text.slice(0, offset).split("\n");
+  assert.deepStrictEqual(await position(path, text, { command: "signature-help", line, symbol: name }), { line: prefix.length - 1, character: prefix.at(-1)!.length });
+  assert.deepStrictEqual(await position(path, text, { command: "signature-help", line: 1, column: 2 }), { line: 0, character: 1 });
+});
+test("signature: ambiguous calls and declaration anchors fail before LSP starts", real, async () => {
+  const text = 'function foo() {}\nexpect(foo());'; const path = file(text);
+  await assert.rejects(position(path, text, { command: "signature-help", line: 2 }), /Multiple calls.*--symbol/);
+  await assert.rejects(position(path, text, { command: "signature-help", line: 1, symbol: "foo" }), /No matching call.*call site/);
+});
+test("signature: occurrence counts callable names and leaves Rust macro limits explicit", real, async () => {
+  const text = 'const v: Foo = [Foo("x"), Foo("y", Foo)];', path = file(text);
+  assert.deepStrictEqual(await position(path, text, { command: "signature-help", line: 1, symbol: "Foo#2" }), { line: 0, character: text.indexOf('("y"') + 1 });
+  const rust = 'macro_rules! x { () => { deserializer.deserialize_seq(visitor) }; }', rs = file(rust, "rs");
+  await assert.rejects(position(rs, rust, { command: "signature-help", line: 1, symbol: "deserialize_seq" }), /Rust macro token trees.*--column|--column.*Rust macro token trees/);
+});
+test("signature: instrumented LSP receives the target arguments, including UTF-16", real, async () => {
+  const w = workspace({ responses: { "textDocument/signatureHelp": { signatures: [{ label: "foo(value: string)" }] } } });
+  const text = 'const 汉字 = "😀"; expect(foo("x"));', path = join(w.root, "source.ts");
+  writeFileSync(path, text); w.configs.fixture.fileTypes = [".ts"]; w.saveConfig();
+  const result = await run({ ...w.args("signature-help"), file: path, symbol: "foo" });
+  assert.strictEqual(result.data.found, true);
+  const event = w.events().find(event => event.method === "textDocument/signatureHelp");
+  assert.deepStrictEqual((event?.params as ObjectValue).position, { line: 0, character: text.indexOf('("x"') + 1 });
+  assert.strictEqual(readFileSync(path, "utf8"), text);
+});
+for (const [extension, text, line, symbol, expected] of [
+  ["ts", 'class X {\n  method() {\n    return 1;\n  }\n}', 2, "method", 'method() {\n    return 1;\n  }'],
+  ["py", 'class X:\n    def method(self):\n        return 1\n', 2, "method", 'def method(self):\n        return 1'],
+  ["rs", 'impl X {\n    fn method(&self) -> i32 {\n        1\n    }\n}', 2, "method", 'fn method(&self) -> i32 {\n        1\n    }'],
+] as const) test(`snippet: ${extension} extracts the smallest enclosing declaration`, real, async () => {
+  const path = file(text, extension);
+  assert.strictEqual((await syntaxSnippet(path, text, line, undefined, symbol)).text, expected);
+  const result = await run(parseOptions(["snippet", "--file", path, "--line", String(line), "--symbol", symbol, "--limit", "1"], root));
+  assert.strictEqual(result.data.provider, "ast-grep"); assert.strictEqual(result.data.truncated, true);
+  assert.strictEqual(String(result.data.snippet).split("\n").length, 1);
+  assert.ok(String(result.data.hint).includes("--limit 0"));
+  const full = await run(parseOptions(["snippet", "--file", path, "--line", String(line), "--symbol", symbol, "--limit", "0"], root));
+  assert.strictEqual(full.data.snippet, expected); assert.strictEqual(full.data.truncated, false);
+  assert.strictEqual(readFileSync(path, "utf8"), text);
+});
+test("snippet: starts at indentation, bounds text and never starts an LSP", real, async () => {
+  const text = 'class X {\n  method() { return "' + "x".repeat(7000) + '"; }\n}', path = file(text);
+  const result = await run(parseOptions(["snippet", "--file", path, "--line", "2"], root));
+  assert.ok(String(result.data.snippet).startsWith("method()"));
+  assert.ok(String(result.data.snippet).length <= 6000); assert.strictEqual(result.data.truncated, true);
+  await assert.rejects(run(parseOptions(["snippet", "--file", path, "--line", "2", "--apply"], root)), /read-only/);
+});
+test("snippet: Python method decorators remain part of the declaration", real, async () => {
+  const text = "class X:\n    @classmethod\n    @validate\n    def method(cls):\n        return 1\n", path = file(text, "py");
+  const selected = await syntaxSnippet(path, text, 4, undefined, "method");
+  assert.ok(selected.text.startsWith("@classmethod\n    @validate\n    def method"));
+  assert.deepStrictEqual(selected.start, { line: 1, character: 4 });
+});
+for (const [extension, text, symbol, expected] of [
+  ["rs", "trait X { fn method(&self); }", "method", "fn method(&self);"],
+  ["ts", "interface X { method(): void; value: number; }", "method", "method(): void"],
+  ["ts", "class X { readonly emitter: Foo = new Foo(); }", "emitter", "readonly emitter: Foo = new Foo()"],
+  ["js", "class X { value = 1; }", "value", "value = 1"],
+] as const) test(`snippet: ${extension} member ${symbol} avoids reading the whole container`, real, async () => {
+  const path = file(text, extension);
+  assert.strictEqual((await syntaxSnippet(path, text, 1, undefined, symbol)).text, expected);
+});
+test("syntax: missing ast-grep keeps textual navigation and explains automatic features", async () => {
+  const text = "foo();", path = file(text), oldPath = process.env.PATH;
+  process.env.PATH = root;
+  try {
+    assert.deepStrictEqual(await position(path, text, { line: 1, symbol: "foo" }), { line: 0, character: 0 });
+    await assert.rejects(position(path, text, { command: "signature-help", line: 1, symbol: "foo" }), /npm install --global @ast-grep\/cli.*--column/);
+    await assert.rejects(syntaxSnippet(path, text, 1), /npm install --global @ast-grep\/cli/);
+  } finally { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; }
+});
+test("syntax: unsupported languages retain textual positions", async () => {
+  const path = file("foo();", "fixture");
+  assert.strictEqual(await syntaxPosition(path, "foo();", 1, "foo"), undefined);
+  assert.deepStrictEqual(await position(path, "foo();", { line: 1, symbol: "foo" }), { line: 0, character: 0 });
+});
+for (const scenario of ["failure", "malformed", "bad-range"] as const) test(`syntax: injected ${scenario} is bounded and fails explicitly`, real, async () => {
+  let input = "";
+  mock.method(childProcess, "execFile", ((_command: string, args: string[], options: ObjectValue, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+    assert.ok(args.includes("--stdin")); assert.strictEqual(options.timeout, 5000); assert.strictEqual(options.maxBuffer, 64 * 1024 * 1024);
+    queueMicrotask(() => callback(scenario === "failure" ? new Error("injected timeout") : null,
+      scenario === "bad-range" ? JSON.stringify([{ text: "foo", range: { byteOffset: { start: 999, end: 1002 } } }]) : "{", ""));
+    return { stdin: { on() {}, end(text: string) { input = text; } } };
+  }) as never);
+  const path = file("foo();");
+  await assert.rejects(syntaxPosition(path, "foo();", 1, "foo"), scenario === "failure" ? /ast-grep failed.*injected timeout/ : scenario === "bad-range" ? /Invalid ast-grep source range/ : SyntaxError);
+  assert.strictEqual(input, "foo();");
+});

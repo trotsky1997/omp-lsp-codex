@@ -20,6 +20,8 @@ For a local checkout, run `npm ci`, `npm run build`, then `npm link`. The bundle
 
 The release package includes compiled JavaScript and needs no install-time compiler or Git checkout. Update with the same command plus `--force`.
 
+For syntax-aware symbol anchors, automatic signature cursors and declaration snippets, install [ast-grep](https://ast-grep.github.io/guide/quick-start.html): `npm install --global @ast-grep/cli`. This optional executable works on macOS, Linux and Windows. Rust, Python and JavaScript/TypeScript use its built-in grammars. Navigation retains textual matching when ast-grep is absent; automatic signature cursors and snippets report the installation command. Explicit `--column` stays exact.
+
 ## Commands
 
 ```sh
@@ -32,6 +34,8 @@ codex-lsp diagnostics --changed
 codex-lsp definition --file path/to/file.rs --line 20 --symbol parse
 codex-lsp references --file path/to/file.rs --line 20 --symbol parse
 codex-lsp hover --file path/to/file.rs --line 20 --symbol parse
+codex-lsp signature-help --file path/to/file.rs --line 30 --symbol parse
+codex-lsp snippet --file path/to/file.rs --line 20 --symbol parse
 codex-lsp symbols --file path/to/file.rs --query parse
 codex-lsp symbols --workspace --file path/to/file.ts --query parser
 codex-lsp rename --file path/to/file.rs --line 20 --symbol parse --new-name parse_value
@@ -41,6 +45,10 @@ codex-lsp capabilities --file path/to/file.rs
 ```
 
 Positions are one-based; columns use UTF-16. Use `--symbol name#2` for a repeated token. File paths are resolved from the target project even when the CLI runs elsewhere. `symbols --query` filters document symbols; workspace queries use the matching language servers and return their errors alongside results.
+
+With ast-grep installed, `--symbol` selects code identifiers and excludes same-name comments/string contents. Wrong-line hints list nearby code matches. `signature-help --symbol NAME` selects that call's argument list, including generics and nested calls; choose a call site rather than its declaration. Without `--symbol`, automatic signature selection requires one call on the line. Use `--column` inside a call's arguments to inspect a later active parameter.
+
+`snippet` extracts the smallest enclosing declaration without starting a language server. Pass its declaration line and name, or a position inside its body. JSON includes the absolute `file`, one-based UTF-16 `range` (exclusive end), `provider: "ast-grep"` and `snippet`. Default previews show up to 50 lines and 6,000 characters with explicit truncation; `--limit 0` returns the full declaration. This is a syntax view of the source; type inference, references and rename use LSP.
 
 Run commands directly from the project directory. Relative paths, setup and changed-file checks use that directory. `--cwd PATH` explicitly selects another project when needed. The Node.js entrypoint and hooks keep the caller's working directory.
 

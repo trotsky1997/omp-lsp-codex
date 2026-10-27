@@ -15,7 +15,7 @@ If TypeScript Language Server cannot find TypeScript, check local `node_modules/
 
 ## Types, imports and execution
 
-A concise hover can name an alias without expanding its return type. Follow type-definition/definition or query the alias; complete output still reflects the server's abbreviations. Signature-help needs the actual target call's argument cursor: nested calls can resolve to a different function. Compare the returned callable before using the signature.
+A concise hover can name an alias without expanding its return type. Follow type-definition/definition or query the alias; complete output still reflects the server's abbreviations. Use `signature-help --symbol NAME` on the target call's line so ast-grep finds its argument list, including generics and nested calls. Explicit `--column` selects an exact active-parameter position. Compare the returned callable before using the signature. `snippet` reads the enclosing function/method/class directly from syntax without starting tsserver.
 
 For missing imports, list code actions, preview the selected original index with `--query INDEX`, inspect its edit scope and `executesCommand`, then apply. Check diagnostics and the project build/tests afterwards.
 
