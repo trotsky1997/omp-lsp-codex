@@ -8,6 +8,7 @@ import { position, run } from "../src/commands.ts";
 import { parseOptions } from "../src/cli.ts";
 import { resolveCommand, type ObjectValue } from "../src/config.ts";
 import { syntaxPosition, syntaxSnippet } from "../src/syntax.ts";
+import { LspClient } from "../src/client.ts";
 import { cleanWorkspaces, isolateGlobalConfig, workspace } from "./fixtures/workspace.ts";
 
 let root: string, restore: () => void;
@@ -75,6 +76,34 @@ test("signature: occurrence counts callable names and leaves Rust macro limits e
   const rust = 'macro_rules! x { () => { deserializer.deserialize_seq(visitor) }; }', rs = file(rust, "rs");
   await assert.rejects(position(rs, rust, { command: "signature-help", line: 1, symbol: "deserialize_seq" }), /Rust macro token trees.*--column|--column.*Rust macro token trees/);
 });
+test("signature: wrong anchors suggest actual named calls and exclude declarations/comments", real, async () => {
+  const text = 'function target() {}\n// target()\nconst value: target = outer(target("x"));';
+  const path = file(text);
+  for (const line of [1, 2]) await assert.rejects(position(path, text, { command: "signature-help", line, symbol: "target" }), error => {
+    assert.ok(error instanceof Error); assert.ok(error.message.includes("call-name matches: 3 (target)"));
+    assert.ok(!error.message.includes("1 (target)")); assert.ok(!error.message.includes("2 (target)"));
+    return true;
+  });
+});
+test("signature: wrong names show the current call and a bounded alternative", real, async () => {
+  const text = 'connection.createQueryRunner();\nconnection.createQueryBuilder();\nconnection.createQueryBuilder();\nconnection.createQueryBuilder();';
+  const path = file(text);
+  await assert.rejects(position(path, text, { command: "signature-help", line: 1, symbol: "createQueryBuilder" }), error => {
+    assert.ok(error instanceof Error);
+    assert.ok(error.message.includes("calls here: connection.createQueryRunner"));
+    assert.ok(error.message.includes("call-name matches: 2 (connection.createQueryBuilder)"));
+    assert.ok(!error.message.includes("3 (connection.createQueryBuilder)")); return true;
+  });
+});
+test("signature: large call-name suggestion lists keep five nearest locations", real, async () => {
+  const text = "function target() {}\n" + Array.from({ length: 60 }, () => "receiver.target(42);").join("\n"), path = file(text);
+  await assert.rejects(position(path, text, { command: "signature-help", line: 1, symbol: "target" }), error => {
+    assert.ok(error instanceof Error);
+    assert.strictEqual(error.message.match(/\d+ \(receiver\.target\)/g)?.length, 5);
+    assert.ok(error.message.includes("6 (receiver.target)")); assert.ok(!error.message.includes("7 (receiver.target)"));
+    assert.ok(error.message.length < 400); return true;
+  });
+});
 test("signature: instrumented LSP receives the target arguments, including UTF-16", real, async () => {
   const w = workspace({ responses: { "textDocument/signatureHelp": { signatures: [{ label: "foo(value: string)" }] } } });
   const text = 'const 汉字 = "😀"; expect(foo("x"));', path = join(w.root, "source.ts");
@@ -84,6 +113,19 @@ test("signature: instrumented LSP receives the target arguments, including UTF-1
   const event = w.events().find(event => event.method === "textDocument/signatureHelp");
   assert.deepStrictEqual((event?.params as ObjectValue).position, { line: 0, character: text.indexOf('("x"') + 1 });
   assert.strictEqual(readFileSync(path, "utf8"), text);
+});
+test("signature: empty server results report the actual automatic cursor without requesting another guess", real, async () => {
+  const w = workspace(), text = 'const 汉字 = "😀"; outer(inner("x"));', path = join(w.root, "source.ts");
+  writeFileSync(path, text); w.configs.fixture.fileTypes = [".ts"]; w.saveConfig();
+  const result = await run({ ...w.args("signature-help"), file: path, symbol: "inner" });
+  const column = text.indexOf('("x"') + 2;
+  assert.partialDeepStrictEqual(result.data, { success: true, found: false, cursor: { line: 1, column, automatic: true } });
+  assert.ok(String(result.data.hint).includes(`Automatic argument cursor 1:${column}`));
+  assert.ok(String(result.data.hint).includes("returned no signature"));
+  assert.ok(!String(result.data.hint).includes("Place the cursor"));
+  const events = w.events().filter(event => event.method === "textDocument/signatureHelp");
+  assert.strictEqual(events.length, 1);
+  assert.deepStrictEqual((events[0].params as ObjectValue).position, { line: 0, character: column - 1 });
 });
 for (const [extension, text, line, symbol, expected] of [
   ["ts", 'class X {\n  method() {\n    return 1;\n  }\n}', 2, "method", 'method() {\n    return 1;\n  }'],
@@ -101,11 +143,35 @@ for (const [extension, text, line, symbol, expected] of [
   assert.strictEqual(readFileSync(path, "utf8"), text);
 });
 test("snippet: starts at indentation, bounds text and never starts an LSP", real, async () => {
+  const start = mock.method(LspClient, "start", async () => { throw new Error("snippet must not start a language server"); });
   const text = 'class X {\n  method() { return "' + "x".repeat(7000) + '"; }\n}', path = file(text);
   const result = await run(parseOptions(["snippet", "--file", path, "--line", "2"], root));
   assert.ok(String(result.data.snippet).startsWith("method()"));
   assert.ok(String(result.data.snippet).length <= 6000); assert.strictEqual(result.data.truncated, true);
   await assert.rejects(run(parseOptions(["snippet", "--file", path, "--line", "2", "--apply"], root)), /read-only/);
+  assert.strictEqual(start.mock.calls.length, 0);
+});
+test("snippet: Rust attributes and interleaved comments remain attached to their declaration", real, async () => {
+  const text = '/// Long documentation stays outside the declaration.\n#[cfg(feature = "用户")]\n// Attribute context.\n#[must_use]\npub fn target() -> u32 { 42 }\n';
+  const path = file(text, "rs"), selected = await syntaxSnippet(path, text, 5, undefined, "target");
+  assert.strictEqual(selected.text, text.slice(text.indexOf("#[cfg"), text.lastIndexOf("\n")));
+  assert.deepStrictEqual(selected.start, { line: 1, character: 0 });
+});
+for (const prefix of ['#[must_use]\nfn previous() {}\n\n', '#![allow(unused)]\n', '/// Documentation without outer attributes.\n'])
+  test(`snippet: Rust does not attach another item's attributes or leading documentation (${prefix.split("\n")[0]})`, real, async () => {
+    const declaration = 'pub fn target() -> u32 { 42 }', text = prefix + declaration, path = file(text, "rs");
+    assert.strictEqual((await syntaxSnippet(path, text, prefix.split("\n").length, undefined, "target")).text, declaration);
+  });
+for (const isWorkspace of [false, true]) test(`symbols: exact names rank first before truncation (workspace=${isWorkspace})`, async () => {
+  const w = workspace(), names = ["queryset", "QuerySetDetails", "QuerySet", "queryset", "Queryset"];
+  const values = names.map(name => ({ name, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, location: { uri: w.uri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } } }));
+  w.setScenario({ capabilities: { workspaceSymbolProvider: true }, responses: { "textDocument/documentSymbol": values, "workspace/symbol": values } });
+  const args = w.args("symbols", "--query", "QuerySet", ...(isWorkspace ? ["--workspace"] : []));
+  const selected = await run({ ...args, limit: 1 });
+  assert.partialDeepStrictEqual(selected.data, { total: 5, shown: 1, truncated: true });
+  assert.strictEqual((selected.data.symbols as ObjectValue[])[0].name, "QuerySet");
+  const full = await run({ ...args, limit: 0 });
+  assert.deepStrictEqual((full.data.symbols as ObjectValue[]).map(item => item.name), ["QuerySet", "queryset", "queryset", "Queryset", "QuerySetDetails"]);
 });
 test("snippet: Python method decorators remain part of the declaration", real, async () => {
   const text = "class X:\n    @classmethod\n    @validate\n    def method(cls):\n        return 1\n", path = file(text, "py");

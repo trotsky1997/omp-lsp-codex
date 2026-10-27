@@ -9,6 +9,8 @@ Use [shared CLI essentials](../codex-lsp/SKILL.md) once for commands, output and
 
 Start from the package/tsconfig containing the file. Prepare declared dependencies and required generated sources using the project's package manager and build scripts. In a monorepo, check tsconfig inclusion, references and path aliases before interpreting missing imports or an unlinked probe. Missing generated exports can cause downstream type errors; run the declared generation/build task before recording those as baseline diagnostics.
 
+Projects enforcing `devEngines.packageManager` can reject `npm exec` before pnpm starts. Bootstrap the declared package-manager version from outside the checkout, then run its executable from the project directory. Prepare the selected workspace package and its dependencies using the lockfile.
+
 `status --file PATH` shows the actual executable. The configuration ID `typescript-language-server` can select `tsgo`. Compare command, project/compiler versions and options when editor and CLI results differ. Hooks ignore project overrides.
 
 If TypeScript Language Server cannot find TypeScript, check local `node_modules/typescript/lib/tsserver.js`, then the existing global package. Set `initOptions.tsserver.fallbackPath` when needed instead of installing a duplicate compiler. Semantic navigation defaults `tsserver.useSyntaxServer` to `never`.

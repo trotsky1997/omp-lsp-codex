@@ -50,6 +50,8 @@ With ast-grep installed, `--symbol` selects code identifiers and excludes same-n
 
 `snippet` extracts the smallest enclosing declaration without starting a language server. Pass its declaration line and name, or a position inside its body. JSON includes the absolute `file`, one-based UTF-16 `range` (exclusive end), `provider: "ast-grep"` and `snippet`. Default previews show up to 50 lines and 6,000 characters with explicit truncation; `--limit 0` returns the full declaration. This is a syntax view of the source; type inference, references and rename use LSP.
 
+Snippets retain Rust outer attributes and Python decorators. For discovery, `symbols --query NAME --limit 5` ranks exact case/name matches first and retains full counts. Signature errors suggest nearby call names with their receivers. An empty server signature response reports the selected `cursor` in JSON; automatic-cursor hints point to hover/definition for type information.
+
 Run commands directly from the project directory. Relative paths, setup and changed-file checks use that directory. `--cwd PATH` explicitly selects another project when needed. The Node.js entrypoint and hooks keep the caller's working directory.
 
 JavaScript module files (`.mjs`, `.cjs`) and TypeScript module files (`.mts`, `.cts`) are discovered and sent to language servers with their standard JavaScript/TypeScript language IDs.

@@ -3,6 +3,7 @@ import { dirname, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { object, resolveCommand, type ObjectValue } from "./config.ts";
 import { windowsCommand } from "./windows-command.ts";
+import { textPrefix } from "./output.ts";
 import type { Position } from "./omp/types.ts";
 
 const INSTALL = "Install ast-grep: npm install --global @ast-grep/cli (https://ast-grep.github.io/guide/quick-start.html)";
@@ -23,6 +24,7 @@ const IDENTIFIERS: Record<string, string[]> = {
   TypeScript: ["identifier", "property_identifier", "type_identifier", "nested_type_identifier", "shorthand_property_identifier", "shorthand_property_identifier_pattern", "private_property_identifier", "predefined_type", "member_expression", "this", "super"],
 };
 function grammar(language: string) { return language === "Tsx" ? "TypeScript" : language === "Jsx" ? "JavaScript" : language; }
+export function syntaxLanguage(path: string) { return LANGUAGES[extname(path).toLowerCase()]; }
 interface Node {
   text: string;
   start: number;
@@ -54,7 +56,7 @@ export function syntaxTool(root: string, globalOnly = false) {
   return { available: !!command, command: command ?? null, ...(!command ? { hint: INSTALL } : {}) };
 }
 async function scan(path: string, text: string, mode: "symbol" | "call" | "snippet", symbol?: string, globalOnly = false): Promise<Match[] | undefined> {
-  const language = LANGUAGES[extname(path).toLowerCase()];
+  const language = syntaxLanguage(path);
   if (!language) return undefined;
   const { command } = syntaxTool(dirname(path), globalOnly);
   if (!command) return undefined;
@@ -76,6 +78,10 @@ async function scan(path: string, text: string, mode: "symbol" | "call" | "snipp
   } });
   const declarations = DECLARATIONS[family];
   if (mode === "snippet") rules.push({ id: "snippet", language, rule: { any: declarations.map(kind => ({ kind })) } });
+  if (mode === "snippet" && language === "Rust") rules.push(
+    { id: "attribute", language, rule: { kind: "attribute_item" } },
+    { id: "trivia", language, rule: { any: [{ kind: "line_comment" }, { kind: "block_comment" }] } },
+  );
   const args = ["scan", "--stdin", "--inline-rules", rules.map(rule => JSON.stringify(rule)).join("\n---\n"), "--json=compact"];
   const invocation = process.platform === "win32" && /\.(cmd|bat)$/i.test(command)
     ? windowsCommand(command, args) : { command, args, windowsVerbatimArguments: false };
@@ -126,10 +132,20 @@ export async function syntaxPosition(path: string, text: string, line: number, s
   const contains = (match: Match, node: Node) => match.captures.CALLEE.start <= node.start && node.end <= match.captures.CALLEE.end;
   // Count callable occurrences, excluding type annotations and same-name argument values.
   const callableSymbols = matches.filter(match => match.rule === "symbol" && calls.some(call => contains(call, match)));
-  const noCall = () => new Error(`No matching call on this line; select a call site with --symbol NAME, or pass --column inside its arguments${extname(path) === ".rs" ? "; Rust macro token trees may require explicit columns, and the server may have no semantic signature for the template" : ""}`);
+  const noCall = () => {
+    const here = [...new Set(calls.filter(call => point(source, call.captures.CALLEE.end).line === line - 1)
+      .map(call => textPrefix(call.captures.CALLEE.text.replace(/\s+/g, " "), 80)))].slice(0, 5);
+    const nearby = callableSymbols.map(node => {
+      const row = point(source, node.start).line + 1;
+      const callee = calls.filter(call => contains(call, node)).sort((a, b) =>
+        (a.captures.CALLEE.end - a.captures.CALLEE.start) - (b.captures.CALLEE.end - b.captures.CALLEE.start))[0].captures.CALLEE.text;
+      return { row, label: `${row} (${textPrefix(callee.replace(/\s+/g, " "), 80)})` };
+    }).sort((a, b) => Math.abs(a.row - line) - Math.abs(b.row - line) || a.row - b.row);
+    const hints = [...new Set(nearby.map(item => item.label))].slice(0, here.length ? 1 : 5);
+    return new Error(`No matching call on line ${line}${here.length ? `; calls here: ${here.join(", ")}` : ""}; ${hints.length ? `call-name matches: ${hints.join(", ")}; select a call site with --line` : "select a real call site with --symbol NAME (comments and string contents are excluded)"}, or pass --column inside its arguments${syntaxLanguage(path) === "Rust" && !hints.length ? "; Rust macro token trees may require explicit columns, and the server may have no semantic signature for the template" : ""}`);
+  };
   let anchor: Node | undefined;
   if (symbol) {
-    selectSymbol(matches, source, line, symbolSpec(symbol).name);
     if (!callableSymbols.some(match => point(source, match.start).line === line - 1)) throw noCall();
     anchor = selectSymbol(callableSymbols, source, line, symbol);
   }
@@ -150,7 +166,17 @@ export async function syntaxSnippet(path: string, text: string, line: number, co
     .sort((a, b) => (a.end - a.start) - (b.end - b.start));
   let selected = candidates[0];
   if (!selected) throw new Error("No enclosing declaration at this position; pass --symbol NAME on a declaration or a --column inside its body");
-  if (LANGUAGES[extname(path).toLowerCase()] === "Python" && /^(?:async )?(?:def|class)\b/.test(selected.text))
+  if (syntaxLanguage(path) === "Python" && /^(?:async )?(?:def|class)\b/.test(selected.text))
     selected = candidates.find(match => match.end === selected.end && match.text.startsWith("@")) ?? selected;
+  if (syntaxLanguage(path) === "Rust") {
+    let cursor = selected.start;
+    const prefix = matches.filter(match => ["attribute", "trivia"].includes(match.rule) && match.end <= selected.start)
+      .sort((a, b) => b.end - a.end);
+    for (const node of prefix) {
+      if (source.subarray(node.end, cursor).toString("utf8").trim()) break;
+      cursor = node.start;
+      if (node.rule === "attribute") selected = { ...selected, start: node.start, text: source.subarray(node.start, selected.end).toString("utf8") };
+    }
+  }
   return { text: selected.text, start: point(source, selected.start), end: point(source, selected.end) };
 }

@@ -44,7 +44,7 @@ import { resolveSymbolColumn } from "./omp/symbol-column.ts";
 import type { CodeAction, Command, Diagnostic, Position, WorkspaceEdit } from "./omp/types.ts";
 import { version } from "./version.ts";
 import { compactText, failure, textPrefix } from "./output.ts";
-import { syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.ts";
+import { syntaxLanguage, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.ts";
 
 export interface Options {
   command: string;
@@ -88,7 +88,7 @@ function locationLines(items: ObjectValue[], root: string, named = false): strin
   }
   return [...groups].map(([file, points]) => `${file}:${points.join(", ")}`);
 }
-function signatureHelp(value: unknown, server: string, limit: number): Result {
+function signatureHelp(value: unknown, server: string, limit: number, cursor: { line: number; column: number; automatic: boolean }): Result {
   const response = object(value);
   if (value !== null && (!Array.isArray(response.signatures) || response.signatures.some(item => typeof object(item).label !== "string")))
     throw new Error(`Invalid signature help response from ${server}`);
@@ -116,10 +116,12 @@ function signatureHelp(value: unknown, server: string, limit: number): Result {
     const preview = textPrefix(activeParameterLabel, 1000); textTruncated ||= preview.length < activeParameterLabel.length; activeParameterLabel = preview;
   }
   const documentationOmitted = !!limit && signatures.some(signature => signature.documentation !== undefined || (Array.isArray(signature.parameters) && signature.parameters.some(parameter => object(parameter).documentation !== undefined)));
-  const hint = !signatures.length ? "Place the cursor inside a call's arguments, just after '(' or a comma; string interiors can return no help. Try hover on the callable if still empty." : summary.truncated || documentationOmitted || textTruncated
+  const hint = !signatures.length ? cursor.automatic
+    ? `Automatic argument cursor ${cursor.line}:${cursor.column}; ${server} returned no signature. Try hover or definition on the callable.`
+    : "Place the cursor inside a call's arguments, just after '(' or a comma; string interiors can return no help. Try hover on the callable if still empty." : summary.truncated || documentationOmitted || textTruncated
     ? [documentationOmitted ? "Documentation omitted." : "", textTruncated ? "Signature text clipped." : "", "Use --limit 0 --json for complete signature information."].filter(Boolean).join(" ") : "";
   return {
-    data: { success: true, found: !!signatures.length, server, ...summary, truncated: summary.truncated || textTruncated, activeSignature: signatures.length ? activeSignature : null, activeParameter, activeParameterLabel, signatures: selected, ...(documentationOmitted ? { documentationOmitted: true } : {}), ...(textTruncated ? { textTruncated: true } : {}), ...(hint ? { hint } : {}) },
+    data: { success: true, found: !!signatures.length, server, ...summary, truncated: summary.truncated || textTruncated, activeSignature: signatures.length ? activeSignature : null, activeParameter, activeParameterLabel, signatures: selected, ...(!signatures.length ? { cursor } : {}), ...(documentationOmitted ? { documentationOmitted: true } : {}), ...(textTruncated ? { textTruncated: true } : {}), ...(hint ? { hint } : {}) },
     human: [signatures.length ? `${signatures.length} signature(s); active ${activeSignature + 1}${activeParameterLabel ? `; parameter: ${activeParameterLabel}` : ""}` : "No signature help", ...selected.map(signature => `${signature.index === activeSignature ? "*" : ""}[${signature.index + 1}] ${signature.label}`), hint].filter(Boolean).join("\n"),
   };
 }
@@ -360,7 +362,9 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
       };
     }
     if (timedOut) throw new Error(`Timed out waiting for ${args.command} from ${server.name}`);
-    if (args.command === "signature-help") return signatureHelp(result, server.name, args.limit);
+    if (args.command === "signature-help") return signatureHelp(result, server.name, args.limit, {
+      line: pos.line + 1, column: pos.character + 1, automatic: args.column === undefined && !!syntaxLanguage(path),
+    });
     const summary = outputInfo(locations.length, args.limit);
     locations = locations.slice(0, summary.shown);
     return {
@@ -375,6 +379,11 @@ async function navigate(args: Options, shared?: FileContext): Promise<Result> {
   }
 }
 
+function prioritizeSymbols(items: ObjectValue[], query?: string) {
+  if (!query) return;
+  const lower = query.toLowerCase(), rank = (item: ObjectValue) => item.name === query ? 0 : String(item.name).toLowerCase() === lower ? 1 : 2;
+  items.sort((a, b) => rank(a) - rank(b));
+}
 async function symbols(args: Options, shared?: FileContext): Promise<Result> {
   if (!args.workspace) {
     const { server, client, uri } = shared ?? await fileContext(args, false);
@@ -387,6 +396,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
         items = items.filter((x) =>
           String(x.name).toLowerCase().includes(args.query!.toLowerCase()),
         );
+      prioritizeSymbols(items, args.query);
       const summary = outputInfo(items.length, args.limit);
       const { items: selected, ...preview } = compactText(items.slice(0, summary.shown), ["name", "container"], args.limit);
       const hint = preview.hint ?? (!items.length && args.query ? "Use symbols --workspace --file <path> --query <name> to search the project." : undefined);
@@ -431,6 +441,7 @@ async function symbols(args: Options, shared?: FileContext): Promise<Result> {
     throw new Error(
       "No available server supports workspace symbols; use --file to select a project",
     );
+  prioritizeSymbols(items, args.query);
   const summary = outputInfo(items.length, args.limit), { items: selected, ...preview } = compactText(items.slice(0, summary.shown), ["name", "container"], args.limit);
   return {
     data: { success: !errors.length, servers: used, ...summary, ...preview, symbols: selected, errors },

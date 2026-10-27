@@ -23,6 +23,8 @@ Use the discovered target: `cargo run -p PACKAGE --example NAME`, `--bin NAME`, 
 
 `snippet --file PATH --line N --symbol NAME` reads the enclosing Rust item without Cargo/RA startup. It shows source syntax before macro expansion. `signature-help --symbol NAME` belongs on a call-site line; ast-grep handles qualified/turbofish calls and picks that call's arguments. Use an explicit column for later active parameters.
 
+Snippets preserve attached outer attributes such as `cfg` and `must_use`. From a declaration anchor, find a call with `references` or `ast-grep run --lang Rust --pattern '$RECV.method($$$ARGS)' FILE` before requesting a signature; replace `method` with the intended method name. AST search excludes documentation examples. Nearby call-name hints identify syntax matches, so check their receivers.
+
 Macro bodies can expose token trees without parsed calls. If automatic signature selection explains this limit, use an explicit column after the call's `(`. RA can still have no semantic signature for a macro template; inspect the expanded call or the trait/function declaration in that case.
 
 Large cold workspaces may need `--timeout 120`. Use inspect to share startup for related questions. A no-reference response warrants checking the declaration, target membership and enabled cfg/features. For macros/generated code, check build scripts and Cargo health before trusting an empty result. Read [derived implementations](references/derives.md) for derive imports and generated names.

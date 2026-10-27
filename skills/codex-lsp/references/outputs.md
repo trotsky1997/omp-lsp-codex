@@ -23,6 +23,8 @@ Defaults show 50 results/hover lines, 10 per inspect section and one signature. 
 
 Signature-help prioritizes the active overload and parameter, omitting bulk documentation. Prefer `--symbol NAME` at the call site: ast-grep positions the cursor just after that call's `(`. Use an explicit `--column` after a later argument-separating comma to select that parameter. Some servers return no help inside string literals. If empty, hover on the callable. JSON signature indices are zero-based; CLI positions are one-based UTF-16 columns. Use complete output for all overloads/documentation. Server type aliases can remain abbreviated.
 
+Empty signature results include `cursor: {line, column, automatic}`. With an automatic cursor the hint confirms the position and the server's empty response; inspect the callable's type or declaration next. Symbol discovery ranks exact case/name matches before partial matches, keeping complete totals and explicit truncation.
+
 Snippet output includes `provider: "ast-grep"`, absolute `file`, one-based UTF-16 `range` with exclusive end, `snippet`, line totals and character counts. Truncation describes only the returned preview; `--limit 0` retrieves the complete enclosing source declaration. It does not start LSP or expand macros.
 
 When hover uses an external DevDocs reference, `provider` identifies it. Check that attribution before treating external documentation as a project signature.
