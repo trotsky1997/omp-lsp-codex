@@ -7,7 +7,7 @@ import { runTooling, validateToolPlan, verifyToolPlan } from "../src/tooling.ts"
 import { applyPlan } from "../src/fixes.ts";
 import { LspClient } from "../src/client.ts";
 import { object, type ObjectValue } from "../src/config.ts";
-import type { Options } from "../src/commands.ts";
+import { run, type Options } from "../src/commands.ts";
 import { cleanWorkspaces, isolateGlobalConfig, workspace } from "./fixtures/workspace.ts";
 
 let restore: () => void;
@@ -26,6 +26,23 @@ function prettier(w: Workspace, ignored = false) {
   else { const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"; writeFileSync(join(bin, "prettier"), "#!/bin/sh\nexec " + quote(process.execPath) + " " + quote(script) + ' "$@"\n', { mode: 0o755 }); }
   const file = join(w.root, "source.ts"); writeFileSync(file, "const value=1\n"); return file;
 }
+
+test("tooling: combined LSP fixes format the in-memory draft, reuse one server and leave disk untouched until apply", async () => {
+  const w = workspace(), original = "value = 1\n", draft = "renamed = 1\n", formatted = "renamed = 1;\n", plan = join(w.root, ".git/combined.json");
+  w.configs.fixture.isLinter = true; w.saveConfig();
+  const whole = { start: { line: 0, character: 0 }, end: { line: 1, character: 0 } };
+  w.setScenario({ capabilities: { documentFormattingProvider: true, codeActionProvider: true }, diagnosticVersionFromDocument: true,
+    diagnosticsByText: { [original]: [diagnostic()], [draft]: [], [formatted]: [] },
+    responses: { "textDocument/codeAction": [{ title: "Rename local", kind: "source.fixAll", edit: { changes: { [w.uri]: [edit("renamed")] } } }] },
+    responsesByText: { "textDocument/formatting": { [draft]: [{ range: whole, newText: formatted }], [formatted]: [] } },
+  });
+  execFileSync("git", ["init", "--quiet", w.root]); execFileSync("git", ["-C", w.root, "add", "."]); const index = readFileSync(join(w.root, ".git/index"));
+  const preview = await run(options(w, "fix", { format: true, plan })); assert.equal(preview.data.saved, true); assert.equal(readFileSync(w.file, "utf8"), original);
+  assert.equal(JSON.parse(readFileSync(plan, "utf8")).files[0].updated, formatted);
+  assert.equal(w.events().filter(row => row.method === "initialize").length, 1); assert.ok(w.events().some(row => row.method === "textDocument/didChange"));
+  const applied = await run(options(w, "apply", { file: undefined, server: undefined, plan })); assert.equal(applied.code, 0); assert.equal(applied.data.toolVerification, "verified");
+  assert.equal(readFileSync(w.file, "utf8"), formatted); assert.deepEqual(readFileSync(join(w.root, ".git/index")), index);
+});
 
 function biome(w: Workspace) {
   const bin = join(w.root, "node_modules/.bin"), script = join(w.root, ".git/biome.mjs"), state = join(w.root, ".git/biome-state.json"), trace = join(w.root, ".git/biome-trace.jsonl"); mkdirSync(bin, { recursive: true }); writeFileSync(state, "{}");

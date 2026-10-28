@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import { availableServers, ancestors, configPaths, fileServers, fileUri, gitRoot, loadConfig, matchesFile, MAX_FILE_BYTES, MAX_FILES, object, readText, resolveFile } from "./config.js";
+import { availableServers, ancestors, configPaths, expandHome, fileServers, fileUri, gitRoot, loadConfig, matchesFile, MAX_FILE_BYTES, MAX_FILES, object, readText, resolveFile } from "./config.js";
 import { changedFiles, sessionClient } from "./commands.js";
-import { captureBaseline, compareBaseline, serverFingerprint } from "./baseline.js";
+import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.js";
 import { saveEditPlan, validateEdits, normalizedEdits } from "./fixes.js";
 import { normalizeCodeAction, requestBefore, requestedActionKinds, validRange } from "./semantic.js";
 import { compactText, failure, textPrefix } from "./output.js";
@@ -125,7 +125,7 @@ async function lintFixes(client, uri, text, diagnostics, row, args, deadline) {
     }
     return text;
 }
-async function collect(args, paths, format, fixes, session, pinned) {
+async function collect(args, paths, format, fixes, session, pinned, drafts) {
     const pool = session ?? { clients: new Map(), diagnostics: false };
     const cache = new Map(), guards = new Map(), providers = [], fingerprints = new Set(), files = [], skipped = [];
     const deadline = Date.now() + args.timeout;
@@ -156,7 +156,7 @@ async function collect(args, paths, format, fixes, session, pinned) {
                 skipped.push({ file, reason: `No configured ${format ? "formatter" : "linter"} matches this changed file` });
                 continue;
             }
-            const original = readText(file);
+            const original = readText(file), input = drafts?.get(file) ?? original;
             bytes += Buffer.byteLength(original);
             if (bytes > MAX_FILE_BYTES)
                 throw new Error("Tool source scope exceeds 16 MiB; narrow the file scope");
@@ -192,7 +192,7 @@ async function collect(args, paths, format, fixes, session, pinned) {
             const updates = [];
             for (const provider of selected) {
                 try {
-                    let fingerprint, updated = original, diagnostics = [], verified = true, ignored = false;
+                    let fingerprint, updated = input, diagnostics = [], verified = true, ignored = false;
                     const beforeGuards = [...guards.keys()];
                     if (provider.kind === "cli") {
                         if (!tools.includes(provider.name))
@@ -201,14 +201,14 @@ async function collect(args, paths, format, fixes, session, pinned) {
                             throw new Error("CLI formatting does not support --range; select --server NAME with documentRangeFormattingProvider");
                         for (const path of toolConfigCandidates(provider.name, file, args.globalConfigOnly))
                             guard(path);
-                        const result = await runToolProcess({ ...args, timeout: Math.max(1, deadline - Date.now()) }, file, provider.name, format ? "format" : fixes ? "fix" : "lint", cache);
+                        const result = await runToolProcess({ ...args, timeout: Math.max(1, deadline - Date.now()) }, file, provider.name, format ? "format" : fixes ? "fix" : "lint", cache, format ? input : undefined);
                         if (result.original !== original)
                             throw new Error("Source changed during tool analysis; retry");
                         fingerprint = toolFingerprint(provider.name, result.command);
                         verified = result.verified && !result.errors?.length;
                         ignored = !!result.ignored;
                         diagnostics = result.diagnostics;
-                        updated = result.updated ?? original;
+                        updated = result.updated ?? input;
                         if (provider.name === "oxlint" && fixes && verified && !ignored && diagnostics.length) {
                             const root = gitRoot(dirname(file));
                             const server = { name: "oxlint", command: result.command, resolvedCommand: result.command, args: ["--lsp"], fileTypes: jsExtensions, root,
@@ -271,16 +271,17 @@ async function collect(args, paths, format, fixes, session, pinned) {
                             throw new Error("Source changed while opening the LSP document; retry");
                         let hint;
                         if (format) {
+                            await client.previewText(uri, input);
                             const capability = args.range ? "documentRangeFormattingProvider" : "documentFormattingProvider";
                             if (!client.capabilities[capability])
                                 throw new Error(`${server.name} does not advertise ${capability}; choose another --server or --tool`);
                             if (args.range)
-                                validateEdits(text, [{ range: args.range, newText: "" }]);
+                                validateEdits(input, [{ range: args.range, newText: "" }]);
                             const response = await requestBefore(client, args.range ? "textDocument/rangeFormatting" : "textDocument/formatting", { textDocument: { uri }, ...(args.range ? { range: args.range } : {}), options: { tabSize: 4, insertSpaces: true } }, deadline);
                             if (response !== null && !Array.isArray(response))
                                 throw new Error("Invalid LSP formatting response; expected TextEdit[] or null");
-                            updated = validateEdits(text, response ?? []);
-                            if (ignoreStatus === "unknown" && updated === text)
+                            updated = validateEdits(input, response ?? []);
+                            if (ignoreStatus === "unknown" && updated === input)
                                 hint = "Biome returned no formatting edits; ignore status is unknown with these LSP settings or executable. Check excludes with --tool biome when needed.";
                         }
                         else {
@@ -306,7 +307,7 @@ async function collect(args, paths, format, fixes, session, pinned) {
                     if (diagnosticBytes > MAX_FILE_BYTES)
                         throw new Error("Aggregate lint diagnostics exceed 16 MiB; narrow the source scope");
                     row.diagnostics.push(...diagnostics);
-                    if (updated !== original && !ignored)
+                    if (updated !== input && !ignored)
                         updates.push(updated);
                     if (readText(file) !== original)
                         throw new Error("Source changed during tool analysis; retry");
@@ -330,7 +331,7 @@ async function collect(args, paths, format, fixes, session, pinned) {
                 row.errors.push("Multiple linters proposed different fixes for this file; choose one with --tool NAME or --server NAME");
             }
             else
-                row.updated = distinct[0] ?? original;
+                row.updated = distinct[0] ?? input;
             if (row.updated !== original)
                 bytes += Buffer.byteLength(row.updated);
             if (bytes > MAX_FILE_BYTES)
@@ -348,7 +349,7 @@ async function collect(args, paths, format, fixes, session, pinned) {
                 if (!file.errors.some(error => /Source changed/.test(error)))
                     file.errors.push(`Source changed during tool analysis: ${file.file}; retry`);
             }
-        return { files, providers, guards, fingerprints: [...fingerprints], skipped };
+        return { files, providers, guards, fingerprints: [...fingerprints, hash(JSON.stringify([...guards].sort(([a], [b]) => a.localeCompare(b))))], skipped };
     }
     finally {
         if (!session)
@@ -357,14 +358,18 @@ async function collect(args, paths, format, fixes, session, pinned) {
 }
 export async function runTooling(args, session) {
     const format = args.command === "format";
+    const before = args.baseline ? loadBaseline(resolve(args.cwd, expandHome(args.baseline))) : undefined;
     if (args.query !== undefined || args.symbol !== undefined || args.column !== undefined || args.line !== 1 && !args.range || args.workspace || args.newName !== undefined)
         throw new Error("lint/format operate on files; omit --query and position/workspace/rename options. Use code-actions or fix --server NAME --query INDEX for a selected LSP action");
-    if (args.apply || !!args.file === args.changed || args.tool && args.server || args.check && !format || args.range && !format || args.plan && args.check || session && args.plan)
+    if (args.apply || args.file && args.changed || !args.file && !args.changed && !before || format && (before || args.saveBaseline) || args.tool && args.server || args.check && !format || args.range && !format || args.plan && (args.check || before || args.saveBaseline) || session && (args.plan || args.saveBaseline))
         throw new Error(`Use ${format ? "format" : "lint"} --file PATH or --changed; choose --tool NAME or --server NAME. Save changes with --plan PATH.json and apply the reviewed plan separately`);
     if (args.kind && !(args.kind === "source.fixAll" || args.kind.startsWith("source.fixAll.")))
         throw new Error("lint plans support source.fixAll kinds; use fix for quickfix selection");
     const root = realpathSync(gitRoot(args.cwd));
-    const paths = args.file ? [resolveFile(args.file, args.cwd)] : (await changedFiles(args.cwd)).filter(file => !args.plan || file !== resolve(args.cwd, args.plan));
+    if (before && before.root !== root)
+        throw new Error("Baseline workspace mismatch; capture a lint baseline in this workspace");
+    const artifacts = [args.plan, args.saveBaseline, args.baseline].filter((p) => !!p).map(p => resolve(args.cwd, expandHome(p)));
+    const paths = args.file ? [resolveFile(args.file, args.cwd)] : (args.changed ? await changedFiles(args.cwd) : before.files.map(row => resolveFile(row.file, args.cwd))).filter(file => !artifacts.includes(file));
     if (paths.length > MAX_FILES)
         throw new Error("Tool scope exceeds 200 files; narrow the changed file set");
     const result = await collect(args, paths, format, !!args.plan, session);
@@ -376,7 +381,15 @@ export async function runTooling(args, session) {
     const scopeNote = [ignoredFiles ? `${ignoredFiles} ignored` : "", result.skipped.length ? `${result.skipped.length} unsupported changed file(s) skipped` : "", ...providerHints].filter(Boolean).join(", ");
     const checked = result.files.map(file => ({ file: file.file, verified: file.verified, diagnosticCount: file.diagnostics.length, changed: file.updated !== file.original, providers: file.providers }));
     const errorHint = result.files.some(file => file.errorTruncated) ? "Tool error text clipped; use --limit 0 --json for complete output." : undefined;
-    const base = { command: args.command, success: verified, applied: false, verified, hasErrors, checked, checkedFiles: checked.length, skipped: result.skipped, skippedCount: result.skipped.length, ignoredFiles, changedFiles: changed.length, diagnosticCount: summary.total, ...(format ? { needsFormatting: !!changed.length } : {}), errors, ...summary, ...(providerHints.length ? { hint: providerHints.join(" ") } : {}), ...(errorHint ? { errorTruncated: true, hint: errorHint } : {}) };
+    const snapshot = !format && verified && (before || args.saveBaseline) ? captureBaseline(result.files, root, result.fingerprints, new Map(result.files.map(row => [row.file, row.original]))) : undefined;
+    const comparison = before ? compareBaseline(before, snapshot, result.files.map(row => row.file), result.fingerprints, args.limit) : undefined;
+    const baselineSaved = args.saveBaseline ? resolve(args.cwd, expandHome(args.saveBaseline)) : undefined;
+    if (baselineSaved) {
+        if (!snapshot)
+            throw new Error("Cannot save an unverified lint baseline; existing baseline is unchanged");
+        saveBaseline(baselineSaved, snapshot);
+    }
+    const base = { command: args.command, success: verified && (!comparison || comparison.verified === true), applied: false, verified, hasErrors, checked, checkedFiles: checked.length, skipped: result.skipped, skippedCount: result.skipped.length, ignoredFiles, changedFiles: changed.length, diagnosticCount: summary.total, ...(comparison ? { comparison } : {}), ...(baselineSaved ? { baselineSaved } : {}), ...(format ? { needsFormatting: !!changed.length } : {}), errors, ...summary, ...(providerHints.length ? { hint: providerHints.join(" ") } : {}), ...(errorHint ? { errorTruncated: true, hint: errorHint } : {}) };
     if (!verified)
         return { data: base, code: 1, human: [`${args.command}: ${errors.length} tool error(s)`, ...errors.map(row => `${row.file}: ${row.error}`), errorHint].filter(Boolean).join("\n") };
     if (args.check)
@@ -385,13 +398,70 @@ export async function runTooling(args, session) {
         const records = result.files.map(({ file, diagnostics, verified, errors }) => ({ file, diagnostics, verified, errors }));
         const baseline = !format ? captureBaseline(records, root, result.fingerprints, new Map(result.files.map(file => [file.file, file.original]))) : undefined;
         const verification = { schema: 1, command: format ? "format" : "lint", providers: result.providers, ...(args.range ? { range: args.range } : {}), ...(baseline ? { baseline } : {}) };
-        const plan = await saveEditPlan(args, { kind: format ? "format" : "lint", files: changed, actions: changed.map(file => ({ file: file.file, tools: file.providers.map(provider => provider.name) })), skipped: [...result.skipped, ...result.files.flatMap(file => file.skipped)], verification, guards: [...result.guards].map(([file, sha256]) => ({ file, sha256 })) });
+        const plan = await saveEditPlan(args, { kind: format ? "format" : "lint", files: result.files, actions: changed.map(file => ({ file: file.file, tools: file.providers.map(provider => provider.name) })), skipped: [...result.skipped, ...result.files.flatMap(file => file.skipped)], verification, guards: [...result.guards].map(([file, sha256]) => ({ file, sha256 })) });
         return { data: { ...base, ...plan.data, success: true, verified, hasErrors, check: !!args.check }, code: args.check ? changed.length ? 1 : 0 : !format && args.plan && !changed.length && hasErrors ? 1 : 0,
             human: [`${args.command}: ${result.files.length} file(s), ${changed.length} would change${summary.total ? `, ${summary.total} diagnostic(s)` : ""}`, scopeNote, plan.human].filter(Boolean).join("\n") };
     }
-    return { data: base, code: hasErrors ? 1 : 0, human: [`lint: ${result.files.length} file(s), ${summary.total} diagnostic(s)`, scopeNote, ...summary.diagnostics.map(diagnostic => `${diagnostic.file}:${diagnostic.line}:${diagnostic.column} [${diagnostic.source ?? "lint"}${diagnostic.code === undefined ? "" : `:${diagnostic.code}`}] ${diagnostic.message}`), summary.truncated ? `Showing ${summary.shown}; use --limit 0 --json for all diagnostics` : undefined].filter(Boolean).join("\n") };
+    return { data: base, code: comparison ? comparison.verified === true && comparison.newErrors === 0 ? 0 : 1 : hasErrors ? 1 : 0, human: [`lint: ${result.files.length} file(s), ${summary.total} diagnostic(s)`, scopeNote, comparison ? comparison.verified ? `Baseline: ${JSON.stringify(comparison.counts)}; ${comparison.newErrors} new error(s)` : String(comparison.hint) : undefined, baselineSaved ? `Baseline saved: ${baselineSaved}` : undefined, ...summary.diagnostics.map(diagnostic => `${diagnostic.file}:${diagnostic.line}:${diagnostic.column} [${diagnostic.source ?? "lint"}${diagnostic.code === undefined ? "" : `:${diagnostic.code}`}] ${diagnostic.message}`), summary.truncated ? `Showing ${summary.shown}; use --limit 0 --json for all diagnostics` : undefined].filter(Boolean).join("\n") };
+}
+export async function combinedPlan(args) {
+    if (!args.plan || args.apply || !!args.file === args.changed || args.query !== undefined || args.symbol || args.column !== undefined || args.line !== 1 || args.range || args.workspace || args.kind && args.kind !== "source.fixAll" && !args.kind.startsWith("source.fixAll."))
+        throw new Error("Use fix --file PATH or --changed --format --plan PATH.json; select reviewed quickfixes separately");
+    const paths = args.file ? [resolveFile(args.file, args.cwd)] : (await changedFiles(args.cwd)).filter(file => file !== resolve(args.cwd, args.plan));
+    if (paths.length > MAX_FILES)
+        throw new Error("Combined fix scope exceeds 200 files");
+    const pool = { clients: new Map(), diagnostics: false }, deadline = Date.now() + args.timeout;
+    try {
+        const lint = await collect(args, paths, false, true, pool);
+        const bad = (result) => result.files.some(file => !file.verified || file.errors.length);
+        const failureResult = (step, result) => ({ code: 1, data: { success: false, applied: false, saved: false, verified: false, step, errors: result.files.flatMap(file => file.errors.map(error => ({ file: file.file, error }))) }, human: `${step} analysis failed; no plan was written` });
+        if (bad(lint))
+            return failureResult("lint", lint);
+        const format = await collect({ ...args, tool: args.formatter, server: undefined, kind: undefined, timeout: Math.max(1, deadline - Date.now()) }, paths, true, false, pool, undefined, new Map(lint.files.map(file => [file.file, file.updated])));
+        if (bad(format))
+            return failureResult("format", format);
+        const guards = new Map(lint.guards);
+        for (const [file, digest] of format.guards) {
+            if (guards.has(file) && guards.get(file) !== digest)
+                throw new Error(`Configuration changed between lint and format: ${file}`);
+            guards.set(file, digest);
+        }
+        if (guards.size > MAX_FILES * 16)
+            throw new Error("Combined configuration scope exceeds 3200 paths");
+        const files = new Map(lint.files.map(file => [file.file, file]));
+        for (const file of format.files) {
+            if (files.has(file.file) && files.get(file.file).original !== file.original)
+                throw new Error(`Source changed between lint and format: ${file.file}`);
+            files.set(file.file, file);
+        }
+        const baseline = captureBaseline(lint.files, realpathSync(gitRoot(args.cwd)), lint.fingerprints, new Map(lint.files.map(file => [file.file, file.original])));
+        const verification = { schema: 1, command: "fix-format", steps: [{ schema: 1, command: "lint", providers: lint.providers, baseline }, { schema: 1, command: "format", providers: format.providers }] };
+        const plan = await saveEditPlan(args, { kind: "fix-format", files: [...files.values()], verification, guards: [...guards].map(([file, sha256]) => ({ file, sha256 })), actions: [...files.values()].filter(file => file.original !== file.updated).map(file => ({ file: file.file, steps: ["lint", "format"] })), skipped: [...lint.skipped, ...format.skipped, ...lint.files.flatMap(file => file.skipped)] });
+        return { ...plan, data: { ...plan.data, verified: true, lintDiagnostics: lint.files.reduce((n, file) => n + file.diagnostics.length, 0), checked: { lint: lint.files.length, format: format.files.length }, steps: ["lint", "format"] } };
+    }
+    finally {
+        await Promise.allSettled([...pool.clients.values()].map(client => client.close()));
+    }
+}
+function combinedSteps(files, verification, args) {
+    if (verification.command !== "fix-format")
+        return undefined;
+    if (verification.schema !== 1 || !Array.isArray(verification.steps) || verification.steps.length !== 2 || object(verification.steps[0]).command !== "lint" || object(verification.steps[1]).command !== "format")
+        throw new Error("Invalid combined-plan verification descriptor");
+    const steps = verification.steps.map(object), paths = new Set(steps.flatMap(step => toolPlanProviders([], step, args).map(provider => provider.file)));
+    if (files.some(file => !paths.has(file)))
+        throw new Error("Combined plan has an unverified source file");
+    return steps;
 }
 export async function verifyToolPlan(files, verification, args) {
+    const steps = combinedSteps(files, verification, args);
+    if (steps) {
+        const results = [];
+        for (const step of steps)
+            results.push(await verifyToolPlan([...new Set(toolPlanProviders([], step, args).map(provider => provider.file))], step, args));
+        const verified = results.every(result => result.data.verified === true), hasErrors = results.some(result => result.data.hasErrors !== false);
+        return { code: verified && !hasErrors ? 0 : 1, data: { success: verified && !hasErrors, verified, hasErrors, comparison: results[0].data.comparison, checks: results.map((result, index) => { const { comparison: _comparison, ...data } = result.data; return { command: index ? "format" : "lint", ...data }; }) }, human: results.map(result => result.human).join("\n") };
+    }
     const providers = toolPlanProviders(files, verification, args), paths = [...new Set(providers.map(provider => provider.file))];
     const format = verification.command === "format";
     const result = await collect({ ...args, command: String(verification.command), apply: false, file: undefined, changed: false, plan: undefined, tool: undefined, server: undefined, range: verification.range }, paths, format, false, undefined, providers);
@@ -416,6 +486,12 @@ function toolPlanProviders(files, verification, args) {
     return providers;
 }
 export async function validateToolPlan(files, verification, args) {
+    const steps = combinedSteps(files, verification, args);
+    if (steps) {
+        for (const step of steps)
+            await validateToolPlan([...new Set(toolPlanProviders([], step, args).map(provider => provider.file))], step, args);
+        return;
+    }
     for (const provider of toolPlanProviders(files, verification, args)) {
         const command = provider.kind === "cli" && tools.includes(provider.name) ? resolveToolCommand(provider.name, provider.file, args.globalBinsOnly) : undefined;
         const server = provider.kind === "lsp" ? matchingServers(args, provider.file).find(server => server.name === provider.name) : undefined;

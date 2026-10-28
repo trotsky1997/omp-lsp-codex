@@ -174,14 +174,15 @@ function cargoSourceInput(records: ObjectValue[], pkg: ObjectValue, root: string
   return false;
 }
 
-export async function runToolProcess(args: Options, file: string, tool: ToolName, operation: Operation, cache?: Map<string, Promise<ToolProcessResult>>): Promise<ToolProcessResult> {
+export async function runToolProcess(args: Options, file: string, tool: ToolName, operation: Operation, cache?: Map<string, Promise<ToolProcessResult>>, inputText?: string): Promise<ToolProcessResult> {
   const command = resolveToolCommand(tool, file, args.globalBinsOnly);
   if (!command) throw new Error(`${tool} is unavailable. Install: ${INSTALL[tool]}`);
   if (operation === "format" ? ["eslint", "clippy", "oxlint"].includes(tool) : ["prettier", "rustfmt", "oxfmt"].includes(tool)) throw new Error(`${tool} does not support ${operation}; select a matching --tool`);
   const original = readText(file), configFiles = toolConfigFiles(tool, file, args.globalConfigOnly), configSnapshots = new Map<string, string>(), deadline = Date.now() + args.timeout, cwd = tool === "oxlint" || tool === "oxfmt" ? gitRoot(dirname(file)) : dirname(file);
+  if (inputText !== undefined && (operation !== "format" || !inputText.isWellFormed() || Buffer.byteLength(inputText) > MAX_FILE_BYTES)) throw new Error("Invalid formatter input preview");
   let configBytes = 0;
   for (const path of configFiles) { const text = readText(path); configBytes += Buffer.byteLength(text); if (configBytes > MAX_FILE_BYTES) throw new Error("Tool configuration exceeds 16 MiB; narrow scope"); configSnapshots.set(path, text); }
-  const run = (argv: string[], input = original, executable = command, directory = cwd) => processOutput(executable, argv, directory, input, deadline);
+  const run = (argv: string[], input = inputText ?? original, executable = command, directory = cwd) => processOutput(executable, argv, directory, input, deadline);
   const cachedCargo = (executable: string, argv: string[], directory: string) => {
     if (!cache) return run(argv, "", executable, directory);
     let reports = cargoReports.get(cache); if (!reports) { reports = new Map(); cargoReports.set(cache, reports); }

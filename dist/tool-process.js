@@ -220,13 +220,15 @@ function cargoSourceInput(records, pkg, root, targetDirectory, file) {
     }
     return false;
 }
-export async function runToolProcess(args, file, tool, operation, cache) {
+export async function runToolProcess(args, file, tool, operation, cache, inputText) {
     const command = resolveToolCommand(tool, file, args.globalBinsOnly);
     if (!command)
         throw new Error(`${tool} is unavailable. Install: ${INSTALL[tool]}`);
     if (operation === "format" ? ["eslint", "clippy", "oxlint"].includes(tool) : ["prettier", "rustfmt", "oxfmt"].includes(tool))
         throw new Error(`${tool} does not support ${operation}; select a matching --tool`);
     const original = readText(file), configFiles = toolConfigFiles(tool, file, args.globalConfigOnly), configSnapshots = new Map(), deadline = Date.now() + args.timeout, cwd = tool === "oxlint" || tool === "oxfmt" ? gitRoot(dirname(file)) : dirname(file);
+    if (inputText !== undefined && (operation !== "format" || !inputText.isWellFormed() || Buffer.byteLength(inputText) > MAX_FILE_BYTES))
+        throw new Error("Invalid formatter input preview");
     let configBytes = 0;
     for (const path of configFiles) {
         const text = readText(path);
@@ -235,7 +237,7 @@ export async function runToolProcess(args, file, tool, operation, cache) {
             throw new Error("Tool configuration exceeds 16 MiB; narrow scope");
         configSnapshots.set(path, text);
     }
-    const run = (argv, input = original, executable = command, directory = cwd) => processOutput(executable, argv, directory, input, deadline);
+    const run = (argv, input = inputText ?? original, executable = command, directory = cwd) => processOutput(executable, argv, directory, input, deadline);
     const cachedCargo = (executable, argv, directory) => {
         if (!cache)
             return run(argv, "", executable, directory);

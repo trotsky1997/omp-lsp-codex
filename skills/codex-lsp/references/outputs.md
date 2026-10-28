@@ -11,9 +11,12 @@ Prefer human text for reading; JSON is useful for checking states and composing 
 | inlay-hints | `hints,resolution` |
 | complete | `items,resolution` |
 | diagnostics --baseline | `comparison.counts,comparison.new` |
+| diagnostics --workspace | `coverage,counts,checked` |
+| lint --baseline | `comparison.counts,comparison.new` |
+| check | `failedChecks,checks` |
 | lint | `checked` (per-file `providers`), `checkedFiles`, `diagnostics`, `diagnosticCount` |
 | format --check | `checked`, `checkedFiles,changedFiles,needsFormatting,ignoredFiles` |
-| lint/format --plan or format preview | `files` (each `file,editCount,diff`), `saved,plan` |
+| lint/format/fix/rename/code-actions --plan or format preview | `files` (each `file,editCount,diff`), `saved,plan` |
 | impact | `counts,changedSymbols,candidateTests` |
 | snippet | `snippet,range` |
 | signature-help | `signatures,activeParameterLabel` |

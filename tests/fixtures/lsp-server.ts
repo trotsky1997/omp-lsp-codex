@@ -141,7 +141,7 @@ for await (const chunk of process.stdin) {
             if (error) await send({ id: message.id, error });
             else if (scenario.requiresIndex && method === "textDocument/references" && !indexReady) await reply([]);
             else if (scenario.manualCodeActions && method === "textDocument/codeAction" && object(params.context).triggerKind !== 1) await reply([]);
-            else await reply(scenario.responsesByItem?.[method]?.[key] ?? scenario.responsesByPosition?.[method]?.[point] ?? scenario.responses?.[method] ?? null);
+            else await reply(scenario.responsesByItem?.[method]?.[key] ?? scenario.responsesByPosition?.[method]?.[point] ?? scenario.responsesByText?.[method]?.[documentTexts.get(String(object(params.textDocument).uri)) ?? ""] ?? scenario.responses?.[method] ?? null);
           }
         }
     }

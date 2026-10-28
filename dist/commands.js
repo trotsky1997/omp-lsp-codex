@@ -10,11 +10,11 @@ import { findReference, symbolAt } from "./devdocs.js";
 import { resolveSymbolColumn } from "./omp/symbol-column.js";
 import { version } from "./version.js";
 import { compactText, failure, selectFields, textPrefix } from "./output.js";
-import { syntaxLanguage, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.js";
+import { syntaxLanguage, syntaxLookup, syntaxPosition, syntaxSnippet, syntaxTool } from "./syntax.js";
 import { batchQueries } from "./batch.js";
 import { attachTargets, resolveTarget } from "./targets.js";
 import { apiDiff, dependencies } from "./analysis.js";
-import { applyPlan, fixPlan } from "./fixes.js";
+import { applyPlan, fixPlan, validateEdits, workspaceEditPlan } from "./fixes.js";
 import { inspectContext } from "./context.js";
 import { callHierarchy, complete, normalizeCodeAction, requestedActionKinds } from "./semantic.js";
 import { captureBaseline, compareBaseline, loadBaseline, saveBaseline, serverFingerprint } from "./baseline.js";
@@ -22,7 +22,7 @@ import { impactAnalysis } from "./impact.js";
 import { typeHierarchy, inlayHints, unsupportedFeature } from "./type-hints.js";
 import { firstPage, nextPage } from "./pagination.js";
 import { budgetData } from "./budget.js";
-import { declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.js";
+import { combinedPlan, declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.js";
 export function outputData(data, args) {
     const selected = args.fields ? selectFields(data, args.fields) : data;
     return args.budget === undefined ? selected : budgetData(selected, args.budget);
@@ -101,6 +101,7 @@ const READ_ONLY = new Set([
     "textDocument/documentSymbol",
     "textDocument/codeAction",
     "workspace/symbol",
+    "workspace/diagnostic",
     "textDocument/diagnostic",
     "textDocument/semanticTokens/full",
     "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls",
@@ -119,7 +120,7 @@ const NAVIGATION = {
 };
 const POSITION_METHODS = new Set([...Object.values(NAVIGATION), "textDocument/declaration", "textDocument/signatureHelp", "textDocument/prepareCallHierarchy", "textDocument/prepareTypeHierarchy", "textDocument/completion"]);
 export async function sessionClient(server, args, session) {
-    const key = JSON.stringify([server, args.timeout]);
+    const key = JSON.stringify(server);
     let client = session?.clients.get(key);
     if (client && !client.reusable) {
         await client.close();
@@ -452,7 +453,10 @@ async function symbols(args, shared, session) {
 async function rename(args, shared) {
     if (!args.newName)
         throw new Error("--new-name is required");
-    const { server, path, client, uri, text } = shared ?? await fileContext(args);
+    if (args.plan && args.apply)
+        throw new Error("Choose --plan or --apply");
+    const pool = { clients: new Map(), diagnostics: !!args.plan };
+    const current = shared ?? await fileContext(args, true, pool), { server, path, client, uri, text } = current;
     try {
         const edit = (await client.request("textDocument/rename", {
             textDocument: { uri },
@@ -461,6 +465,8 @@ async function rename(args, shared) {
         })) ?? {};
         if (![...textChanges(edit).values()].some((x) => x.length))
             throw new Error("The language server returned no rename edits; try the symbol's declaration or check rename support");
+        if (args.plan)
+            return await workspaceEditPlan(args, edit, file => file === path ? Promise.resolve(current) : fileContext({ ...args, file }, true, pool), [{ file: path, kind: "rename", newName: args.newName, server: server.name }]);
         const summary = outputInfo([...textChanges(edit).values()].reduce((n, items) => n + items.length, 0), args.limit);
         const preview = editSummary(edit, summary.shown, editTextLimit([edit], summary.shown, !!args.limit)), edits = preview.lines;
         if (preview.textTruncated) {
@@ -490,11 +496,14 @@ async function rename(args, shared) {
     }
     finally {
         if (!shared)
-            await client.close();
+            await Promise.allSettled([...pool.clients.values()].map(client => client.close()));
     }
 }
 async function codeActions(args, session) {
-    const { server, path, client, uri, text } = await fileContext(args, true, session);
+    if (args.plan && (args.apply || session))
+        throw new Error("Save code-action plans outside read-only sessions, then use apply --plan");
+    const pool = session ?? { clients: new Map(), diagnostics: !!args.plan };
+    const current = await fileContext(args, true, pool), { server, path, client, uri, text } = current;
     let edited = false;
     let editFailure;
     try {
@@ -534,6 +543,15 @@ async function codeActions(args, session) {
         }
         if (chosen && "kind" in chosen)
             chosen = normalizeCodeAction(chosen, uri, text);
+        if (args.plan) {
+            if (!args.query || matches.length !== 1 || !chosen)
+                throw new Error("Save one reviewed code action with --query INDEX|TITLE --plan PATH.json");
+            if ("disabled" in chosen && chosen.disabled)
+                throw new Error(chosen.disabled.reason);
+            if (chosen.command || !("edit" in chosen) || !chosen.edit)
+                throw new Error("Plans require pure-text edits; review server commands with code-actions --apply");
+            return await workspaceEditPlan(args, chosen.edit, file => file === path ? Promise.resolve(current) : fileContext({ ...args, file }, true, pool), [{ file: path, index: matches[0].index, title: chosen.title, server: server.name }]);
+        }
         if (!args.apply) {
             const items = matches
                 .map(({ action, index }) => {
@@ -607,7 +625,7 @@ async function codeActions(args, session) {
     }
     finally {
         if (!session)
-            await client.close();
+            await Promise.allSettled([...pool.clients.values()].map(client => client.close()));
     }
 }
 export function status(args) {
@@ -812,6 +830,8 @@ export async function changedFiles(cwd) {
     return [...found].sort();
 }
 export async function diagnostics(args, shared, session, providers) {
+    if (args.workspace)
+        return workspaceDiagnostics(args, session);
     const before = args.baseline ? loadBaseline(resolve(args.cwd, expandHome(args.baseline))) : undefined;
     if (args.file && args.changed || !args.file && !args.changed && !before)
         throw new Error("Choose exactly one of --file or --changed, or provide --baseline");
@@ -890,7 +910,9 @@ export async function diagnostics(args, shared, session, providers) {
                 await client?.close();
         }
     }
-    const checked = [...records.values()];
+    return diagnosticResult(args, [...records.values()], root, [...groups.values()].map(group => serverFingerprint(compilerDiagnostics(group.server))), sourceTexts, before, configurationChecks);
+}
+function diagnosticResult(args, checked, root, fingerprints, sourceTexts, before, configurationChecks = []) {
     if (args.baseline || args.saveBaseline)
         for (const record of checked)
             if (sourceTexts.has(record.file) && readText(record.file) !== sourceTexts.get(record.file)) {
@@ -898,7 +920,6 @@ export async function diagnostics(args, shared, session, providers) {
                 record.errors.push("Source changed during baseline analysis; retry diagnostics");
             }
     const verified = checked.every((x) => x.verified), hasErrors = checked.some((x) => x.diagnostics.some((d) => (d.severity ?? 1) === 1));
-    const fingerprints = [...groups.values()].map(group => serverFingerprint(compilerDiagnostics(group.server)));
     const snapshot = (args.baseline || args.saveBaseline) && verified ? captureBaseline(checked, root, fingerprints, sourceTexts) : undefined;
     let baselineSaved;
     if (args.saveBaseline) {
@@ -963,6 +984,113 @@ export async function diagnostics(args, shared, session, providers) {
                 ...["new", "resolved", "existing"].flatMap(kind => (Array.isArray(object(comparison[kind]).issues) ? object(comparison[kind]).issues : []).map(issue => `${kind}: ${issue.file}:${issue.line}:${issue.column} ${issue.message}`))] : []),
             ...(baselineSaved ? [`Baseline saved: ${baselineSaved}`] : []),].join("\n"),
     };
+}
+async function workspaceDiagnostics(args, session) {
+    if (args.changed || args.apply || args.watch)
+        throw new Error("Use diagnostics --workspace [--file PATH | --server NAME] without --changed/--watch/--apply");
+    const root = realpathSync(gitRoot(args.cwd)), anchor = args.file ? resolveFile(args.file, args.cwd) : undefined;
+    const before = args.baseline ? loadBaseline(resolve(args.cwd, expandHome(args.baseline))) : undefined;
+    if (before && before.root !== root)
+        throw new Error("Baseline workspace mismatch");
+    const available = availableServers(loadConfig(anchor ? dirname(anchor) : args.cwd, args.globalConfigOnly), anchor ? dirname(anchor) : args.cwd, args.globalBinsOnly);
+    const servers = (anchor ? fileServers(available, anchor) : available).filter(server => !args.server || server.name === args.server);
+    if (!servers.length)
+        throw new Error("No available workspace provider; use status --file PATH or setup LANGUAGE");
+    const pool = session ?? { clients: new Map(), diagnostics: true }, records = new Map(), texts = new Map(), fingerprints = [], coverage = [];
+    const deadline = Date.now() + args.timeout;
+    let bytes = 0;
+    try {
+        for (const configured of servers) {
+            const server = compilerDiagnostics(configured), detail = { server: server.name, root: server.root, supported: false, verified: false, checkedFiles: 0 };
+            coverage.push(detail);
+            try {
+                if (Date.now() >= deadline)
+                    throw new Error("Workspace diagnostic deadline exceeded; select --server NAME or increase --timeout");
+                const client = await sessionClient(server, { ...args, apply: false }, pool);
+                if (object(client.capabilities.diagnosticProvider).workspaceDiagnostics !== true) {
+                    const checker = server.name === "rust-analyzer" ? "cargo check" : /typescript|tsgo/i.test(server.name) ? `${/tsgo/i.test(basename(server.resolvedCommand)) ? "tsgo" : "tsc"} --noEmit` : /python|pyright|pyrefly|^ty(?:$|[-_])/i.test(server.name) ? "pyright or the configured Python checker" : "see project scripts";
+                    detail.hint = `${server.name} does not advertise workspace diagnostics; run the project's native type-check command (${checker})`;
+                    continue;
+                }
+                detail.supported = true;
+                await client.refresh();
+                if (server.name === "rust-analyzer")
+                    await client.waitWorkspace(Math.max(1, deadline - Date.now()));
+                const report = await client.getWorkspaceDiagnostics(Math.max(1, deadline - Date.now()));
+                for (const row of report) {
+                    const raw = uriFile(row.uri);
+                    if (!raw || !insideWorkspace(root, raw))
+                        throw new Error(`Workspace provider returned a non-local or outside-workspace URI: ${row.uri}`);
+                    const file = resolveFile(raw, args.cwd), text = readText(file), document = client.documents.get(row.uri);
+                    if (row.version != null && (!document || document.version !== row.version || document.text !== text))
+                        throw new Error(`Workspace diagnostics have an unverifiable document version: ${file}`);
+                    if (texts.has(file) && texts.get(file) !== text)
+                        throw new Error(`Source changed during workspace diagnostics: ${file}`);
+                    if (!texts.has(file)) {
+                        bytes += Buffer.byteLength(text);
+                        texts.set(file, text);
+                    }
+                    bytes += Buffer.byteLength(JSON.stringify(row.items));
+                    if (bytes > MAX_FILE_BYTES || texts.size > MAX_FILES)
+                        throw new Error("Workspace diagnostic scope exceeds 16 MiB or 200 files; select a narrower provider");
+                    for (const item of row.items)
+                        validateEdits(text, [{ range: item.range, newText: "" }]);
+                    const record = records.get(file) ?? { file, diagnostics: [], verified: true, errors: [] };
+                    record.diagnostics.push(...row.items);
+                    records.set(file, record);
+                }
+                detail.checkedFiles = report.length;
+                detail.verified = true;
+                fingerprints.push(serverFingerprint(server));
+            }
+            catch (error) {
+                detail.error = String(failure(error, args.limit).error);
+            }
+        }
+        for (const record of records.values())
+            if (readText(record.file) !== texts.get(record.file)) {
+                record.verified = false;
+                record.errors.push("Source changed during workspace analysis; retry");
+            }
+        const complete = coverage.every(row => row.verified === true) && [...records.values()].every(row => row.verified);
+        if (args.saveBaseline && !complete)
+            throw new Error("Cannot save a partial workspace baseline; select a supported --server or --file provider");
+        const result = diagnosticResult(args, [...records.values()], root, fingerprints, texts, complete ? before : undefined);
+        return { ...result, code: complete ? result.code : 1, data: { ...result.data, success: complete && result.data.success === true, verified: complete && result.data.verified === true, ...(!complete && before ? { comparison: { verified: false, hint: "Workspace coverage is incomplete; no resolved issues are claimed" } } : {}), coverage: { scope: "server-workspaces", basis: "Server-reported workspace diagnostics; provider configuration controls included files", complete, requestedRoot: root, providers: coverage } }, human: [result.human, ...coverage.map(row => `${row.server}: ${row.verified ? `${row.checkedFiles} reported file(s)` : row.error ?? row.hint}`)].join("\n") };
+    }
+    finally {
+        if (!session)
+            await Promise.allSettled([...pool.clients.values()].map(client => client.close()));
+    }
+}
+async function check(args, session) {
+    if (!!args.file === args.changed || args.apply || args.workspace || args.plan || args.symbol || args.column !== undefined || args.line !== 1 || args.query !== undefined)
+        throw new Error("Use check --changed or --file PATH for read-only diagnostics, lint and format checks");
+    const pool = session ?? { clients: new Map(), diagnostics: true }, checks = [], deadline = Date.now() + args.timeout;
+    try {
+        for (const command of ["diagnostics", "lint", "format"]) {
+            let result;
+            try {
+                if (Date.now() >= deadline)
+                    throw new Error("Check deadline exceeded; narrow scope or increase --timeout");
+                const options = { ...args, command, check: command === "format", timeout: Math.max(1, deadline - Date.now()) };
+                result = command === "diagnostics" ? await diagnostics(options, undefined, pool) : await runTooling(options, pool);
+            }
+            catch (error) {
+                result = { code: 1, data: { success: false, verified: false, error: String(failure(error, args.limit).error) }, human: String(error) };
+            }
+            const data = result.data, checked = Array.isArray(data.checked) ? data.checked.map(object) : [];
+            const errors = [...(Array.isArray(data.errors) ? data.errors.map(object) : []), ...checked.flatMap(row => (Array.isArray(row.errors) ? row.errors : []).map(error => ({ file: row.file, error }))), ...(data.error ? [{ error: data.error }] : [])];
+            const { items, ...meta } = compactText((args.limit ? errors.slice(0, args.limit) : errors), ["error"], args.limit);
+            checks.push({ command, code: result.code ?? 0, success: (result.code ?? 0) === 0 && data.success !== false, verified: data.verified === true, hasErrors: data.hasErrors, checkedFiles: data.checkedFiles ?? checked.length, diagnosticCount: data.diagnosticCount ?? (command === "diagnostics" ? data.total : undefined), ...(data.counts ? { counts: data.counts } : {}), ...(data.needsFormatting !== undefined ? { needsFormatting: data.needsFormatting, changedFiles: data.changedFiles } : {}), skippedCount: data.skippedCount ?? 0, ignoredFiles: data.ignoredFiles ?? 0, errors: items, errorCount: errors.length, ...meta });
+        }
+        const failedChecks = checks.filter(row => !row.success || !row.verified).map(row => row.command), verified = checks.every(row => row.verified);
+        return { code: failedChecks.length ? 1 : 0, data: { command: "check", success: !failedChecks.length, verified, failedChecks, checks, hint: "Run the named diagnostics/lint/format command for issue details; check preserves source and Git index" }, human: checks.map(row => `${row.command}: ${row.success && row.verified ? "passed" : "failed"}, ${row.checkedFiles} file(s)${row.diagnosticCount !== undefined ? `, ${row.diagnosticCount} diagnostic(s)` : ""}${row.needsFormatting ? `, ${row.changedFiles} need formatting` : ""}${row.errorCount ? `, ${row.errorCount} tool error(s)` : ""}`).join("\n") };
+    }
+    finally {
+        if (!session)
+            await Promise.allSettled([...pool.clients.values()].map(client => client.close()));
+    }
 }
 async function inspect(args, session) {
     if (args.apply || args.workspace || args.changed)
@@ -1243,17 +1371,34 @@ async function request(args) {
     }
 }
 export async function run(args, session) {
-    const resolved = resolveTarget(args), result = await runQuery(resolved, session);
-    try {
-        return { ...result, data: attachTargets(resolved, result.data) };
+    let resolved = resolveTarget(args);
+    const finish = (result) => {
+        try {
+            return { ...result, data: attachTargets(resolved, result.data) };
+        }
+        catch (error) {
+            return { ...result, data: { ...result.data, targets: [], targetsHint: `Targets unavailable; use explicit file/line anchors. ${error instanceof Error ? error.message : String(error)}` } };
+        }
+    };
+    if (resolved.file && resolved.symbol && resolved.column === undefined && resolved.lineExplicit === false && resolved.line === 1 && ["hover", "definition", "references", "type-definition", "implementation", "snippet", "inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes"].includes(resolved.command)) {
+        const file = resolveFile(resolved.file, resolved.cwd);
+        if (syntaxLanguage(file)) {
+            const lookup = await syntaxLookup(file, readText(file), resolved.symbol, resolved.globalBinsOnly);
+            const candidates = resolved.lineExplicit ? lookup.candidates.filter(row => row.line === resolved.line) : lookup.candidates;
+            const selected = resolved.lineExplicit ? candidates.length === 1 ? { line: candidates[0].line - 1, character: candidates[0].column - 1 } : undefined : lookup.position;
+            if (!selected) {
+                const shown = candidates.slice(0, resolved.limit || undefined), hint = candidates.length ? "Choose a candidate with --line N --column N, or qualify the symbol by its containing class/module." : "No matching declaration; use symbols --file PATH --query NAME or an explicit source position.";
+                const data = { success: false, found: false, reason: candidates.length ? "ambiguous-symbol" : "symbol-not-found", candidates: shown, total: candidates.length, shown: shown.length, truncated: shown.length < candidates.length, hint };
+                return finish({ code: 1, data, human: [hint, ...shown.map(row => `${row.file}:${row.line}:${row.column} ${row.symbol}`)].join("\n") });
+            }
+            resolved = { ...resolved, line: selected.line + 1, column: selected.character + 1, query: resolved.query ?? (resolved.command === "inspect" ? resolved.symbol.split(/::|\./).at(-1).replace(/#\d+$/, "") : undefined), symbol: undefined, lineExplicit: true };
+        }
     }
-    catch (error) {
-        return { ...result, data: { ...result.data, targets: [], targetsHint: `Targets unavailable; use explicit file/line anchors. ${error instanceof Error ? error.message : String(error)}` } };
-    }
+    return finish(await runQuery(resolved, session));
 }
 async function runQuery(args, session) {
     const navigation = Object.hasOwn(NAVIGATION, args.command);
-    if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix", "lint", "format"].includes(args.command)))
+    if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix", "lint", "format", "check"].includes(args.command)))
         throw new Error(`${args.command} is read-only; omit --apply`);
     if (args.command === "inlay-hints" && !args.range)
         throw new Error("inlay-hints requires --range START_LINE:COL-END_LINE:COL");
@@ -1275,6 +1420,7 @@ async function runQuery(args, session) {
     if (navigation)
         return navigate(args, undefined, session);
     switch (args.command) {
+        case "check": return check(args, session);
         case "lint":
         case "format":
             return runTooling(args, session);
@@ -1285,6 +1431,8 @@ async function runQuery(args, session) {
         case "fix": {
             if (!args.plan)
                 throw new Error("Fix plans require --plan PATH.json");
+            if (args.format)
+                return combinedPlan(args);
             if (args.tool)
                 return runTooling({ ...args, command: "lint" });
             if (!args.server && args.query === undefined && args.symbol === undefined && args.column === undefined && args.line === 1 && !args.range && (!args.kind || args.kind === "source.fixAll" || args.kind.startsWith("source.fixAll."))) {

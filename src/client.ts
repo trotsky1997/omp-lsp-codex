@@ -379,6 +379,10 @@ export class LspClient {
     }
     return updated.size > 0;
   }
+  async previewText(uri: string, text: string): Promise<void> {
+    if (!this.documents.has(uri) || !text.isWellFormed() || Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error("Invalid in-memory document preview");
+    if (this.documents.get(uri)!.text !== text) await this.#syncDocument(uri, text);
+  }
   async #syncDocument(uri: string, text: string): Promise<void> {
     const document = this.documents.get(uri);
     if (!document) return;
@@ -461,6 +465,17 @@ export class LspClient {
       await sleep(50);
     }
     return false;
+  }
+  async getWorkspaceDiagnostics(timeoutMs = this.timeoutMs): Promise<{ uri: string; items: Diagnostic[]; version?: number | null }[]> {
+    const capability = object(this.capabilities.diagnosticProvider);
+    if (capability.workspaceDiagnostics !== true) throw new Error(`${this.server.name} does not advertise workspace diagnostics`);
+    const report = object(await this.request("workspace/diagnostic", { previousResultIds: [], ...(typeof capability.identifier === "string" ? { identifier: capability.identifier } : {}) }, timeoutMs));
+    if (!Array.isArray(report.items) || report.items.length > MAX_FILES) throw new Error("Invalid workspace diagnostic report or scope exceeds 200 files");
+    return report.items.map(raw => {
+      const item = object(raw);
+      if (typeof item.uri !== "string" || item.kind !== "full" || !validDiagnostics(item.items) || item.version != null && (!Number.isSafeInteger(item.version) || Number(item.version) < 0)) throw new Error("Invalid or incomplete workspace diagnostic item");
+      return { uri: item.uri, items: item.items, ...(item.version !== undefined ? { version: item.version as number | null } : {}) };
+    });
   }
   async getDiagnostics(uri: string, timeoutMs = this.timeoutMs): Promise<{ diagnostics: Diagnostic[]; verified: boolean }> {
     const overflow = this.#diagnosticOverflow;

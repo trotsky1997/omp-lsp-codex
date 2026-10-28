@@ -56,7 +56,7 @@ export function syntaxTool(root: string, globalOnly = false) {
   const command = resolveCommand("ast-grep", root, globalOnly);
   return { available: !!command, command: command ?? null, ...(!command ? { hint: INSTALL } : {}) };
 }
-async function scan(path: string, text: string, mode: "symbol" | "call" | "snippet", symbol?: string, globalOnly = false): Promise<Match[] | undefined> {
+async function scan(path: string, text: string, mode: "symbol" | "call" | "snippet" | "lookup", symbol?: string, globalOnly = false): Promise<Match[] | undefined> {
   const language = syntaxLanguage(path);
   if (!language) return undefined;
   const { command } = syntaxTool(dirname(path), globalOnly);
@@ -78,6 +78,14 @@ async function scan(path: string, text: string, mode: "symbol" | "call" | "snipp
     ],
   } });
   const declarations = DECLARATIONS[family];
+  if (mode === "lookup") {
+    rules.push({ id: "lookup", language, rule: { all: [
+      { any: [...declarations, ...(["TypeScript", "JavaScript"].includes(family) ? ["variable_declarator"] : [])].map(kind => ({ kind })) },
+      { has: { field: "name", pattern: "$NAME", stopBy: "end" } },
+    ] } });
+    if (family === "Rust") rules.push({ id: "owner", language, rule: { all: [{ kind: "impl_item" }, { has: { field: "type", pattern: "$NAME", stopBy: "end" } }] } });
+    if (family === "Python") rules.push({ id: "binding", language, rule: { all: [{ kind: "assignment" }, { has: { field: "left", pattern: "$NAME", stopBy: "end" } }] } });
+  }
   if (mode === "snippet") rules.push({ id: "snippet", language, rule: { any: declarations.map(kind => ({ kind })) } });
   if (mode === "snippet" && language === "Rust") rules.push(
     { id: "attribute", language, rule: { kind: "attribute_item" } },
@@ -117,6 +125,22 @@ async function scan(path: string, text: string, mode: "symbol" | "call" | "snipp
     return { ...node, rule: item.ruleId, captures };
   });
 }
+export async function syntaxLookup(path: string, text: string, spec: string, globalOnly = false) {
+  const matches = await scan(path, text, "lookup", undefined, globalOnly);
+  if (!matches) throw new Error(`Symbol lookup requires a supported grammar and ast-grep. ${INSTALL}`);
+  const source = Buffer.from(text), { name, occurrence } = symbolSpec(spec), parts = name.split(/::|\./), leaf = parts.at(-1)!;
+  const names = (node: Match) => (node.captures.NAME?.text ?? "").replace(/<.*$/s, "").split("::").at(-1)!;
+  const candidates = matches.filter(node => ["lookup", "binding"].includes(node.rule) && names(node).toLowerCase() === leaf.toLowerCase()).map(node => {
+    const parents = matches.filter(parent => parent.start <= node.start && parent.end >= node.end && (parent.start < node.start || parent.end > node.end)).sort((a, b) => a.start - b.start || b.end - a.end);
+    const qualified = [...parents.map(names), names(node)].filter(Boolean).join(".");
+    return { file: path, symbol: qualified, ...point(source, node.captures.NAME.start) };
+  }).filter(node => parts.length === 1 || node.symbol.toLowerCase() === parts.join(".").toLowerCase() || node.symbol.toLowerCase().endsWith("." + parts.join(".").toLowerCase())).sort((a, b) => a.line - b.line || a.character - b.character);
+  const exact = candidates.filter(node => node.symbol.split(".").at(-1) === leaf), selected = exact.length ? exact : candidates;
+  const unique = [...new Map(selected.map(node => [`${node.line}:${node.character}`, node])).values()];
+  const chosen = /#\d+$/.test(spec) ? unique[occurrence - 1] : unique.length === 1 ? unique[0] : undefined;
+  return { position: chosen ? { line: chosen.line, character: chosen.character } : undefined, candidates: unique.map(({ character, line, ...node }) => ({ ...node, line: line + 1, column: character + 1 })) };
+}
+
 function selectSymbol(matches: Match[], source: Buffer, line: number, spec: string): Node {
   const { name, occurrence } = symbolSpec(spec), all = matches.filter(match => match.rule === "symbol")
     .sort((a, b) => a.start - b.start);

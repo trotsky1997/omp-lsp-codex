@@ -2,10 +2,14 @@
 
 ```sh
 codex-lsp lint --changed --budget 3000
+codex-lsp lint --changed --save-baseline /tmp/lint-before.json
+codex-lsp lint --baseline /tmp/lint-before.json --budget 2000
 codex-lsp lint --file src/example.py --tool ruff --plan /tmp/lint.json
 codex-lsp format --changed --check --budget 2000
 codex-lsp format --file src/example.ts --tool prettier --plan /tmp/format.json
 codex-lsp apply --plan /tmp/format.json --budget 3000
+codex-lsp fix --changed --format --plan /tmp/combined.json --budget 3000
+codex-lsp check --changed --budget 2000
 ```
 
 Run from the project directory or pass `--cwd PROJECT`. Choose one of `--file` and `--changed`. Changed scope includes untracked files and reports files without a matching tool as skipped. Save plans outside the checkout so logs and plans stay out of changed scope. The parent directory must exist; plans require a new `.json` path.
@@ -25,6 +29,10 @@ Install the tools declared by the project, using its package manager, version an
 
 ## Read results and plan changes
 
+`lint --save-baseline PATH.json` captures verified results for file/changed scope. Later `lint --baseline PATH.json` rechecks the saved scope; explicit file/changed scope is also available. `comparison` distinguishes new, resolved and existing issues. Existing errors stay visible while exit 0 means no new errors in a verified comparison. Tool identity, configuration and scope must match; configuration changes leave the comparison unverified. Omit selectors to retain the baseline's full scope. Unverified analysis cannot overwrite an existing baseline. Capture/compare separately from repair plans, which retain their own planning baseline.
+
+`check --file PATH` / `check --changed` runs semantic diagnostics, lint and format checks with shared compatible servers. The compact `checks` summary includes each status, checked/ignored/skipped counts and tool errors; `failedChecks` remains available under field selection/budgets. Run the indicated command for detailed diagnostics or formatting previews. It executes no project tests and writes no source.
+
 `lint` reports normalized diagnostics with one-based UTF-16 locations, exact totals, provider names and `verified`/`hasErrors`. A tool/configuration/transport failure leaves `verified:false` with errors. Existing lint errors produce exit 1; successful repair-plan creation can exit 0 while retaining `hasErrors:true` from its baseline. `ignoredFiles` and the human summary expose skipped-by-tool source; each affected provider has `ignored:true`.
 
 `checkedFiles` counts analyzed files, including tool-ignored files. `changedFiles` counts proposed source replacements; plain lint has no replacements until `--plan` requests fixes. Git-ignored files stay outside `--changed`. A tool's lint and format exclusions can differ, such as Ruff's `lint.exclude` versus `format.exclude`.
@@ -34,6 +42,8 @@ Install the tools declared by the project, using its package manager, version an
 Biome's LSP waits for configuration readiness before analysis. With the same CLI executable and project configuration, excluded files return quickly with `ignored:true` and `ignoredBy` metadata. Extension settings or a different executable can leave `ignoreStatus:unknown`; check that provider's hint and use the matching CLI for a scope comparison. Valid empty formatting responses still verify formatter idempotence.
 
 `lint --plan` collects safe CLI fixes or pure-text LSP `source.fixAll` actions. File-wide `fix --plan` also discovers project-declared CLI linters; `fix --tool NAME --plan PATH.json` pins that selection. Explicit `--server`, positions and `--kind quickfix --query INDEX` use LSP action selection, including supported multi-file actions. Commands, edits to other files and ambiguous CLI fixes remain individual `code-actions` workflows. Unsafe suggestions stay unapplied. Multiple linters proposing different replacements require selecting a provider.
+
+For one composed plan, run `fix --format --plan PATH.json`. Lint edits feed the formatter through stdin or an in-memory LSP document, preserving disk source and Git index during both phases. `--tool` or `--server` selects lint; `--formatter NAME` optionally pins a CLI formatter. It accepts file-wide `source.fixAll` kinds. Both configurations and all checked source snapshots bind the plan. Application verifies the lint baseline and formatter idempotence; `comparison` is returned once, and `toolResults.checks` contains phase details when the output budget permits. A formatter exclusion preserves accepted lint edits.
 
 Ruff analysis disables configured `fix` and `fix-only`, keeping lint and plan creation read-only even when the project enables automatic fixes. Only reviewed plan application writes source. Check that an injected or existing issue belongs to an enabled, fixable project rule; disabled rules and non-fixable diagnostics can legitimately produce `saved:false`.
 

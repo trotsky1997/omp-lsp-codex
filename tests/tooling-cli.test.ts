@@ -30,6 +30,19 @@ test("tooling CLI: explicit providers and check/plan have narrow scopes", () => 
   assert.deepEqual(parseOptions(["format", "--range", "1:1-2:1", "--file", "a.ts"]).range, { start: { line: 0, character: 0 }, end: { line: 1, character: 0 } });
 });
 
+test("workflow CLI: new plan, baseline and row modes validate their own scopes", () => {
+  assert.equal(parseOptions(["fix", "--file", "a.ts", "--format", "--formatter", "oxfmt", "--plan", "p.json"]).format, true);
+  assert.equal(parseOptions(["lint", "--baseline", "before.json"]).baseline, "before.json");
+  for (const command of ["rename", "code-actions"]) assert.equal(parseOptions([command, "--plan", "p.json"]).plan, "p.json");
+  for (const argv of [["format", "--format"], ["fix", "--format"], ["fix", "--formatter", "oxfmt"], ["rename", "--plan", "p.json", "--apply"], ["format", "--baseline", "before.json"]]) assert.throws(() => parseOptions(argv), /format|plan|Baseline/);
+  const args = parseOptions(["batch", "--input", "-"]);
+  assert.equal(queryOptions(args, { command: "diagnostics", workspace: true }).workspace, true);
+  assert.equal(queryOptions(args, { command: "lint", file: "a.ts", baseline: "before.json" }).baseline, "before.json");
+  assert.equal(queryOptions(args, { command: "check", file: "a.ts" }).command, "check");
+  assert.equal(queryOptions(args, { command: "inspect", file: "a.ts", symbol: "parse" }).lineExplicit, false);
+  assert.equal(queryOptions(args, { command: "inspect", file: "a.ts", symbol: "parse", line: 1 }).lineExplicit, true);
+});
+
 test("tooling CLI: batch selectors stay per row and plans cannot be smuggled into streams", () => {
   const args = parseOptions(["batch", "--input", "-"]);
   assert.partialDeepStrictEqual(queryOptions(args, { command: "format", file: "a.ts", tool: "prettier", check: true }), { tool: "prettier", server: undefined, check: true, plan: undefined });

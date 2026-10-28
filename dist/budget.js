@@ -1,7 +1,7 @@
 import { textPrefix } from "./output.js";
 const textFields = new Set(["hover", "snippet", "documentation", "detail", "message", "error", "hint", "targetsHint", "description", "title", "label", "signature", "diff", "matching"]);
 const omittedFields = new Set(["workspaceEdit", "workspaceEdits", "data", "relatedInformation", "additionalTextEdits", "textEdits"]);
-const collections = new Set(["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "edges", "targets", "files", "removedFiles", "changes", "servers", "actions", "skipped", "candidateTests", "changedSymbols", "references", "calls"]);
+const collections = new Set(["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "edges", "targets", "files", "removedFiles", "changes", "servers", "actions", "skipped", "candidateTests", "changedSymbols", "references", "calls", "checks", "candidates"]);
 const flags = ["truncated", "textTruncated", "errorTruncated", "workspaceEditOmitted", "detailsOmitted"];
 export function budgetData(data, maximum) {
     if (!Number.isSafeInteger(maximum) || maximum < 512)
@@ -82,7 +82,7 @@ export function budgetData(data, maximum) {
         }
         for (const array of arrays) {
             const filePreview = Array.isArray(array.owner.files) && (typeof array.owner.saved === "boolean" || array.owner.command === "format" && array.owner.check === true);
-            if (Object.hasOwn(array.owner, "shown") && (array.key === "files" && filePreview || ["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "changes"].includes(array.key) && !(array.key === "diagnostics" && filePreview)))
+            if (Object.hasOwn(array.owner, "shown") && (array.key === "files" && filePreview || ["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "changes", "candidates"].includes(array.key) && !(array.key === "diagnostics" && filePreview)))
                 array.owner.shown = array.items.length;
             if (array.items.length < array.length) {
                 array.owner.truncated = true;

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { position, run } from "../src/commands.ts";
 import { parseOptions } from "../src/cli.ts";
 import { resolveCommand, type ObjectValue } from "../src/config.ts";
-import { syntaxPosition, syntaxSnippet } from "../src/syntax.ts";
+import { syntaxLookup, syntaxPosition, syntaxSnippet } from "../src/syntax.ts";
 import { LspClient } from "../src/client.ts";
 import { cleanWorkspaces, isolateGlobalConfig, workspace } from "./fixtures/workspace.ts";
 
@@ -18,6 +18,29 @@ afterEach(() => { mock.restoreAll(); cleanWorkspaces(); });
 const installed = !!resolveCommand("ast-grep", tmpdir());
 const real = { skip: installed ? false : "Install @ast-grep/cli for real syntax integration tests" };
 function file(text: string, extension = "ts") { const path = join(root, `source.${extension}`); writeFileSync(path, text); return path; }
+
+for (const [extension, source, expected] of [
+  ["ts", '// Parser.parse\nclass Parser { parse() { return "😀" } }\nclass MyParser { parse() {} }\nnew Parser().parse()', { line: 1, character: 15 }],
+  ["py", 'class Parser:\n    def parse(self):\n        return "😀"\n\nParser().parse()', { line: 1, character: 8 }],
+  ["rs", 'struct Parser;\nimpl Parser { fn parse(&self) -> i32 { 1 } }', { line: 1, character: 17 }],
+] as const) test(`lookup: ${extension} resolves qualified declarations without confusing calls or owner suffixes`, real, async () => {
+  const path = file(source, extension), result = await syntaxLookup(path, source, extension === "rs" ? "Parser::parse" : "Parser.parse");
+  assert.deepEqual(result.position, expected); assert.equal(result.candidates.length, 1); assert.equal(result.candidates[0].symbol, "Parser.parse"); assert.equal(readFileSync(path, "utf8"), source);
+});
+
+test("lookup: ambiguous names return candidates before LSP startup and explicit positions stay exact", real, async () => {
+  const text = 'class A { parse() {} }\nclass B { parse() {} }\n', path = file(text);
+  const result = await run(parseOptions(["inspect", "--file", path, "--symbol", "parse"], root));
+  assert.equal(result.code, 1); assert.equal(result.data.reason, "ambiguous-symbol"); assert.equal(result.data.total, 2); assert.equal(LspClient.active.size, 0);
+  const qualified = await run(parseOptions(["snippet", "--file", path, "--symbol", "B.parse"], root)); assert.equal(qualified.data.found, true); assert.match(String(qualified.data.snippet), /parse/); assert.equal((qualified.data.range as { start: { line: number } }).start.line, 2);
+  const second = await syntaxLookup(path, text, "parse#2"); assert.equal(second.position?.line, 1);
+  assert.deepEqual(await position(path, text, { line: 1, column: 1 }), { line: 0, character: 0 });
+});
+
+test("lookup: variable declarations rank over uses and Unicode offsets remain UTF-16", real, async () => {
+  const source = 'const 汉字 = "😀"; const parse = () => 1;\nparse();'; const path = file(source);
+  const result = await syntaxLookup(path, source, "parse"); assert.deepEqual(result.position, { line: 0, character: source.indexOf("parse") }); assert.equal(result.candidates.length, 1);
+});
 
 for (const [extension, text, line] of [
   ["ts", 'const s = "target"; /* target */ const 汉字 = "😀"; target(target);', 1],

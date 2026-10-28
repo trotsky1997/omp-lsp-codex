@@ -143,6 +143,25 @@ export async function saveEditPlan(args: Options, input: EditPlanInput): Promise
   return persistPlan(args, { schema: 1, id: randomUUID(), root, createdAt: new Date().toISOString(), kind: input.kind, files, actions: input.actions ?? [], skipped: input.skipped ?? [], ...(input.baseline ? { baseline: input.baseline } : {}), ...(input.verification ? { verification: input.verification } : {}), ...(input.guards ? { guards: input.guards } : {}) }, destination);
 }
 
+export async function workspaceEditPlan(args: Options, edit: WorkspaceEdit, acquire: (file: string) => Promise<Context>, actions: ObjectValue[]): Promise<Result> {
+  const root = realpathSync(gitRoot(args.cwd)), changes = normalizedEdits(edit), files: EditPlanInput["files"] = [], records: DiagnosticRecord[] = [], fingerprints = new Set<string>();
+  if (changes.size > MAX_FILES) throw new Error("Edit scope exceeds 200 files");
+  let bytes = 0;
+  for (const [uri, edits] of changes) {
+    const file = uriFile(uri)!, original = sourceFile(root, file); bytes += Buffer.byteLength(original);
+    if (bytes > MAX_FILE_BYTES) throw new Error("Edit snapshots exceed 16 MiB");
+    const context = await acquire(file);
+    if (context.text !== original) throw new Error(`Source changed during edit planning: ${file}`);
+    for (const change of edit.documentChanges ?? []) if ("textDocument" in change && change.textDocument.uri === uri && change.textDocument.version != null && change.textDocument.version !== context.client.documents.get(uri)?.version) throw new Error("Edit document version is stale");
+    const report = await context.client.getDiagnostics(context.uri);
+    if (!report.verified) throw new Error(`Unverified diagnostics for ${file}; run doctor and retry`);
+    files.push({ file, original, updated: validateEdits(original, edits) });
+    records.push({ file, diagnostics: report.diagnostics, verified: true, errors: [] }); fingerprints.add(serverFingerprint(context.server));
+  }
+  const baseline = captureBaseline(records, root, [...fingerprints], new Map(files.map(file => [file.file, file.original])));
+  return saveEditPlan(args, { kind: args.command, files, actions, baseline });
+}
+
 export async function fixPlan(args: Options, acquire: (file: string) => Promise<Context>): Promise<Result> {
   if (args.apply || args.file && args.changed || !args.file && !args.changed) throw new Error("Use fix --file PATH or fix --changed with --plan PATH.json; apply the reviewed plan separately");
   if (args.query !== undefined && (!args.file || !args.query.trim())) throw new Error("Choose a fix with --file PATH --query INDEX|TITLE; changed-file indexes are ambiguous");
@@ -266,7 +285,11 @@ export async function applyPlan(args: Options, verify: (files: string[], baselin
     }
     const comparison = object(result.data.comparison), verified = result.data.verified === true && comparison.verified === true;
     const success = verified && comparison.newErrors === 0;
-    return { code: success ? 0 : 1, data: { success, applied, applicationState: "applied", plan: path, verification: "pending", diagnosticVerification: verified ? "verified" : "unverified", comparison, diagnostics: result.data, files: [...updated.keys()].map(uriFile), hint: "Edits applied. Review diagnostic differences and run relevant project build/tests; the plan is single-use." }, human: `Applied ${updated.size} file(s). Diagnostics: ${verified ? JSON.stringify(comparison.counts) : "unverified"}. Project build/tests pending.` };
+    const checked = Array.isArray(result.data.checked) ? result.data.checked : [];
+    const diagnostics = { counts: result.data.counts, checkedFiles: checked.length, ...(!verified ? {
+      checked: checked.map(raw => { const row = object(raw); return { file: row.file, verified: row.verified, diagnosticCount: row.diagnosticCount, errors: row.errors }; }),
+    } : {}) };
+    return { code: success ? 0 : 1, data: { success, applied, applicationState: "applied", plan: path, verification: "pending", diagnosticVerification: verified ? "verified" : "unverified", comparison, diagnostics, files: [...updated.keys()].map(uriFile), hint: "Edits applied. Review diagnostic differences and run relevant project build/tests; the plan is single-use." }, human: `Applied ${updated.size} file(s). Diagnostics: ${verified ? JSON.stringify(comparison.counts) : "unverified"}. Project build/tests pending.` };
   } catch (error) {
     if (receipt.state === "applying") {
       receipt.state = "failed";

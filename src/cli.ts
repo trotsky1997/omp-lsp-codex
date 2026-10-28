@@ -23,11 +23,14 @@ Commands:
   next --cursor ID      Read the next cached references page without starting a server
   inspect                --file PATH --line N [--symbol NAME] [--context] [--new-name NAME]
                          Hover, definition, references, symbols and diagnostics in one session
-  diagnostics            --file PATH or --changed
+  diagnostics            --file PATH or --changed or --workspace [--server NAME]
                          [--baseline PATH] [--save-baseline PATH]
                          [--watch --jsonl] Stream verified diagnostic changes
   fix --changed | --file PATH --plan PATH [--kind source.fixAll|quickfix] Save pure-text repairs
+                         [--format [--formatter NAME]] Compose safe lint fixes and formatting
+  check --changed | --file PATH  Summarize diagnostics, lint and format checks
   lint                   --file PATH or --changed [--tool NAME | --server NAME] [--plan PATH]
+                         [--baseline PATH] [--save-baseline PATH] Compare standalone lint results
   format                 --file PATH or --changed [--tool NAME | --server NAME] [--check | --plan PATH]
                          Preview edits; --check exits 1 when formatting changes are needed
   apply --plan PATH      Apply a reviewed unchanged plan and verify its selected providers
@@ -47,10 +50,10 @@ Commands:
   type-definition        Find symbol types
   implementation         Find implementations
   symbols                --file PATH [--query NAME], or --workspace --query NAME [--file PATH]
-  rename                 --file PATH --line N --symbol NAME --new-name NAME [--apply]
+  rename                 --file PATH --line N --symbol NAME --new-name NAME [--apply | --plan PATH]
   rename-file            --file PATH --new-name PATH [--apply]
   code-actions           --file PATH [--line N | --range START:COL-END:COL]
-                         [--kind refactor.extract] [--query INDEX|TITLE] [--apply]
+                         [--kind refactor.extract] [--query INDEX|TITLE] [--apply | --plan PATH]
   capabilities           [--file PATH]
   request                --method METHOD [--file PATH] [--payload JSON] [--apply]
 
@@ -68,6 +71,7 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --server NAME         Select an LSP provider for lint/format/fix/diagnostics/code-actions/request/capabilities
 Lint/format fields: --fields checked (providers), diagnostics (lint), files (diff), checkedFiles,changedFiles,needsFormatting
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
+Omit --line with --symbol to resolve a unique declaration (Class.method or Rust Type::method).
 ast-grep improves --symbol and selects call arguments for signature-help --symbol.
 Install it with npm install --global @ast-grep/cli. Explicit --column stays exact.
 --project is a flag without a path; run setup from the intended project directory.
@@ -113,6 +117,8 @@ export function parseOptions(
       tool: { type: "string" },
       server: { type: "string" },
       check: { type: "boolean" },
+      format: { type: "boolean" },
+      formatter: { type: "string" },
       range: { type: "string" },
       kind: { type: "string" },
       "page-size": { type: "string" },
@@ -165,7 +171,11 @@ export function parseOptions(
   if (budget !== undefined && (command === "hook" || !Number.isSafeInteger(budget) || budget < 512 || budget > MAX_FILE_BYTES)) throw new Error(`--budget must be an integer from 512 to ${MAX_FILE_BYTES}; hooks emit their own protocol`);
   if (v.watch && command !== "diagnostics") throw new Error("--watch is only available for diagnostics");
   if (v.jsonl && (command !== "diagnostics" || !v.watch)) throw new Error("Use diagnostics --watch --jsonl");
-  if (v.plan !== undefined && (!["fix", "apply", "lint", "format"].includes(command) || !v.plan.trim())) throw new Error("--plan requires fix/apply/lint/format and a nonempty path");
+  if (v.plan !== undefined && (!["fix", "apply", "lint", "format", "rename", "code-actions"].includes(command) || !v.plan.trim())) throw new Error("--plan requires fix/apply/lint/format/rename/code-actions and a nonempty path");
+  if (v.plan && v.apply) throw new Error("Choose --plan to save edits or --apply to execute; apply saved plans with apply --plan PATH.json");
+  if (v.plan && (v.baseline || v["save-baseline"])) throw new Error("Compare/save standalone baselines separately from edit plans; plans capture their own baseline");
+  if (v.format && (command !== "fix" || !v.plan)) throw new Error("--format requires fix --plan PATH.json");
+  if (v.formatter !== undefined && (!v.format || !v.formatter.trim())) throw new Error("--formatter NAME requires fix --format --plan PATH.json");
   if (v.tool !== undefined && (!["lint", "format", "fix"].includes(command) || !v.tool.trim())) throw new Error("--tool requires lint/format/fix and a nonempty backend name");
   if (v.server !== undefined && (!["lint", "format", "fix", "diagnostics", "code-actions", "request", "capabilities"].includes(command) || !v.server.trim())) throw new Error("--server requires lint/format/fix/diagnostics/code-actions/request/capabilities and a nonempty provider name");
   if (v.tool !== undefined && v.server !== undefined) throw new Error("Choose --tool NAME or --server NAME");
@@ -175,7 +185,7 @@ export function parseOptions(
   if (v.target !== undefined && (!v.target.trim() || v.file !== undefined || v.line !== undefined || v.column !== undefined || v.symbol !== undefined || range)) throw new Error("Choose --target ID or --file/--line/--column/--symbol/--range");
   if (v.target !== undefined && !["hover", "definition", "references", "type-definition", "implementation", "signature-help", "snippet", "inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "complete"].includes(command)) throw new Error("--target requires a position-based query or rename/code-actions");
   if (v.stdio && command !== "session") throw new Error("--stdio is only available for session");
-  if ((v.baseline !== undefined || v["save-baseline"] !== undefined) && command !== "diagnostics") throw new Error("Baseline flags are only available for diagnostics");
+  if ((v.baseline !== undefined || v["save-baseline"] !== undefined) && !["diagnostics", "lint"].includes(command)) throw new Error("Baseline flags are only available for diagnostics/lint");
   if (v.baseline === "" || v["save-baseline"] === "") throw new Error("Baseline paths must be nonempty");
   if (v.input !== undefined && command !== "batch") throw new Error("--input is only available for batch");
   if (v.context && command !== "inspect") throw new Error("--context is only available for inspect; set context on inspect rows in batch input");
@@ -194,6 +204,7 @@ export function parseOptions(
     cwd: context,
     file: v.file,
     line: range ? range.start.line + 1 : line,
+    lineExplicit: v.line !== undefined || range !== undefined,
     column,
     symbol: v.symbol,
     query: v.query,
@@ -209,7 +220,7 @@ export function parseOptions(
     range, kind: v.kind, pageSize, cursor: v.cursor, budget, stdio: !!v.stdio,
     target: v.target, targets: !!v.targets, watch: !!v.watch, jsonl: !!v.jsonl || !!v.watch,
     plan: v.plan, base: v.base, reverse: !!v.reverse,
-    tool: v.tool, server: v.server, check: !!v.check,
+    tool: v.tool, server: v.server, check: !!v.check, format: !!v.format, formatter: v.formatter,
     timeout: Math.max(5, Math.min(300, timeout)) * 1000,
     limit,
     json: !!v.json || fields !== undefined || budget !== undefined || !!v.stdio || !!v.targets || !!v.watch,

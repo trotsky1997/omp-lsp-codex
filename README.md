@@ -33,6 +33,9 @@ codex-lsp inspect --file path/to/file.rs --line 20 --symbol parse --context --js
 codex-lsp batch --input queries.jsonl --json
 codex-lsp diagnostics --file path/to/file.rs
 codex-lsp diagnostics --changed
+codex-lsp diagnostics --workspace --file path/to/file.ts
+codex-lsp check --changed --budget 2000
+codex-lsp inspect --file path/to/file.ts --symbol Parser.parse --context --budget 3000
 codex-lsp callers --file path/to/file.rs --line 20 --symbol parse --depth 2
 codex-lsp callees --file path/to/file.rs --line 20 --symbol parse --depth 2
 codex-lsp complete --file path/to/file.ts --line 20 --column 12 --query open --resolve
@@ -96,6 +99,7 @@ codex-lsp symbols --file src/client.ts --query Client --targets --fields targets
 codex-lsp inspect --target TARGET_ID --context --budget 3000
 codex-lsp diagnostics --file src/client.ts --watch --jsonl --budget 3000
 codex-lsp fix --changed --plan /tmp/codex-lsp-fixes.json --budget 4000
+codex-lsp fix --changed --format --plan /tmp/codex-lsp-combined.json --budget 3000
 codex-lsp lint --changed --plan /tmp/codex-lsp-lint.json --budget 3000
 codex-lsp format --changed --check --budget 2000
 codex-lsp format --changed --plan /tmp/codex-lsp-format.json --budget 3000
@@ -110,6 +114,12 @@ Location handles are opt-in, private and bound to the workspace and current sour
 `fix` saves a reviewable pure-text plan while leaving source unchanged. It defaults to `source.fixAll` and discovers project-declared CLI linters for file-wide fixes. Explicit LSP/position selection stays available; automatic quickfixes require one preferred action, while explicit `--file --query` selects a reviewed original index/title. Commands, ambiguous alternatives and resource operations remain individual code-action workflows. `apply --plan` checks the private receipt and source snapshots, applies the saved edit once, and reports a diagnostic baseline comparison. Project build/runtime verification remains pending. Output failures after editing preserve `applied` and application state; inspect files before another action.
 
 `lint` and `format` select project-configured CLI tools or LSP providers. Ruff, ESLint, Biome, Oxlint and Clippy provide lint diagnostics/safe repairs; Ruff, Prettier, Biome, Oxfmt and rustfmt provide formatting. Choose `--tool NAME` or `--server NAME` to pin a backend. Formatting uses one provider per file and previews a diff; `--check` returns a concise non-writing check. Save changes with `--plan PATH.json`, review, then `apply --plan PATH.json`. Application validates source, configuration and provider state, then verifies formatter idempotence or compares lint diagnostics. Read [lint and formatting](skills/codex-lsp/references/tooling.md) for installation, ignore rules, safe fixes, range formatting and batch/session use.
+
+`fix --format --plan PATH.json` composes safe lint repairs and formatting in memory, saves one diff and verifies both after application. `--tool`/`--server` selects the linter; `--formatter NAME` optionally selects a CLI formatter. `lint --save-baseline before.json` captures standalone lint results; `lint --baseline before.json` rechecks that saved file scope and reports new/resolved/existing issues. Baselines also bind tool configuration. Keep baseline capture/comparison separate from plan creation.
+
+`rename --plan PATH.json` and `code-actions --query INDEX --plan PATH.json` persist reviewed pure-text edits for the existing `apply` command. Command actions and resource operations require their individual workflows. `check --changed` or `check --file PATH` summarizes diagnostics, lint and format checks, shares compatible servers and preserves each check's failure state. Run the named command for detailed issues.
+
+Omit `--line` with a declaration `--symbol NAME` or a qualified name such as `Parser.parse` (`Parser::parse` also works for Rust). ast-grep resolves a unique declaration; ambiguous names return bounded candidates before starting LSP. Explicit line/column anchors retain their exact behavior. Signature help continues to use call-site positions. `diagnostics --workspace [--file PATH | --server NAME]` requests supported server workspace reports, including unopened files. Its `coverage` lists selected providers and their supported/verified state; unsupported providers keep the aggregate unverified and return native-check guidance. Workspace reports follow server configuration and are limited to 200 local files / 16 MiB. Workspace watch is unavailable.
 
 API diff and dependency graphs use ast-grep/Git for Rust, Python and TypeScript/JavaScript. API output retains `evidence:syntax`, `compatibility:unverified`, and separate `surfaceComplete`/`callsComplete`. Dependencies follow relative imports and re-exports, distinguish external/unresolved modules and bound reverse analysis to relevant AST candidates. Graphs remain partial when file/node/time limits are reached; aliases, cfg and dynamic loading need project checks.
 
