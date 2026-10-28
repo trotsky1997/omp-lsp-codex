@@ -10,6 +10,8 @@ const INSTALL = {
     prettier: "npm install --save-dev --save-exact prettier; https://prettier.io/docs/install",
     rustfmt: "rustup component add rustfmt; https://github.com/rust-lang/rustfmt",
     clippy: "rustup component add clippy; https://doc.rust-lang.org/clippy/installation.html",
+    oxlint: "npm install --save-dev --save-exact oxlint; https://oxc.rs/docs/guide/usage/linter/quickstart",
+    oxfmt: "npm install --save-dev --save-exact oxfmt; https://oxc.rs/docs/guide/usage/formatter/quickstart",
 };
 const CONFIGS = {
     ruff: ["ruff.toml", ".ruff.toml", "pyproject.toml", ".gitignore", ".ignore"],
@@ -18,6 +20,8 @@ const CONFIGS = {
     prettier: [".prettierrc", ".prettierrc.json", ".prettierrc.json5", ".prettierrc.yaml", ".prettierrc.yml", ".prettierrc.toml", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.mjs", ".prettierrc.ts", ".prettierrc.cts", ".prettierrc.mts", "prettier.config.js", "prettier.config.cjs", "prettier.config.mjs", "prettier.config.ts", "prettier.config.cts", "prettier.config.mts", ".prettierignore", ".editorconfig", "package.json", ".gitignore"],
     rustfmt: ["rustfmt.toml", ".rustfmt.toml", "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml", ".cargo/config", ".cargo/config.toml"],
     clippy: ["clippy.toml", ".clippy.toml", "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml", ".cargo/config", ".cargo/config.toml"],
+    oxlint: [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts", "oxlint.config.cts", "oxlint.config.js", "oxlint.config.mjs", "oxlint.config.cjs", ".eslintignore", ".gitignore", "package.json", "tsconfig.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"],
+    oxfmt: [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.config.ts", "oxfmt.config.mts", "oxfmt.config.cts", "oxfmt.config.js", "oxfmt.config.mjs", "oxfmt.config.cjs", ".prettierignore", ".gitignore", ".editorconfig", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"],
 };
 function roots(file) {
     const root = gitRoot(dirname(file));
@@ -220,9 +224,9 @@ export async function runToolProcess(args, file, tool, operation, cache) {
     const command = resolveToolCommand(tool, file, args.globalBinsOnly);
     if (!command)
         throw new Error(`${tool} is unavailable. Install: ${INSTALL[tool]}`);
-    if (operation === "format" ? tool === "eslint" || tool === "clippy" : tool === "prettier" || tool === "rustfmt")
+    if (operation === "format" ? ["eslint", "clippy", "oxlint"].includes(tool) : ["prettier", "rustfmt", "oxfmt"].includes(tool))
         throw new Error(`${tool} does not support ${operation}; select a matching --tool`);
-    const original = readText(file), configFiles = toolConfigFiles(tool, file, args.globalConfigOnly), configSnapshots = new Map(), deadline = Date.now() + args.timeout, cwd = dirname(file);
+    const original = readText(file), configFiles = toolConfigFiles(tool, file, args.globalConfigOnly), configSnapshots = new Map(), deadline = Date.now() + args.timeout, cwd = tool === "oxlint" || tool === "oxfmt" ? gitRoot(dirname(file)) : dirname(file);
     let configBytes = 0;
     for (const path of configFiles) {
         const text = readText(path);
@@ -294,6 +298,45 @@ export async function runToolProcess(args, file, tool, operation, cache) {
             }
             if (operation === "fix" && !ignored)
                 updated = replacements(original, fixes);
+        }
+    }
+    else if (tool === "oxlint") {
+        const output = await run(["--no-error-on-unmatched-pattern", "--format", "json", file], "");
+        expected(output, tool, [0, 1]);
+        let report;
+        try {
+            report = object(json(output.stdout));
+        }
+        catch {
+            throw new Error(`Oxlint returned no valid JSON report: ${(output.stderr || output.stdout || "empty output").slice(0, 1000)}`);
+        }
+        const count = report.number_of_files;
+        if (!Array.isArray(report.diagnostics) || count !== 0 && count !== 1 || count === 0 && (report.diagnostics.length > 0 || output.code !== 0))
+            throw new Error("Oxlint returned an incomplete file/diagnostic report");
+        ignored = count === 0;
+        for (const raw of report.diagnostics) {
+            const item = object(raw), labels = Array.isArray(item.labels) ? item.labels : [], span = object(object(labels[0]).span);
+            if (typeof item.filename !== "string" || resolve(cwd, item.filename) !== file)
+                throw new Error(`Oxlint returned a diagnostic outside the selected source: ${String(item.message ?? item.filename)}`);
+            if (!["error", "warning", "advice"].includes(String(item.severity)))
+                throw new Error("Oxlint returned an invalid diagnostic severity");
+            const start = integer(span.offset), end = start + integer(span.length);
+            diagnostics.push(diagnostic(tool, item.message, offsetPosition(original, start, true), offsetPosition(original, end, true), item.code, item.severity === "warning" ? 2 : item.severity === "advice" ? 3 : 1));
+        }
+        if (output.code === 1 && !diagnostics.some(item => item.severity === 1))
+            throw new Error("Oxlint failed without a complete error report");
+    }
+    else if (tool === "oxfmt") {
+        const inventory = await run(["--no-error-on-unmatched-pattern", "--check", file], "");
+        expected(inventory, tool, [0, 1]);
+        const count = [...inventory.stdout.matchAll(/\bFinished in [^\r\n]* on (\d+) files? using \d+ threads?\b/g)].at(-1)?.[1];
+        if (count !== "0" && count !== "1" || count === "0" && inventory.code !== 0)
+            throw new Error(`Oxfmt returned an incomplete processed-file count: ${(inventory.stderr || inventory.stdout || "empty output; use a supported Oxfmt CLI").slice(0, 1000)}`);
+        ignored = count === "0";
+        if (!ignored) {
+            const output = await run(["--stdin-filepath", file]);
+            expected(output, tool);
+            updated = output.stdout;
         }
     }
     else if (tool === "eslint") {

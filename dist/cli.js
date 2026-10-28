@@ -63,7 +63,7 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --targets             Return reusable location IDs (implies --json); --fields targets gives compact handles
   --target ID           Reuse a location from --targets in the same workspace; source version is checked
   --context             Include enclosing source, definitions, types and sampled references in inspect
-  --tool NAME           Select CLI backend: ruff, eslint, biome, prettier, rustfmt, clippy
+  --tool NAME           Select CLI backend: ruff, eslint, biome, prettier, rustfmt, clippy, oxlint, oxfmt
   --server NAME         Select an LSP provider for lint/format/fix/diagnostics/code-actions/request/capabilities
 Lint/format fields: --fields checked (providers), diagnostics (lint), files (diff), checkedFiles,changedFiles,needsFormatting
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.

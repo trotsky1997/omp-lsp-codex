@@ -1,25 +1,25 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import { availableServers, ancestors, configPaths, fileServers, gitRoot, loadConfig, matchesFile, MAX_FILE_BYTES, MAX_FILES, object, readText, resolveFile } from "./config.js";
+import { availableServers, ancestors, configPaths, fileServers, fileUri, gitRoot, loadConfig, matchesFile, MAX_FILE_BYTES, MAX_FILES, object, readText, resolveFile } from "./config.js";
 import { changedFiles, sessionClient } from "./commands.js";
 import { captureBaseline, compareBaseline, serverFingerprint } from "./baseline.js";
 import { saveEditPlan, validateEdits, normalizedEdits } from "./fixes.js";
 import { normalizeCodeAction, requestBefore, requestedActionKinds, validRange } from "./semantic.js";
 import { compactText, failure, textPrefix } from "./output.js";
 import { resolveToolCommand, runToolProcess, toolConfigCandidates } from "./tool-process.js";
-const tools = ["ruff", "eslint", "biome", "prettier", "rustfmt", "clippy"];
+const tools = ["ruff", "eslint", "biome", "prettier", "rustfmt", "clippy", "oxlint", "oxfmt"];
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const jsExtensions = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte"];
 function toolSupports(name, file) {
     const extension = extname(file).toLowerCase();
-    return name === "ruff" ? [".py", ".pyi"].includes(extension) : name === "rustfmt" || name === "clippy" ? extension === ".rs" : name === "eslint" ? jsExtensions.includes(extension) : name === "biome" ? [...jsExtensions, ".json", ".jsonc", ".css", ".graphql", ".gql", ".html"].includes(extension) : name === "prettier" ? [...jsExtensions, ".json", ".jsonc", ".css", ".scss", ".less", ".md", ".mdx", ".html", ".yaml", ".yml", ".graphql", ".gql", ".xml", ".svg"].includes(extension) : true;
+    return name === "ruff" ? [".py", ".pyi"].includes(extension) : name === "rustfmt" || name === "clippy" ? extension === ".rs" : name === "oxlint" ? [...jsExtensions, ".astro"].includes(extension) : name === "eslint" ? jsExtensions.includes(extension) : name === "biome" ? [...jsExtensions, ".json", ".jsonc", ".css", ".graphql", ".gql", ".html"].includes(extension) : name === "oxfmt" ? [...jsExtensions, ".astro", ".json", ".jsonc", ".json5", ".css", ".scss", ".less", ".md", ".mdx", ".html", ".yaml", ".yml", ".graphql", ".gql"].includes(extension) : name === "prettier" ? [...jsExtensions, ".json", ".jsonc", ".css", ".scss", ".less", ".md", ".mdx", ".html", ".yaml", ".yml", ".graphql", ".gql", ".xml", ".svg"].includes(extension) : true;
 }
 function projectDirectories(file) {
     const roots = ancestors(dirname(file)), root = gitRoot(dirname(file)), end = roots.indexOf(root);
     return end < 0 ? roots : roots.slice(0, end + 1);
 }
-function declaredTools(file, format) {
+export function declaredTools(file, format) {
     const dirs = projectDirectories(file), ext = extname(file).toLowerCase(), candidates = new Set();
     const has = (...names) => dirs.some(dir => names.some(name => existsSync(join(dir, name))));
     if ([".py", ".pyi"].includes(ext))
@@ -29,9 +29,9 @@ function declaredTools(file, format) {
     const packages = dirs.filter(dir => existsSync(join(dir, "package.json"))).map(dir => object(JSON.parse(readText(join(dir, "package.json")))));
     const dependency = (name) => packages.some(pkg => name in object(pkg.dependencies) || name in object(pkg.devDependencies));
     const js = jsExtensions.includes(ext);
-    if (!format && js && (has(".oxlintrc.json", ".oxlintrc.jsonc") || dependency("oxlint")))
+    if (!format && toolSupports("oxlint", file) && (has(".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts", "oxlint.config.cts", "oxlint.config.js", "oxlint.config.mjs", "oxlint.config.cjs") || dependency("oxlint")))
         candidates.add("oxlint");
-    if (format && (js || [".json", ".jsonc", ".css", ".scss", ".less", ".md", ".mdx", ".html", ".yaml", ".yml", ".graphql", ".gql"].includes(ext)) && (has(".oxfmtrc.json", ".oxfmtrc.jsonc") || dependency("oxfmt")))
+    if (format && toolSupports("oxfmt", file) && (has(".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.config.ts", "oxfmt.config.mts", "oxfmt.config.cts", "oxfmt.config.js", "oxfmt.config.mjs", "oxfmt.config.cjs") || dependency("oxfmt")))
         candidates.add("oxfmt");
     if ((js || [".json", ".jsonc", ".css", ".graphql", ".gql"].includes(ext)) && (has("biome.json", "biome.jsonc") || dependency("@biomejs/biome")))
         candidates.add("biome");
@@ -82,6 +82,48 @@ function pureActionEdits(value, uri, text, version) {
     const edits = changes.get(uri) ?? [];
     validateEdits(text, edits);
     return edits;
+}
+async function lintFixes(client, uri, text, diagnostics, row, args, deadline) {
+    const file = row.file, server = client.server;
+    if (!client.capabilities.codeActionProvider)
+        row.skipped.push({ file, server: server.name, reason: "No codeActionProvider; lint diagnostics remain available" });
+    else {
+        const lines = text.split("\n"), end = { line: lines.length - 1, character: lines.at(-1).replace(/\r$/, "").length };
+        const response = await requestBefore(client, "textDocument/codeAction", { textDocument: { uri }, range: { start: { line: 0, character: 0 }, end }, context: { diagnostics, only: requestedActionKinds(client, args.kind ?? "source.fixAll"), triggerKind: 1 } }, deadline);
+        if (response !== null && !Array.isArray(response))
+            throw new Error("Invalid LSP code-action response");
+        if ((response?.length ?? 0) > MAX_FILES)
+            throw new Error("Lint code actions exceed 200; narrow the source scope");
+        const edits = [];
+        for (const raw of response ?? []) {
+            let action = object(raw);
+            if (typeof action.title !== "string")
+                throw new Error("Invalid lint code action");
+            if (typeof action.kind !== "string" || !(action.kind === (args.kind ?? "source.fixAll") || action.kind.startsWith(`${args.kind ?? "source.fixAll"}.`))) {
+                row.skipped.push({ file, server: server.name, title: action.title, reason: "Action is outside the requested source.fixAll kind; review code-actions individually" });
+                continue;
+            }
+            if (!action.edit && !action.command && !action.disabled && object(client.capabilities.codeActionProvider).resolveProvider) {
+                action = object(await requestBefore(client, "codeAction/resolve", raw, deadline));
+                if (typeof action.title !== "string" || typeof action.kind !== "string" || !(action.kind === (args.kind ?? "source.fixAll") || action.kind.startsWith(`${args.kind ?? "source.fixAll"}.`)))
+                    throw new Error("Invalid resolved lint action");
+            }
+            try {
+                edits.push(...pureActionEdits(action, uri, text, client.documents.get(uri).version));
+            }
+            catch (error) {
+                row.skipped.push({ file, server: server.name, title: action.title, reason: error instanceof Error ? error.message : String(error) });
+            }
+            if (edits.length > 10000)
+                throw new Error("Lint fixes exceed 10000 edits; narrow the source scope");
+        }
+        const seen = new Set(), unique = edits.filter(edit => { const key = JSON.stringify(edit); if (seen.has(key))
+            return false; seen.add(key); return true; });
+        if (unique.some((edit, index) => edit.range.start.line === edit.range.end.line && edit.range.start.character === edit.range.end.character && unique.slice(0, index).some(other => JSON.stringify(other.range) === JSON.stringify(edit.range) && other.newText !== edit.newText)))
+            throw new Error("Conflicting lint insertions; review code-actions individually");
+        return validateEdits(text, unique);
+    }
+    return text;
 }
 async function collect(args, paths, format, fixes, session, pinned) {
     const pool = session ?? { clients: new Map(), diagnostics: false };
@@ -154,7 +196,7 @@ async function collect(args, paths, format, fixes, session, pinned) {
                     const beforeGuards = [...guards.keys()];
                     if (provider.kind === "cli") {
                         if (!tools.includes(provider.name))
-                            throw new Error(`Project tool ${provider.name} is not supported by codex-lsp. Run the project's configured ${format ? "format" : "lint"} script, or explicitly choose --tool ${format ? "prettier|biome|ruff|rustfmt" : "eslint|biome|ruff|clippy"} or --server NAME to override`);
+                            throw new Error(`Unknown tool ${provider.name}; choose ${tools.join(", ")}`);
                         if (args.range)
                             throw new Error("CLI formatting does not support --range; select --server NAME with documentRangeFormattingProvider");
                         for (const path of toolConfigCandidates(provider.name, file, args.globalConfigOnly))
@@ -167,6 +209,20 @@ async function collect(args, paths, format, fixes, session, pinned) {
                         ignored = !!result.ignored;
                         diagnostics = result.diagnostics;
                         updated = result.updated ?? original;
+                        if (provider.name === "oxlint" && fixes && verified && !ignored && diagnostics.length) {
+                            const root = gitRoot(dirname(file));
+                            const server = { name: "oxlint", command: result.command, resolvedCommand: result.command, args: ["--lsp"], fileTypes: jsExtensions, root,
+                                initOptions: [{ workspaceUri: fileUri(root), options: { fixKind: "safe_fix" } }],
+                            };
+                            const { client, uri, text } = await clientFor(server, file);
+                            if (text !== original)
+                                throw new Error("Source changed while opening Oxlint fix preview; retry");
+                            const report = await client.getDiagnostics(uri, Math.max(1, deadline - Date.now()));
+                            const signature = (items) => [...new Set(items.map(item => JSON.stringify([item.code, item.severity ?? 1, item.range.start.line, item.range.start.character, item.range.end.line, item.range.end.character, item.message.split("\nhelp: ")[0]])))].sort().join("\n");
+                            if (!report.verified || signature(report.diagnostics) !== signature(diagnostics))
+                                throw new Error("Oxlint CLI and fix-provider diagnostics differ or are unverified; retry after project configuration and analysis settle");
+                            updated = await lintFixes(client, uri, text, report.diagnostics, row, args, deadline);
+                        }
                         row.errors.push(...result.errors ?? []);
                         for (const path of result.configFiles)
                             guard(path);
@@ -234,44 +290,7 @@ async function collect(args, paths, format, fixes, session, pinned) {
                             if (!verified)
                                 row.errors.push(server.name === "biome" ? "Biome did not publish verified diagnostics; check project excludes or compare codex-lsp lint --file PATH --tool biome." : `${server.name} diagnostics are unverified; run doctor --file PATH and retry after analysis settles`);
                             if (fixes && verified) {
-                                if (!client.capabilities.codeActionProvider)
-                                    row.skipped.push({ file, server: server.name, reason: "No codeActionProvider; lint diagnostics remain available" });
-                                else {
-                                    const lines = text.split("\n"), end = { line: lines.length - 1, character: lines.at(-1).replace(/\r$/, "").length };
-                                    const response = await requestBefore(client, "textDocument/codeAction", { textDocument: { uri }, range: { start: { line: 0, character: 0 }, end }, context: { diagnostics, only: requestedActionKinds(client, args.kind ?? "source.fixAll"), triggerKind: 1 } }, deadline);
-                                    if (response !== null && !Array.isArray(response))
-                                        throw new Error("Invalid LSP code-action response");
-                                    if ((response?.length ?? 0) > MAX_FILES)
-                                        throw new Error("Lint code actions exceed 200; narrow the source scope");
-                                    const edits = [];
-                                    for (const raw of response ?? []) {
-                                        let action = object(raw);
-                                        if (typeof action.title !== "string")
-                                            throw new Error("Invalid lint code action");
-                                        if (typeof action.kind !== "string" || !(action.kind === (args.kind ?? "source.fixAll") || action.kind.startsWith(`${args.kind ?? "source.fixAll"}.`))) {
-                                            row.skipped.push({ file, server: server.name, title: action.title, reason: "Action is outside the requested source.fixAll kind; review code-actions individually" });
-                                            continue;
-                                        }
-                                        if (!action.edit && !action.command && !action.disabled && object(client.capabilities.codeActionProvider).resolveProvider) {
-                                            action = object(await requestBefore(client, "codeAction/resolve", raw, deadline));
-                                            if (typeof action.title !== "string" || typeof action.kind !== "string" || !(action.kind === (args.kind ?? "source.fixAll") || action.kind.startsWith(`${args.kind ?? "source.fixAll"}.`)))
-                                                throw new Error("Invalid resolved lint action");
-                                        }
-                                        try {
-                                            edits.push(...pureActionEdits(action, uri, text, client.documents.get(uri).version));
-                                        }
-                                        catch (error) {
-                                            row.skipped.push({ file, server: server.name, title: action.title, reason: error instanceof Error ? error.message : String(error) });
-                                        }
-                                        if (edits.length > 10000)
-                                            throw new Error("Lint fixes exceed 10000 edits; narrow the source scope");
-                                    }
-                                    const seen = new Set(), unique = edits.filter(edit => { const key = JSON.stringify(edit); if (seen.has(key))
-                                        return false; seen.add(key); return true; });
-                                    if (unique.some((edit, index) => edit.range.start.line === edit.range.end.line && edit.range.start.character === edit.range.end.character && unique.slice(0, index).some(other => JSON.stringify(other.range) === JSON.stringify(edit.range) && other.newText !== edit.newText)))
-                                        throw new Error("Conflicting lint insertions; review code-actions individually");
-                                    updated = validateEdits(text, unique);
-                                }
+                                updated = await lintFixes(client, uri, text, diagnostics, row, args, deadline);
                             }
                         }
                         row.providers.push({ kind: provider.kind, name: provider.name, verified, ...(ignoreStatus ? { ignoreStatus } : {}), ...(hint ? { hint } : {}) });

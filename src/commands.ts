@@ -57,7 +57,7 @@ import { impactAnalysis } from "./impact.ts";
 import { typeHierarchy, inlayHints, unsupportedFeature } from "./type-hints.ts";
 import { firstPage, nextPage } from "./pagination.ts";
 import { budgetData } from "./budget.ts";
-import { runTooling, validateToolPlan, verifyToolPlan } from "./tooling.ts";
+import { declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.ts";
 
 export interface Options {
   command: string;
@@ -1312,7 +1312,12 @@ async function runQuery(args: Options, session?: Session): Promise<Result> {
     case "dependencies":
       return dependencies(args);
     case "fix": {
+      if (!args.plan) throw new Error("Fix plans require --plan PATH.json");
       if (args.tool) return runTooling({ ...args, command: "lint" });
+      if (!args.server && args.query === undefined && args.symbol === undefined && args.column === undefined && args.line === 1 && !args.range && (!args.kind || args.kind === "source.fixAll" || args.kind.startsWith("source.fixAll."))) {
+        const paths = args.file ? [resolveFile(args.file, args.cwd)] : args.changed ? await changedFiles(args.cwd) : [];
+        if (paths.some(file => declaredTools(file, false).length)) return runTooling({ ...args, command: "lint" });
+      }
       const pool: Session = { clients: new Map(), diagnostics: true };
       try { return await fixPlan(args, file => fileContext({ ...args, file }, true, pool)); }
       finally { await Promise.allSettled([...pool.clients.values()].map(client => client.close())); }

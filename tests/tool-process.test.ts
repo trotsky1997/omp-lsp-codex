@@ -4,7 +4,7 @@ import childProcess, { execFileSync, type ChildProcess } from "node:child_proces
 import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { runToolProcess, resolveToolCommand, toolConfigFiles, type ToolName, type ToolProcessResult } from "../src/tool-process.ts";
 import type { ObjectValue } from "../src/config.ts";
 import type { Options } from "../src/commands.ts";
@@ -17,8 +17,8 @@ function fixture(name = "source.py", source = '"😀"; import os\n', tracked = f
   const put = (name: string, text: string) => { const file = join(root, name); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); return file; };
   const file = put(name, source), bin = join(root, "node_modules/.bin"), trace = join(root, ".git/trace.jsonl"), scenario = join(root, ".git/scenario.json");
   mkdirSync(bin, { recursive: true });
-  const script = put(".git/tool.cjs", `const fs=require('node:fs'),path=require('node:path');const tool=process.argv[2],argv=process.argv.slice(3),root=${JSON.stringify(root)},file=${JSON.stringify(file)};let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const s=JSON.parse(fs.readFileSync(${JSON.stringify(scenario)},'utf8'));fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,tool,argv,cwd:process.cwd(),input,optionalLocks:process.env.GIT_OPTIONAL_LOCKS,rustupAutoInstall:process.env.RUSTUP_AUTO_INSTALL})+'\\n');if(s.timeout){setInterval(()=>{},10000);return;}if(s.overflow){process.stdout.write(Buffer.alloc(17*1024*1024,65));return;}if(s.invalidUtf8){process.stdout.write(Buffer.from([0xff]));return;}if(s.honorOutputFile&&process.env.RUFF_OUTPUT_FILE){fs.writeFileSync(process.env.RUFF_OUTPUT_FILE,'redirected output');process.exit(0);}if(s.mutate||s.configuredFix&&tool==='ruff'&&(!argv.includes('--no-fix')||!argv.includes('--no-fix-only')))fs.writeFileSync(file,'external edit\\n');if(s.mutateConfig&&(!s.mutateOn||argv.includes(s.mutateOn)))fs.writeFileSync(s.mutateConfig,'changed=true\\n');if(s.stderr)process.stderr.write(s.stderr);let out=s.output;if(tool==='ruff'&&argv.includes('--verbose')){if(!s.noCount)process.stderr.write('[DEBUG] Checked '+(s.ignored?0:1)+' files in: 1ms\\n');if(s.ignored)out=[];}else if(tool==='ruff'&&argv.includes('--check'))out=s.ignored?'':'1 file already formatted\\n';else if(tool==='prettier'&&argv.includes('--file-info'))out=JSON.stringify({ignored:!!s.ignored,inferredParser:'babel'});else if(tool==='cargo'&&argv[0]==='metadata')out=JSON.stringify(s.metadata??{workspace_root:root,packages:[{id:'fixture-id',name:'fixture',manifest_path:argv[argv.indexOf('--manifest-path')+1],edition:'2024',targets:[{name:'fixture',kind:['lib'],src_path:file}]}]});else if(s.fixedOutput!==undefined&&(argv.includes('--fix-dry-run')||argv.includes('--write')||argv[0]==='format'||tool==='prettier'||tool==='rustfmt'))out=s.fixedOutput;process.stdout.write(typeof out==='string'?out:JSON.stringify(out));process.exitCode=tool==='ruff'&&argv.includes('--check')?(s.checkCode??0):(tool==='cargo'&&argv[0]==='metadata'||tool==='prettier'&&argv.includes('--file-info'))?0:(s.code??0);});`);
-  for (const tool of ["ruff", "eslint", "biome", "prettier", "rustfmt", "cargo"]) {
+  const script = put(".git/tool.cjs", `const fs=require('node:fs'),path=require('node:path');const tool=process.argv[2],argv=process.argv.slice(3),root=${JSON.stringify(root)},file=${JSON.stringify(file)};let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const s=JSON.parse(fs.readFileSync(${JSON.stringify(scenario)},'utf8'));fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,tool,argv,cwd:process.cwd(),input,optionalLocks:process.env.GIT_OPTIONAL_LOCKS,rustupAutoInstall:process.env.RUSTUP_AUTO_INSTALL})+'\\n');if(s.timeout){setInterval(()=>{},10000);return;}if(s.overflow){process.stdout.write(Buffer.alloc(17*1024*1024,65));return;}if(s.invalidUtf8){process.stdout.write(Buffer.from([0xff]));return;}if(s.honorOutputFile&&process.env.RUFF_OUTPUT_FILE){fs.writeFileSync(process.env.RUFF_OUTPUT_FILE,'redirected output');process.exit(0);}if(s.mutate||s.configuredFix&&tool==='ruff'&&(!argv.includes('--no-fix')||!argv.includes('--no-fix-only')))fs.writeFileSync(file,'external edit\\n');if(s.mutateConfig&&(!s.mutateOn||argv.includes(s.mutateOn)))fs.writeFileSync(s.mutateConfig,'changed=true\\n');if(s.stderr)process.stderr.write(s.stderr);let out=s.output;if(tool==='ruff'&&argv.includes('--verbose')){if(!s.noCount)process.stderr.write('[DEBUG] Checked '+(s.ignored?0:1)+' files in: 1ms\\n');if(s.ignored)out=[];}else if(tool==='ruff'&&argv.includes('--check'))out=s.ignored?'':'1 file already formatted\\n';else if(tool==='oxfmt'&&argv.includes('--check'))out=s.inventory??(s.noCount?'':'Finished in 1ms on '+(s.ignored?0:1)+' files using 1 threads.\\n');else if(tool==='prettier'&&argv.includes('--file-info'))out=JSON.stringify({ignored:!!s.ignored,inferredParser:'babel'});else if(tool==='cargo'&&argv[0]==='metadata')out=JSON.stringify(s.metadata??{workspace_root:root,packages:[{id:'fixture-id',name:'fixture',manifest_path:argv[argv.indexOf('--manifest-path')+1],edition:'2024',targets:[{name:'fixture',kind:['lib'],src_path:file}]}]});else if(s.fixedOutput!==undefined&&(argv.includes('--fix-dry-run')||argv.includes('--write')||argv[0]==='format'||tool==='prettier'||tool==='rustfmt'||tool==='oxfmt'))out=s.fixedOutput;process.stdout.write(typeof out==='string'?out:JSON.stringify(out));process.exitCode=(tool==='ruff'||tool==='oxfmt')&&argv.includes('--check')?(s.checkCode??0):(tool==='cargo'&&argv[0]==='metadata'||tool==='prettier'&&argv.includes('--file-info'))?0:(s.code??0);});`);
+  for (const tool of ["ruff", "eslint", "biome", "prettier", "rustfmt", "cargo", "oxlint", "oxfmt"]) {
     if (process.platform === "win32") writeFileSync(join(bin, tool + ".cmd"), '@"' + process.execPath + '" "' + script + '" ' + tool + ' %*\r\n');
     else { const q = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"; writeFileSync(join(bin, tool), "#!/bin/sh\nexec " + q(process.execPath) + " " + q(script) + " " + tool + ' "$@"\n', { mode: 0o755 }); }
   }
@@ -129,6 +129,51 @@ test("tool processes: Prettier/rustfmt previews use project-local binaries and C
   const rustfmt = w.events().find(value => value.tool === "rustfmt")!; assert.deepEqual(rustfmt.argv, ["--emit", "stdout", "--edition", "2024", "--config-path", join(w.root, "rustfmt.toml")]);
   assert.equal(resolveToolCommand("prettier", w.file), join(w.bin, "prettier" + (process.platform === "win32" ? ".cmd" : "")));
   assert.equal((await w.run("prettier", "format")).updated, "pub async fn run() {}\n"); assert.equal(readFileSync(w.file, "utf8"), "pub async fn run(){ }\n");
+});
+
+test("tool processes: Oxlint JSON uses root-relative paths and UTF-8 spans without invoking fixes", async () => {
+  const source = '"😀"; export var value=1\n', w = fixture("src/source.ts", source, true), offset = Buffer.byteLength(source.slice(0, source.indexOf("var")));
+  const config = w.put("oxlint.config.ts", "export default { rules: { 'no-var': 'error' } }\n"), lock = w.put("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+  execFileSync("git", ["-C", w.root, "add", "src/source.ts", "oxlint.config.ts", "pnpm-lock.yaml"], { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  const index = readFileSync(join(w.root, ".git/index"));
+  w.set({ code: 1, output: { number_of_files: 1, diagnostics: [{ filename: relative(w.root, w.file), code: "eslint(no-var)", severity: "error", message: "Unexpected var", labels: [{ span: { offset, length: 3 } }] }] } });
+  const result = await w.run("oxlint", "fix");
+  assert.equal(result.verified, true); assert.equal(result.updated, undefined); assert.equal(result.diagnostics[0].range.start.character, source.indexOf("var"));
+  assert.equal(result.diagnostics[0].range.end.character, source.indexOf("var") + 3); assert.ok(result.configFiles.includes(config)); assert.ok(result.configFiles.includes(lock));
+  assert.deepEqual(w.events()[0].argv, ["--no-error-on-unmatched-pattern", "--format", "json", w.file]); assert.equal(w.events()[0].cwd, w.root); assert.equal(w.events()[0].input, "");
+  assert.equal(readFileSync(w.file, "utf8"), source); assert.deepEqual(readFileSync(join(w.root, ".git/index")), index);
+  w.set({ output: { number_of_files: 0, diagnostics: [] } }); const ignored = await w.run("oxlint"); assert.equal(ignored.verified, true); assert.equal(ignored.ignored, true);
+});
+
+test("tool processes: Oxlint rejects incomplete counts, malformed spans and outside-file diagnostics", async () => {
+  const w = fixture("src/source.ts", '"😀"; var value=1\n'), row = { filename: w.file, severity: "error", message: "issue", labels: [{ span: { offset: 8, length: 3 } }] };
+  for (const output of [
+    { diagnostics: [] }, { number_of_files: 2, diagnostics: [] }, { number_of_files: 1, diagnostics: {} },
+    { number_of_files: 0, diagnostics: [row] },
+    { number_of_files: 1, diagnostics: [{ ...row, filename: join(w.root, "other.ts") }] },
+    { number_of_files: 1, diagnostics: [{ ...row, labels: [] }] },
+    { number_of_files: 1, diagnostics: [{ ...row, labels: [{ span: { offset: 2, length: 1 } }] }] },
+    { number_of_files: 1, diagnostics: [{ ...row, severity: "unknown" }] },
+  ]) { w.set({ output }); await assert.rejects(w.run("oxlint"), /incomplete|outside|coordinates|UTF-8|severity/); }
+  w.set({ code: 1, output: { number_of_files: 1, diagnostics: [] } }); await assert.rejects(w.run("oxlint"), /failed without/);
+  w.set({ code: 1, output: "", stderr: "Failed to load JS plugin missing-plugin from oxlint.config.ts" });
+  await assert.rejects(w.run("oxlint"), /Oxlint.*Failed to load JS plugin missing-plugin from oxlint.config.ts/);
+});
+
+test("tool processes: Oxfmt previews preserve source/index, report ignores and keep project config", async () => {
+  const w = fixture("src/source.ts", "export const value=1\n", true), config = w.put(".oxfmtrc.json", '{"semi":false}\n');
+  execFileSync("git", ["-C", w.root, "add", "src/source.ts", ".oxfmtrc.json"], { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  const index = readFileSync(join(w.root, ".git/index")); w.set({ checkCode: 1, fixedOutput: "export const value = 1\n" });
+  const result = await w.run("oxfmt", "format"); assert.equal(result.updated, "export const value = 1\n"); assert.equal(result.verified, true); assert.ok(result.configFiles.includes(config));
+  assert.deepEqual(w.events()[0].argv, ["--no-error-on-unmatched-pattern", "--check", w.file]); assert.equal(w.events()[0].cwd, w.root);
+  assert.deepEqual(w.events()[1].argv, ["--stdin-filepath", w.file]); assert.equal(w.events()[1].input, result.original);
+  assert.equal(readFileSync(w.file, "utf8"), result.original); assert.deepEqual(readFileSync(join(w.root, ".git/index")), index);
+  w.set({ ignored: true }); const ignored = await w.run("oxfmt", "format"); assert.equal(ignored.ignored, true); assert.equal(ignored.updated, undefined);
+  w.set({ noCount: true }); await assert.rejects(w.run("oxfmt", "format"), /processed-file count/);
+  w.set({ noCount: true, checkCode: 1, stderr: "Failed to parse .oxfmtrc.json: invalid configuration" });
+  await assert.rejects(w.run("oxfmt", "format"), /Oxfmt.*Failed to parse .oxfmtrc.json/);
+  w.set({ code: 2, output: "", stderr: "parse failed" }); await assert.rejects(w.run("oxfmt", "format"), /oxfmt exited 2/);
+  await assert.rejects(w.run("oxlint", "format"), /does not support format/); await assert.rejects(w.run("oxfmt", "fix"), /does not support fix/);
 });
 
 test("tool processes: Clippy caches one crate invocation, maps workspace paths and safe multi-span fixes", async () => {

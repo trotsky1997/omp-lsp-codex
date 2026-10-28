@@ -139,7 +139,7 @@ export function loadConfig(cwd, globalConfigOnly = false) {
         }
         for (const field of ["settings", "initOptions"]) {
             const value = config[field];
-            if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value)))
+            if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value) && (field === "settings" || value.some(item => !item || typeof item !== "object" || Array.isArray(item)))))
                 throw new Error(`Invalid ${name}.${field}`);
         }
         for (const field of ["disabled", "isLinter"])
@@ -162,6 +162,8 @@ export function loadConfig(cwd, globalConfigOnly = false) {
         }
         if (name === "typescript-language-server") {
             config.initOptions ??= {};
+            if (Array.isArray(config.initOptions))
+                throw new Error("TypeScript initOptions must be an object");
             if (config.initOptions.tsserver !== undefined &&
                 (typeof config.initOptions.tsserver !== "object" ||
                     !config.initOptions.tsserver ||

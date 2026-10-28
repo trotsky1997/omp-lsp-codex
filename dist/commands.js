@@ -22,7 +22,7 @@ import { impactAnalysis } from "./impact.js";
 import { typeHierarchy, inlayHints, unsupportedFeature } from "./type-hints.js";
 import { firstPage, nextPage } from "./pagination.js";
 import { budgetData } from "./budget.js";
-import { runTooling, validateToolPlan, verifyToolPlan } from "./tooling.js";
+import { declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.js";
 export function outputData(data, args) {
     const selected = args.fields ? selectFields(data, args.fields) : data;
     return args.budget === undefined ? selected : budgetData(selected, args.budget);
@@ -1283,8 +1283,15 @@ async function runQuery(args, session) {
         case "dependencies":
             return dependencies(args);
         case "fix": {
+            if (!args.plan)
+                throw new Error("Fix plans require --plan PATH.json");
             if (args.tool)
                 return runTooling({ ...args, command: "lint" });
+            if (!args.server && args.query === undefined && args.symbol === undefined && args.column === undefined && args.line === 1 && !args.range && (!args.kind || args.kind === "source.fixAll" || args.kind.startsWith("source.fixAll."))) {
+                const paths = args.file ? [resolveFile(args.file, args.cwd)] : args.changed ? await changedFiles(args.cwd) : [];
+                if (paths.some(file => declaredTools(file, false).length))
+                    return runTooling({ ...args, command: "lint" });
+            }
             const pool = { clients: new Map(), diagnostics: true };
             try {
                 return await fixPlan(args, file => fileContext({ ...args, file }, true, pool));

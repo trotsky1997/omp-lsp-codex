@@ -180,19 +180,6 @@ test("tooling: project-declared formatter conflicts request one selector, explic
   assert.equal((object((explicit.data.checked as ObjectValue[])[0]).providers as ObjectValue[])[0].name, "prettier"); assert.equal(readFileSync(file, "utf8"), "const value=1\n");
 });
 
-test("tooling: declared unsupported project tools block implicit semantic-server replacements", async () => {
-  for (const command of ["lint", "format"]) {
-    const w = workspace(), file = join(w.root, "source.ts"); writeFileSync(file, "const value = 1\n");
-    writeFileSync(join(w.root, "package.json"), JSON.stringify({ devDependencies: { oxlint: "1.89.0", oxfmt: "0.74.0" } }));
-    format(w);
-    const result = await runTooling(options(w, command, { file, server: undefined }));
-    assert.equal(result.code, 1); assert.equal(result.data.verified, false); assert.equal(result.data.checkedFiles, 1);
-    assert.match(result.human, new RegExp(`Project tool ${command === "lint" ? "oxlint" : "oxfmt"} is not supported`));
-    assert.match(result.human, /project's configured/); assert.equal(existsSync(join(w.root, "wire.ndjson")), false);
-    assert.equal(readFileSync(file, "utf8"), "const value = 1\n");
-  }
-});
-
 test("tooling: a newly added formatter configuration invalidates the reviewed plan before source writes", async () => {
   const w = workspace(), file = prettier(w), plan = join(w.root, "format.json");
   const args = options(w, "format", { file, server: undefined, tool: "prettier", plan });

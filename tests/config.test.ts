@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, afterEach, before, test } from "node:test";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ancestors, availableServers, configPaths, executable, fileServers, gitRoot, languageId, loadConfig, matchesFile, MAX_FILE_BYTES, numstatFiles, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, workspaceSource } from "../src/config.ts";
+import { ancestors, availableServers, configPaths, executable, fileServers, gitRoot, languageId, loadConfig, matchesFile, MAX_FILE_BYTES, numstatFiles, object, readText, resolveCommand, resolveFile, serverForLanguage, serverRoot, workspaceSource } from "../src/config.ts";
 import { cleanWorkspaces, isolateGlobalConfig, setGlobalServers, workspace } from "./fixtures/workspace.ts";
 
 let restoreConfig: () => void;
@@ -25,8 +25,8 @@ test("config: project overrides inherit builtins, preserve user overrides, and n
   const first = loadConfig(w.root), second = loadConfig(w.root, true);
   assert.deepStrictEqual(first["typescript-language-server"].args, inheritedArgs);
   assert.deepStrictEqual(first["typescript-language-server"].args, ["--stdio", "--global-fixture"]);
-  assert.deepStrictEqual(first["typescript-language-server"].initOptions?.tsserver, { useSyntaxServer: "auto", fallbackPath: "custom" });
-  assert.deepStrictEqual(second["typescript-language-server"].initOptions?.tsserver, { useSyntaxServer: "never" });
+  assert.deepStrictEqual(object(first["typescript-language-server"].initOptions).tsserver, { useSyntaxServer: "auto", fallbackPath: "custom" });
+  assert.deepStrictEqual(object(second["typescript-language-server"].initOptions).tsserver, { useSyntaxServer: "never" });
   first["typescript-language-server"].args!.push("mutated");
   assert.deepStrictEqual(loadConfig(w.root, true)["typescript-language-server"].args, ["--stdio", "--global-fixture"]);
   assert.deepStrictEqual(loadConfig(w.root)["typescript-language-server"].args, ["--stdio", "--global-fixture"]);
@@ -38,6 +38,17 @@ test("config: hook scope preserves user overrides without reading malformed proj
   assert.strictEqual((configPaths(w.root, true)).length, 1); assert.ok(!(configPaths(w.root, true)).includes(w.configPath));
   assert.partialDeepStrictEqual(loadConfig(w.root, true)["typescript-language-server"], { command: process.execPath, args: ["--global-server"], settings: { selected: "user" } });
   assert.throws(() => loadConfig(w.root), (error) => error instanceof Error && error.message.includes(String(w.configPath)));
+});
+test("config: workspace initialization arrays preserve protocol data and reject invalid entries", () => {
+  const w = workspace(), initOptions = [{ workspaceUri: "file:///project", options: { fixKind: "safe_fix" } }];
+  writeFileSync(w.configPath, JSON.stringify({ servers: { fixture: { ...w.configs.fixture, initOptions } } }));
+  assert.deepEqual(loadConfig(w.root).fixture.initOptions, initOptions);
+  for (const value of [[null], ["unsafe"], [[]]]) {
+    writeFileSync(w.configPath, JSON.stringify({ servers: { fixture: { ...w.configs.fixture, initOptions: value } } }));
+    assert.throws(() => loadConfig(w.root), /Invalid fixture.initOptions/);
+  }
+  writeFileSync(w.configPath, JSON.stringify({ servers: { "typescript-language-server": { initOptions } } }));
+  assert.throws(() => loadConfig(w.root), /TypeScript initOptions must be an object/);
 });
 for (const [caseIndex, caseValue] of ([
   { command: "" }, { command: 5 }, { args: "--stdio" }, { args: [1] }, { fileTypes: null }, { rootMarkers: [false] },
