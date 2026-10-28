@@ -145,6 +145,8 @@ export function loadConfig(cwd, globalConfigOnly = false) {
         for (const field of ["disabled", "isLinter"])
             if (config[field] !== undefined && typeof config[field] !== "boolean")
                 throw new Error(`Invalid ${name}.${field}: expected a boolean`);
+        if (config.protocol !== undefined && !["lsp", "tsp"].includes(config.protocol))
+            throw new Error(`Invalid ${name}.protocol: expected lsp or tsp`);
         if (config.languageId !== undefined && (typeof config.languageId !== "string" || !config.languageId.trim()))
             throw new Error(`Invalid ${name}.languageId`);
         if (config.warmupTimeoutMs !== undefined &&
@@ -227,10 +229,10 @@ export function resolveCommand(command, root, globalOnly = false) {
     const found = (process.env.PATH ?? "").split(delimiter).flatMap(directory => directory ? names.map(name => resolve(directory, name)) : []).find(path => executable(path) && (!globalOnly || !inside(realpathSync(root), realpathSync(path))));
     return found;
 }
-export function availableServers(configs, cwd, globalOnly = false) {
+export function availableServers(configs, cwd, globalOnly = false, protocol = "lsp") {
     const servers = [];
     for (const [name, raw] of Object.entries(configs)) {
-        if (raw.disabled)
+        if (raw.disabled || protocol !== "all" && (raw.protocol ?? "lsp") !== protocol)
             continue;
         const root = serverRoot(cwd, raw.rootMarkers);
         if (!root)

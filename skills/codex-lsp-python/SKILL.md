@@ -13,6 +13,8 @@ Editable installation can connect the checked-out package to runtime imports. Fo
 
 ## Static types and runtime
 
+Use `types --file PATH --line N --symbol NAME --view computed|declared|expected --fields summary` for a structured type question. `computed` returns inference at that node, `declared` asks for the annotation, and `expected` asks what the surrounding expression requires. Select the call argument or RHS for contextual types; `--range START:COL-END:COL` selects an entire expression. Install/register Pyrefly with `uv tool install pyrefly` and `codex-lsp setup pyrefly-tsp`. TSP queries use the dedicated `pyrefly tsp` process; Python navigation and diagnostics retain their configured LSP. See [TSP queries](../codex-lsp/references/tsp.md) for backend semantics, session-local snapshots and graph retrieval.
+
 Use `lint --file PATH --tool ruff` for Python style/bug diagnostics and `format --file PATH --tool ruff --check` for formatting. Automatic selection follows Ruff project configuration. Save requested safe repairs with `lint --plan PATH.json` or formatting with `format --plan PATH.json`, review the diff, then apply it. Ruff and Pyright serve different project checks; keep type diagnostics in the verification loop. See [lint/format workflows](../codex-lsp/references/tooling.md).
 
 Use `snippet --file PATH --line N --symbol NAME` to read a local function/class without Pyright startup. `signature-help --symbol NAME` on a call-site line lets ast-grep choose the intended nested call's argument cursor; explicit columns select later parameters. Interpreter preparation remains necessary for semantic answers.

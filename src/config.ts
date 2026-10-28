@@ -27,6 +27,7 @@ export interface ServerConfig {
   languageId?: string;
   disabled?: boolean;
   isLinter?: boolean;
+  protocol?: "lsp" | "tsp";
   warmupTimeoutMs?: number;
   initOptions?: ObjectValue | ObjectValue[];
   settings?: ObjectValue;
@@ -167,6 +168,8 @@ export function loadConfig(cwd: string, globalConfigOnly = false): Record<string
     for (const field of ["disabled", "isLinter"] as const)
       if (config[field] !== undefined && typeof config[field] !== "boolean")
         throw new Error(`Invalid ${name}.${field}: expected a boolean`);
+    if (config.protocol !== undefined && !["lsp", "tsp"].includes(config.protocol))
+      throw new Error(`Invalid ${name}.protocol: expected lsp or tsp`);
     if (config.languageId !== undefined && (typeof config.languageId !== "string" || !config.languageId.trim()))
       throw new Error(`Invalid ${name}.languageId`);
     if (config.warmupTimeoutMs !== undefined &&
@@ -258,10 +261,11 @@ export function availableServers(
   configs: Record<string, ServerConfig>,
   cwd: string,
   globalOnly = false,
+  protocol: "lsp" | "tsp" | "all" = "lsp",
 ): Server[] {
   const servers: Server[] = [];
   for (const [name, raw] of Object.entries(configs)) {
-    if (raw.disabled) continue;
+    if (raw.disabled || protocol !== "all" && (raw.protocol ?? "lsp") !== protocol) continue;
     const root = serverRoot(cwd, raw.rootMarkers);
     if (!root) continue;
     const resolvedCommand = resolveCommand(raw.command, root, globalOnly);

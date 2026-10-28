@@ -1,7 +1,7 @@
 import { textPrefix } from "./output.ts";
 
 type ObjectValue = Record<string, unknown>;
-const textFields = new Set(["hover", "snippet", "documentation", "detail", "message", "error", "hint", "targetsHint", "description", "title", "label", "signature", "diff", "matching"]);
+const textFields = new Set(["hover", "snippet", "documentation", "detail", "message", "error", "hint", "targetsHint", "description", "title", "label", "signature", "diff", "matching", "summary"]);
 const omittedFields = new Set(["workspaceEdit", "workspaceEdits", "data", "relatedInformation", "additionalTextEdits", "textEdits"]);
 const collections = new Set(["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "edges", "targets", "files", "removedFiles", "changes", "servers", "actions", "skipped", "candidateTests", "changedSymbols", "references", "calls", "checks", "candidates"]);
 const flags = ["truncated", "textTruncated", "errorTruncated", "workspaceEditOmitted", "detailsOmitted"];
@@ -24,6 +24,13 @@ export function budgetData(data: ObjectValue, maximum: number): ObjectValue {
     initialFlags.set(owner, Object.fromEntries(flags.filter(key => Object.hasOwn(owner, key)).map(key => [key, owner[key]])));
     for (const [key, value] of Object.entries(owner)) {
       if (key === "budget") continue;
+      if (key === "type" && owner.provider === "tsp" && value !== null && typeof value === "object") {
+        // TSP references are local to this graph; partial pruning could leave dangling type IDs.
+        delete owner.type; owner.typeOmitted = true; owner.truncated = true;
+        budget.omittedFields = Number(budget.omittedFields) + 1;
+        initialFlags.get(owner)!.truncated = true;
+        continue;
+      }
       if (key === "hint" && owner.success === true && owner.supported !== false && owner.found !== false && owner.verified !== false && owner.total !== 0) {
         delete owner[key]; budget.omittedFields = Number(budget.omittedFields) + 1;
       } else if (omittedFields.has(key)) {

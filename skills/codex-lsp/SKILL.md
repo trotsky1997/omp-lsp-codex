@@ -13,6 +13,7 @@ Read the matching language subskill for project-specific decisions: [Rust](../co
 codex-lsp symbols --file PATH --query NAME --limit 5
 codex-lsp definition --file PATH --line N --symbol NAME
 codex-lsp hover --file PATH --line N --symbol NAME
+codex-lsp types --file PATH --line N --symbol NAME --view expected --fields summary
 codex-lsp signature-help --file PATH --line N --symbol NAME
 codex-lsp snippet --file PATH --line N --symbol NAME
 codex-lsp inspect --file PATH --line N --symbol NAME --context --budget 3000
@@ -58,6 +59,8 @@ Default limits are 50 results/hover lines, 10 per inspect section and one signat
 For repeated navigation, request `--targets` and reuse `--target ID`; stale source requires a fresh handle. Watch diagnostics for continuous disk edits, plan multi-file pure-text fixes before `apply --plan`, and use `api-diff`/`dependencies` for public syntax/module evidence. `--budget` bounds any ordinary JSON command and each streaming row. Read [continuous exploration and repairs](references/workflows.md) for schemas, source checks, unsupported actions and verification limits.
 
 Use call hierarchy to follow callers/callees, completion to discover members at a cursor, a diagnostic baseline to separate new issues from existing ones, and impact for changed declarations and candidate tests with evidence. These commands are read-only with respect to source. Read [analysis workflows](references/analysis.md) for capture/compare, traversal and resolution budgets, incomplete results or removed code.
+
+For structured Python type questions, `types --view computed|declared|expected` queries a TSP backend. Install/register it with `uv tool install pyrefly` and `codex-lsp setup pyrefly-tsp`; the CLI starts `pyrefly tsp`. Use `--fields summary` for a compact answer or `--fields type` for its response-local type graph. Read [TSP type queries](references/tsp.md) for ranges, backend selection, snapshots and output budgets.
 
 ## Setup and edits
 

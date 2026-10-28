@@ -43,6 +43,8 @@ Commands:
   definition             --file PATH --line N [--symbol NAME | --column N]
   references             --file PATH --line N [--symbol NAME | --column N]
   hover                  --file PATH --line N [--symbol NAME | --column N]
+  types                  --file PATH [--line N --symbol NAME | --range START:COL-END:COL]
+                         [--view computed|declared|expected] [--server pyrefly-tsp] TSP 0.4.x
   signature-help         --file PATH --line N [--symbol NAME | --column N]
   snippet                --file PATH --line N [--symbol NAME | --column N]
                          Extract the enclosing declaration through ast-grep, without LSP
@@ -67,7 +69,7 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --target ID           Reuse a location from --targets in the same workspace; source version is checked
   --context             Include enclosing source, definitions, types and sampled references in inspect
   --tool NAME           Select CLI backend: ruff, eslint, biome, prettier, rustfmt, clippy, oxlint, oxfmt
-  --server NAME         Select an LSP provider for lint/format/fix/diagnostics/code-actions/request/capabilities
+  --server NAME         Select a provider for lint/format/fix/diagnostics/code-actions/request/capabilities/types
 Lint/format fields: --fields checked (providers), diagnostics (lint), files (diff), checkedFiles,changedFiles,needsFormatting
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 Omit --line with --symbol to resolve a unique declaration (Class.method or Rust Type::method).
@@ -114,6 +116,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
             check: { type: "boolean" },
             format: { type: "boolean" },
             formatter: { type: "string" },
+            view: { type: "string" },
             range: { type: "string" },
             kind: { type: "string" },
             "page-size": { type: "string" },
@@ -155,8 +158,8 @@ export function parseOptions(argv, cwd = process.cwd()) {
     if (v.resolve && !["complete", "inlay-hints"].includes(command))
         throw new Error("--resolve is only available for complete/inlay-hints");
     const range = v.range === undefined ? undefined : parseRange(v.range);
-    if (range && !["code-actions", "inlay-hints", "format"].includes(command))
-        throw new Error("--range is only available for code-actions/inlay-hints/format");
+    if (range && !["code-actions", "inlay-hints", "format", "types"].includes(command))
+        throw new Error("--range is only available for code-actions/inlay-hints/format/types");
     if (range && (v.line !== undefined || v.column !== undefined || v.symbol !== undefined))
         throw new Error("Choose --range or --line/--column/--symbol");
     if (v.kind !== undefined && (!["code-actions", "fix"].includes(command) || !/^[\w-]+(?:\.[\w-]+)*$/.test(v.kind)))
@@ -185,10 +188,12 @@ export function parseOptions(argv, cwd = process.cwd()) {
         throw new Error("--format requires fix --plan PATH.json");
     if (v.formatter !== undefined && (!v.format || !v.formatter.trim()))
         throw new Error("--formatter NAME requires fix --format --plan PATH.json");
+    if (v.view !== undefined && (command !== "types" || !["computed", "declared", "expected"].includes(v.view)))
+        throw new Error("--view requires types and computed, declared or expected");
     if (v.tool !== undefined && (!["lint", "format", "fix"].includes(command) || !v.tool.trim()))
         throw new Error("--tool requires lint/format/fix and a nonempty backend name");
-    if (v.server !== undefined && (!["lint", "format", "fix", "diagnostics", "code-actions", "request", "capabilities"].includes(command) || !v.server.trim()))
-        throw new Error("--server requires lint/format/fix/diagnostics/code-actions/request/capabilities and a nonempty provider name");
+    if (v.server !== undefined && (!["lint", "format", "fix", "diagnostics", "code-actions", "request", "capabilities", "types"].includes(command) || !v.server.trim()))
+        throw new Error("--server requires lint/format/fix/diagnostics/code-actions/request/capabilities/types and a nonempty provider name");
     if (v.tool !== undefined && v.server !== undefined)
         throw new Error("Choose --tool NAME or --server NAME");
     if (v.check && (command !== "format" || v.plan !== undefined))
@@ -199,7 +204,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
         throw new Error("--reverse requires dependencies");
     if (v.target !== undefined && (!v.target.trim() || v.file !== undefined || v.line !== undefined || v.column !== undefined || v.symbol !== undefined || range))
         throw new Error("Choose --target ID or --file/--line/--column/--symbol/--range");
-    if (v.target !== undefined && !["hover", "definition", "references", "type-definition", "implementation", "signature-help", "snippet", "inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "complete"].includes(command))
+    if (v.target !== undefined && !["hover", "definition", "references", "type-definition", "implementation", "signature-help", "snippet", "inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "complete", "types"].includes(command))
         throw new Error("--target requires a position-based query or rename/code-actions");
     if (v.stdio && command !== "session")
         throw new Error("--stdio is only available for session");
@@ -246,6 +251,7 @@ export function parseOptions(argv, cwd = process.cwd()) {
         target: v.target, targets: !!v.targets, watch: !!v.watch, jsonl: !!v.jsonl || !!v.watch,
         plan: v.plan, base: v.base, reverse: !!v.reverse,
         tool: v.tool, server: v.server, check: !!v.check, format: !!v.format, formatter: v.formatter,
+        view: v.view,
         timeout: Math.max(5, Math.min(300, timeout)) * 1000,
         limit,
         json: !!v.json || fields !== undefined || budget !== undefined || !!v.stdio || !!v.targets || !!v.watch,

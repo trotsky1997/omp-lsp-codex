@@ -38,6 +38,10 @@ export function selectFields(data, fields) {
         for (const key of STATE_FIELDS)
             if (Object.hasOwn(value, key) && value[key] !== undefined)
                 selected.set(prefix + key, value[key]);
+        if (value.provider === "tsp")
+            for (const key of ["server", "protocolVersion", "view", "typeOmitted"])
+                if (value[key] !== undefined)
+                    selected.set(prefix + key, value[key]);
     };
     state(data, "");
     for (const key of ["source", "destination", "importUpdates", "renameTarget"])

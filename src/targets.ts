@@ -89,7 +89,7 @@ export function attachTargets(args: Options, data: ObjectValue): ObjectValue {
         row.target = target;
       } catch { omitted++; }
     }
-    for (const [key, child] of Object.entries(row)) if (!["target", "workspaceEdit", "workspaceEdits", "data", "range"].includes(key)) visit(child, path ? `${path}.${key}` : key, source);
+    for (const [key, child] of Object.entries(row)) if (!["target", "workspaceEdit", "workspaceEdits", "data", "range"].includes(key) && !(key === "type" && row.provider === "tsp")) visit(child, path ? `${path}.${key}` : key, source);
   };
   visit(result, "");
   if (!entries.length) return { ...result, targets: [], ...(omitted ? { targetsHint: "Some locations have no readable current source; use their explicit file/line anchors." } : {}) };

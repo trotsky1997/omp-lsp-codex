@@ -30,6 +30,7 @@ export class LspClient {
     progress = new Set();
     progressSeen = new Set();
     capabilities = {};
+    typeServer = { snapshot: -1, generation: 0, error: undefined };
     serverStatus;
     applyEdit;
     renameTarget;
@@ -146,6 +147,8 @@ export class LspClient {
         return promise;
     }
     notify(method, params = {}) {
+        if (["textDocument/didOpen", "textDocument/didChange", "textDocument/didClose", "workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles"].includes(method))
+            this.typeServer.generation++;
         return this.#send({ jsonrpc: "2.0", method, params });
     }
     async #readMessages() {
@@ -209,6 +212,13 @@ export class LspClient {
                 this.#cacheDiagnostics(params.uri, params.diagnostics);
             else
                 this.diagnostics.delete(params.uri);
+        }
+        else if (message.method === "typeServer/snapshotChanged") {
+            this.typeServer.generation++;
+            if (!Number.isSafeInteger(params.old) || Number(params.old) < 0 || !Number.isSafeInteger(params.new) || Number(params.new) < Number(params.old) || Number(params.new) < this.typeServer.snapshot)
+                this.typeServer.error = new Error("Invalid TSP snapshotChanged notification; start a fresh session");
+            else
+                this.typeServer.snapshot = Number(params.new);
         }
         else if (message.method === "experimental/serverStatus") {
             this.serverStatus = params;

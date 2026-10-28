@@ -126,6 +126,7 @@ for await (const chunk of process.stdin) {
           const method = String(message.method), count = calls.get(method) ?? 0;
           if (scenario.stallMethods?.includes(method)) break;
           calls.set(method, count + 1);
+          for (const notification of scenario.notificationsByCall?.[method]?.[count] ?? []) await send(notification);
           const mutation = scenario.beforeResponse?.[method];
           if (mutation) writeFileSync(mutation.file, mutation.text);
           if (scenario.callbacks?.[method]) {
@@ -137,11 +138,11 @@ for await (const chunk of process.stdin) {
           else {
             const item = object(params.item ?? params), key = String(object(item.data).key ?? item.name ?? item.label);
             const position = object(params.position), point = `${position.line}:${position.character}`;
-            const error = scenario.errorsByItem?.[method]?.[key] ?? scenario.errors?.[method];
+            const error = scenario.errorsByCall?.[method]?.[count] ?? scenario.errorsByItem?.[method]?.[key] ?? scenario.errors?.[method];
             if (error) await send({ id: message.id, error });
             else if (scenario.requiresIndex && method === "textDocument/references" && !indexReady) await reply([]);
             else if (scenario.manualCodeActions && method === "textDocument/codeAction" && object(params.context).triggerKind !== 1) await reply([]);
-            else await reply(scenario.responsesByItem?.[method]?.[key] ?? scenario.responsesByPosition?.[method]?.[point] ?? scenario.responsesByText?.[method]?.[documentTexts.get(String(object(params.textDocument).uri)) ?? ""] ?? scenario.responses?.[method] ?? null);
+            else await reply(scenario.responsesByCall?.[method]?.[count] ?? scenario.responsesByItem?.[method]?.[key] ?? scenario.responsesByPosition?.[method]?.[point] ?? scenario.responsesByText?.[method]?.[documentTexts.get(String(object(params.textDocument).uri ?? object(params.arg).uri)) ?? ""] ?? scenario.responses?.[method] ?? null);
           }
         }
     }

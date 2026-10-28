@@ -58,6 +58,7 @@ import { typeHierarchy, inlayHints, unsupportedFeature } from "./type-hints.ts";
 import { firstPage, nextPage } from "./pagination.ts";
 import { budgetData } from "./budget.ts";
 import { combinedPlan, declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.ts";
+import { queryType, typeServerVersion } from "./tsp.ts";
 
 export interface Options {
   command: string;
@@ -97,6 +98,7 @@ export interface Options {
   check?: boolean;
   format?: boolean;
   formatter?: string;
+  view?: string;
   timeout: number;
   limit: number;
   json: boolean;
@@ -192,6 +194,8 @@ const READ_ONLY = new Set([
   "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes", "typeHierarchy/subtypes",
   "textDocument/inlayHint", "inlayHint/resolve", "codeAction/resolve",
   "textDocument/formatting", "textDocument/rangeFormatting",
+  "typeServer/getSupportedProtocolVersion", "typeServer/getSnapshot", "typeServer/getComputedType",
+  "typeServer/getDeclaredType", "typeServer/getExpectedType", "typeServer/getPythonSearchPaths", "typeServer/resolveImport",
 ]);
 const NAVIGATION: Record<string, string> = {
   definition: "textDocument/definition",
@@ -254,9 +258,12 @@ async function fileContext(args: Options, semantic = true, session?: Session): P
       loadConfig(dirname(path), args.globalConfigOnly),
       dirname(path),
       args.globalBinsOnly,
+      args.command === "types" || args.method?.startsWith("typeServer/") ? args.server ? "all" : "tsp" : "lsp",
     ),
     path,
   ).find(server => !args.server || server.name === args.server);
+  if (!server && args.command === "types")
+    throw new Error(`No available TSP server${args.server ? ` named ${args.server}` : ""} matches ${path}; install with uv tool install pyrefly, then run codex-lsp setup pyrefly-tsp. Official documentation: https://pyrefly.org/blog/pyrefly-pylance/`);
   if (!server)
     throw new Error(`No available language server${args.server ? ` named ${args.server}` : ""} matches ${path}; run codex-lsp setup <language> --project from the project root`);
   if (args.command === "inspect" || session?.diagnostics) server = compilerDiagnostics(server);
@@ -707,6 +714,7 @@ export function status(args: Options): Result {
     loadConfig(cwd, args.globalConfigOnly),
     cwd,
     args.globalBinsOnly,
+    "all",
   );
   const servers = (path ? fileServers(available, path) : available).map((x) => ({
     name: x.name,
@@ -715,6 +723,7 @@ export function status(args: Options): Result {
     root: x.root,
     fileTypes: x.fileTypes ?? [],
     isLinter: !!x.isLinter,
+    protocol: x.protocol ?? "lsp",
   }));
   return {
     data: { success: true, servers },
@@ -735,7 +744,7 @@ async function doctor(args: Options): Promise<Result> {
     );
   const servers: ObjectValue[] = [],
     issues: ObjectValue[] = [];
-  for (const server of availableServers(configs, cwd, args.globalBinsOnly)) {
+  for (const server of availableServers(configs, cwd, args.globalBinsOnly, "all")) {
     let client: LspClient | undefined;
     const row: ObjectValue = {
       name: server.name,
@@ -746,6 +755,7 @@ async function doctor(args: Options): Promise<Result> {
     if (pythonPath) row.pythonPath = pythonPath;
     try {
       client = await LspClient.start(server, args.timeout);
+      if (server.protocol === "tsp") row.protocolVersion = await typeServerVersion(client, Date.now() + args.timeout);
       if (server.name === "rust-analyzer") await client.waitWorkspace();
       Object.assign(row, {
         status: "ok",
@@ -1319,7 +1329,7 @@ async function request(args: Options): Promise<Result> {
     throw new Error("Raw request methods require --apply unless listed as read-only");
   let client: LspClient | undefined,
     server: Server,
-    params: unknown = args.payload ? JSON.parse(args.payload) : {};
+    params: unknown = args.payload ? JSON.parse(args.payload) : ["typeServer/getSnapshot", "typeServer/getSupportedProtocolVersion"].includes(args.method) ? undefined : {};
   let applied = false, editFailure: unknown;
   if (args.file && args.payload && args.method.startsWith("textDocument/") &&
       (params === null || typeof params !== "object" || Array.isArray(params)))
@@ -1328,7 +1338,7 @@ async function request(args: Options): Promise<Result> {
     if (args.file) {
       const context = await fileContext(args);
       ({ client, server } = context);
-      if (!args.payload || args.method.startsWith("textDocument/")) {
+      if (!args.payload && !args.method.startsWith("typeServer/") || args.method.startsWith("textDocument/")) {
         const supplied = object(params);
         params = { ...supplied, textDocument: { uri: context.uri, ...object(supplied.textDocument) } };
         if (POSITION_METHODS.has(args.method) && supplied.position === undefined)
@@ -1341,7 +1351,7 @@ async function request(args: Options): Promise<Result> {
           };
       }
     } else {
-      const servers = availableServers(loadConfig(args.cwd, args.globalConfigOnly), args.cwd, args.globalBinsOnly).filter(server => !args.server || server.name === args.server);
+      const servers = availableServers(loadConfig(args.cwd, args.globalConfigOnly), args.cwd, args.globalBinsOnly, args.method.startsWith("typeServer/") ? args.server ? "all" : "tsp" : "lsp").filter(server => !args.server || server.name === args.server);
       server = servers.find((x) => !x.isLinter) ?? servers[0];
       if (!server) throw new Error("No available language server for this workspace");
       client = await LspClient.start(server, args.timeout, args.apply);
@@ -1374,7 +1384,7 @@ export async function run(args: Options, session?: Session): Promise<Result> {
     try { return { ...result, data: attachTargets(resolved, result.data) }; }
     catch (error) { return { ...result, data: { ...result.data, targets: [], targetsHint: `Targets unavailable; use explicit file/line anchors. ${error instanceof Error ? error.message : String(error)}` } }; }
   };
-  if (resolved.file && resolved.symbol && resolved.column === undefined && resolved.lineExplicit === false && resolved.line === 1 && ["hover", "definition", "references", "type-definition", "implementation", "snippet", "inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes"].includes(resolved.command)) {
+  if (resolved.file && resolved.symbol && resolved.column === undefined && resolved.lineExplicit === false && resolved.line === 1 && ["hover", "definition", "references", "type-definition", "implementation", "snippet", "inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "types"].includes(resolved.command)) {
     const file = resolveFile(resolved.file, resolved.cwd);
     if (syntaxLanguage(file)) {
       const lookup = await syntaxLookup(file, readText(file), resolved.symbol, resolved.globalBinsOnly);
@@ -1393,14 +1403,15 @@ export async function run(args: Options, session?: Session): Promise<Result> {
 
 async function runQuery(args: Options, session?: Session): Promise<Result> {
   const navigation = Object.hasOwn(NAVIGATION, args.command);
-  if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix", "lint", "format", "check"].includes(args.command))) throw new Error(`${args.command} is read-only; omit --apply`);
+  if (args.apply && (session || navigation || ["symbols", "diagnostics", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "impact", "next", "api-diff", "dependencies", "fix", "lint", "format", "check", "types"].includes(args.command))) throw new Error(`${args.command} is read-only; omit --apply`);
+  if (args.command === "types" && args.view !== undefined && !["computed", "declared", "expected"].includes(args.view)) throw new Error("types --view must be computed, declared or expected");
   if (args.command === "inlay-hints" && !args.range) throw new Error("inlay-hints requires --range START_LINE:COL-END_LINE:COL");
   let requestPosition = false;
   if (args.command === "request" && POSITION_METHODS.has(args.method ?? "")) {
     const payload: unknown = args.payload ? JSON.parse(args.payload) : {};
     requestPosition = !!payload && typeof payload === "object" && !Array.isArray(payload) && !("position" in payload);
   }
-  if (args.file && (navigation || ["inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete"].includes(args.command) ||
+  if (args.file && (navigation || ["inspect", "rename", "code-actions", "callers", "callees", "supertypes", "subtypes", "inlay-hints", "complete", "types"].includes(args.command) ||
       requestPosition)) {
     const path = resolveFile(args.file, args.cwd);
     const text = readText(path);
@@ -1409,6 +1420,15 @@ async function runQuery(args: Options, session?: Session): Promise<Result> {
   }
   if (navigation) return navigate(args, undefined, session);
   switch (args.command) {
+    case "types": {
+      const context = await fileContext(args, true, session);
+      try {
+        const point = await position(context.path, context.text, args);
+        const result = await queryType(args, context.client, context.uri, args.range ?? { start: point, end: point });
+        if (readText(context.path) !== context.text) throw new Error("Source changed during TSP query; retry with a current anchor");
+        return { ...result, data: { ...result.data, file: context.path } };
+      } finally { if (!session) await context.client.close(); }
+    }
     case "check": return check(args, session);
     case "lint":
     case "format":
@@ -1493,7 +1513,7 @@ async function runQuery(args: Options, session?: Session): Promise<Result> {
     case "capabilities": {
       const path = args.file ? resolveFile(args.file, args.cwd) : undefined,
         cwd = path ? dirname(path) : args.cwd;
-      const all = availableServers(loadConfig(cwd, args.globalConfigOnly), cwd, args.globalBinsOnly),
+      const all = availableServers(loadConfig(cwd, args.globalConfigOnly), cwd, args.globalBinsOnly, "all"),
         servers = (path ? fileServers(all, path) : all).filter(server => !args.server || server.name === args.server);
       if (!servers.length) throw new Error("No available language server");
       const results: ObjectValue[] = [];

@@ -436,6 +436,17 @@
             "docs": "https://github.com/microsoft/pyright/blob/main/docs/installation.md"
         }
     },
+    "pyrefly-tsp": {
+        "command": "pyrefly",
+        "args": ["tsp"],
+        "protocol": "tsp",
+        "fileTypes": [".py", ".pyi"],
+        "rootMarkers": ["pyrefly.toml", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", ".git"],
+        "setup": {
+            "install": "uv tool install pyrefly",
+            "docs": "https://pyrefly.org/blog/pyrefly-pylance/"
+        }
+    },
     "basedpyright": {
         "command": "basedpyright-langserver",
         "args": [

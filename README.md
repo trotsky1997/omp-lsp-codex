@@ -125,6 +125,17 @@ API diff and dependency graphs use ast-grep/Git for Rust, Python and TypeScript/
 
 `--budget` now applies to all ordinary JSON commands, including graphs, completions, batch and streaming rows. It preserves status/counts and valid graph endpoints; inspect its clipping metadata. When required state cannot fit, select fewer fields or raise the budget. Read [continuous exploration and repairs](skills/codex-lsp/references/workflows.md) for schemas, cache lifetime and limits.
 
+### Structured Python types (TSP)
+
+```sh
+uv tool install pyrefly
+codex-lsp setup pyrefly-tsp
+codex-lsp types --file app.py --line 20 --symbol value --view computed --fields summary
+codex-lsp types --file app.py --range 25:12-25:25 --view expected --json
+```
+
+`types` queries computed, declared or contextual expected types through stable TSP 0.4.x, using `pyrefly tsp`. It negotiates versions, reacquires snapshots after cancellation/change and validates response-local type references. The optional backend is separate from normal LSP navigation and diagnostics. Batch/session rows accept `"command":"types"` with `view`, `server` and expression `range`. Use `--fields summary` for compact answers or `--fields type` for the structured graph. If a response exceeds `--budget`, its graph is omitted atomically with `typeOmitted: true`. See [TSP workflows and backend semantics](skills/codex-lsp/references/tsp.md).
+
 ### Calls, completions, baselines and impact
 
 Call graphs store each file on its node. Edge `locations` contain `line`/`column`; resolve their file through the caller node (`nodes.find(node => node.id === edge.from).file`). `totalEdges` and `shownEdges` expose edge sampling alongside node counts.

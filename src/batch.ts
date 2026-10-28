@@ -5,8 +5,8 @@ import type { Options } from "./commands.ts";
 import { parseFields } from "./output.ts";
 import { parseRange } from "./range.ts";
 
-const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect", "callers", "callees", "complete", "supertypes", "subtypes", "inlay-hints", "code-actions", "next", "dependencies", "api-diff", "lint", "format", "check"]);
-const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context", "depth", "resolve", "baseline", "range", "kind", "pageSize", "cursor", "budget", "target", "targets", "base", "reverse", "tool", "server", "check"]);
+const COMMANDS = new Set(["hover", "definition", "references", "type-definition", "implementation", "signature-help", "symbols", "diagnostics", "snippet", "inspect", "callers", "callees", "complete", "supertypes", "subtypes", "inlay-hints", "code-actions", "next", "dependencies", "api-diff", "lint", "format", "check", "types"]);
+const FIELDS = new Set(["command", "file", "cwd", "line", "column", "symbol", "query", "limit", "fields", "workspace", "context", "depth", "resolve", "baseline", "range", "kind", "pageSize", "cursor", "budget", "target", "targets", "base", "reverse", "tool", "server", "check", "view"]);
 
 export async function batchQueries(args: Options): Promise<{ line: number; options: Options }[]> {
   if (!args.input) throw new Error('batch requires --input PATH or --input - (JSONL); e.g. {"command":"hover","file":"src/main.ts","line":10}');
@@ -43,7 +43,8 @@ export function queryOptions(args: Options, value: unknown, session = false): Op
   for (const field of ["line", "column", "limit"]) if (row[field] !== undefined && (typeof row[field] !== "number" || !Number.isSafeInteger(row[field]) || (row[field] as number) < (field === "limit" ? 0 : 1))) throw new Error(`${field} must be ${field === "limit" ? "a nonnegative" : "a positive"} integer`);
   for (const field of ["workspace", "context", "resolve", "targets", "reverse", "check"]) if (row[field] !== undefined && typeof row[field] !== "boolean") throw new Error(`${field} must be boolean`);
   if (row.tool !== undefined && !["lint", "format"].includes(row.command)) throw new Error("tool is only available for lint/format");
-  if (row.server !== undefined && !["lint", "format", "diagnostics", "code-actions"].includes(row.command)) throw new Error("server is only available for lint/format/diagnostics/code-actions");
+  if (row.server !== undefined && !["lint", "format", "diagnostics", "code-actions", "types"].includes(row.command)) throw new Error("server is only available for lint/format/diagnostics/code-actions/types");
+  if (row.view !== undefined && (row.command !== "types" || !["computed", "declared", "expected"].includes(String(row.view)) || typeof row.view !== "string")) throw new Error("view requires types and computed, declared or expected");
   if (row.tool !== undefined && row.server !== undefined) throw new Error("Choose tool or server");
   if (row.check !== undefined && row.command !== "format") throw new Error("check is only available for format");
   if (row.depth !== undefined && (!Number.isSafeInteger(row.depth) || Number(row.depth) < 1 || Number(row.depth) > 10 || !["callers", "callees", "supertypes", "subtypes", "dependencies"].includes(row.command))) throw new Error("depth must be 1-10 and applies to callers/callees/supertypes/subtypes/dependencies");
@@ -52,7 +53,7 @@ export function queryOptions(args: Options, value: unknown, session = false): Op
   if (row.context && row.command !== "inspect") throw new Error("context is only available for inspect");
   if (row.workspace && !["symbols", "diagnostics"].includes(row.command)) throw new Error("workspace is only available for symbols/diagnostics");
   const range = typeof row.range === "string" ? parseRange(row.range) : undefined;
-  if (range && (!["code-actions", "inlay-hints", "format"].includes(row.command) || row.line !== undefined || row.column !== undefined || row.symbol !== undefined)) throw new Error("range is for code-actions/inlay-hints/format; choose range or line/column/symbol");
+  if (range && (!["code-actions", "inlay-hints", "format", "types"].includes(row.command) || row.line !== undefined || row.column !== undefined || row.symbol !== undefined)) throw new Error("range is for code-actions/inlay-hints/format/types; choose range or line/column/symbol");
   if (row.kind !== undefined && (row.command !== "code-actions" || !/^[\w-]+(?:\.[\w-]+)*$/.test(String(row.kind)))) throw new Error("kind requires code-actions and an action kind such as refactor.extract");
   if (row.pageSize !== undefined && (row.command !== "references" || !Number.isSafeInteger(row.pageSize) || Number(row.pageSize) < 1 || Number(row.pageSize) > 1000 || row.limit !== undefined)) throw new Error("pageSize requires references, an integer from 1 to 1000 and no row limit");
   if (row.budget !== undefined && (!Number.isSafeInteger(row.budget) || Number(row.budget) < 512 || Number(row.budget) > MAX_FILE_BYTES)) throw new Error(`budget must be an integer from 512 to ${MAX_FILE_BYTES}`);
@@ -81,5 +82,6 @@ export function queryOptions(args: Options, value: unknown, session = false): Op
     target: row.target as string | undefined, targets: row.targets as boolean | undefined ?? (session ? args.targets : false),
     base: row.base as string | undefined, reverse: !!row.reverse,
     tool: row.tool as string | undefined, server: row.server as string | undefined, check: !!row.check, plan: undefined,
+    view: row.view as string | undefined,
   };
 }

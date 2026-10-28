@@ -6,6 +6,7 @@ Prefer human text for reading; JSON is useful for checking states and composing 
 | --- | --- |
 | definition/references/type-definition/implementation | `locations` |
 | hover | `hover` |
+| types (TSP) | `summary` or `type`; keeps view, protocolVersion and snapshot |
 | callers/callees | `nodes,edges,roots` |
 | supertypes/subtypes | `nodes,edges,roots` |
 | inlay-hints | `hints,resolution` |
