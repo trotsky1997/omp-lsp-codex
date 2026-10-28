@@ -17,7 +17,7 @@ function fixture(name = "source.py", source = '"😀"; import os\n', tracked = f
   const put = (name: string, text: string) => { const file = join(root, name); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); return file; };
   const file = put(name, source), bin = join(root, "node_modules/.bin"), trace = join(root, ".git/trace.jsonl"), scenario = join(root, ".git/scenario.json");
   mkdirSync(bin, { recursive: true });
-  const script = put(".git/tool.cjs", `const fs=require('node:fs'),path=require('node:path');const tool=process.argv[2],argv=process.argv.slice(3),root=${JSON.stringify(root)},file=${JSON.stringify(file)};let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const s=JSON.parse(fs.readFileSync(${JSON.stringify(scenario)},'utf8'));fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,tool,argv,cwd:process.cwd(),input,optionalLocks:process.env.GIT_OPTIONAL_LOCKS,rustupAutoInstall:process.env.RUSTUP_AUTO_INSTALL})+'\\n');if(s.timeout){setInterval(()=>{},10000);return;}if(s.overflow){process.stdout.write(Buffer.alloc(17*1024*1024,65));return;}if(s.invalidUtf8){process.stdout.write(Buffer.from([0xff]));return;}if(s.mutate)fs.writeFileSync(file,'external edit\\n');if(s.mutateConfig)fs.writeFileSync(s.mutateConfig,'changed=true\\n');if(s.stderr)process.stderr.write(s.stderr);let out=s.output;if(tool==='ruff'&&argv.includes('--verbose')){if(!s.noCount)process.stderr.write('[DEBUG] Checked '+(s.ignored?0:1)+' files in: 1ms\\n');if(s.ignored)out=[];}else if(tool==='ruff'&&argv.includes('--check'))out=s.ignored?'':'1 file already formatted\\n';else if(tool==='prettier'&&argv.includes('--file-info'))out=JSON.stringify({ignored:!!s.ignored,inferredParser:'babel'});else if(tool==='cargo'&&argv[0]==='metadata')out=JSON.stringify({workspace_root:root,packages:[{id:'fixture-id',name:'fixture',manifest_path:argv[argv.indexOf('--manifest-path')+1],edition:'2024'}]});else if(s.fixedOutput!==undefined&&(argv.includes('--fix-dry-run')||argv.includes('--write')||argv[0]==='format'||tool==='prettier'||tool==='rustfmt'))out=s.fixedOutput;process.stdout.write(typeof out==='string'?out:JSON.stringify(out));process.exitCode=tool==='ruff'&&argv.includes('--check')?(s.checkCode??0):(tool==='cargo'&&argv[0]==='metadata'||tool==='prettier'&&argv.includes('--file-info'))?0:(s.code??0);});`);
+  const script = put(".git/tool.cjs", `const fs=require('node:fs'),path=require('node:path');const tool=process.argv[2],argv=process.argv.slice(3),root=${JSON.stringify(root)},file=${JSON.stringify(file)};let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const s=JSON.parse(fs.readFileSync(${JSON.stringify(scenario)},'utf8'));fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,tool,argv,cwd:process.cwd(),input,optionalLocks:process.env.GIT_OPTIONAL_LOCKS,rustupAutoInstall:process.env.RUSTUP_AUTO_INSTALL})+'\\n');if(s.timeout){setInterval(()=>{},10000);return;}if(s.overflow){process.stdout.write(Buffer.alloc(17*1024*1024,65));return;}if(s.invalidUtf8){process.stdout.write(Buffer.from([0xff]));return;}if(s.honorOutputFile&&process.env.RUFF_OUTPUT_FILE){fs.writeFileSync(process.env.RUFF_OUTPUT_FILE,'redirected output');process.exit(0);}if(s.mutate||s.configuredFix&&tool==='ruff'&&(!argv.includes('--no-fix')||!argv.includes('--no-fix-only')))fs.writeFileSync(file,'external edit\\n');if(s.mutateConfig&&(!s.mutateOn||argv.includes(s.mutateOn)))fs.writeFileSync(s.mutateConfig,'changed=true\\n');if(s.stderr)process.stderr.write(s.stderr);let out=s.output;if(tool==='ruff'&&argv.includes('--verbose')){if(!s.noCount)process.stderr.write('[DEBUG] Checked '+(s.ignored?0:1)+' files in: 1ms\\n');if(s.ignored)out=[];}else if(tool==='ruff'&&argv.includes('--check'))out=s.ignored?'':'1 file already formatted\\n';else if(tool==='prettier'&&argv.includes('--file-info'))out=JSON.stringify({ignored:!!s.ignored,inferredParser:'babel'});else if(tool==='cargo'&&argv[0]==='metadata')out=JSON.stringify(s.metadata??{workspace_root:root,packages:[{id:'fixture-id',name:'fixture',manifest_path:argv[argv.indexOf('--manifest-path')+1],edition:'2024',targets:[{name:'fixture',kind:['lib'],src_path:file}]}]});else if(s.fixedOutput!==undefined&&(argv.includes('--fix-dry-run')||argv.includes('--write')||argv[0]==='format'||tool==='prettier'||tool==='rustfmt'))out=s.fixedOutput;process.stdout.write(typeof out==='string'?out:JSON.stringify(out));process.exitCode=tool==='ruff'&&argv.includes('--check')?(s.checkCode??0):(tool==='cargo'&&argv[0]==='metadata'||tool==='prettier'&&argv.includes('--file-info'))?0:(s.code??0);});`);
   for (const tool of ["ruff", "eslint", "biome", "prettier", "rustfmt", "cargo"]) {
     if (process.platform === "win32") writeFileSync(join(bin, tool + ".cmd"), '@"' + process.execPath + '" "' + script + '" ' + tool + ' %*\r\n');
     else { const q = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"; writeFileSync(join(bin, tool), "#!/bin/sh\nexec " + q(process.execPath) + " " + q(script) + " " + tool + ' "$@"\n', { mode: 0o755 }); }
@@ -39,14 +39,41 @@ test("tool processes: Ruff Unicode positions and safe fixes preserve source/inde
   const index = readFileSync(join(w.root, ".git/index")), result = await w.run("ruff", "fix");
   assert.equal(result.updated, '"😀"; \n'); assert.equal(result.verified, true); assert.equal(result.diagnostics[0].range.start.character, 13);
   assert.equal(readFileSync(w.file, "utf8"), '"😀"; import os\n'); assert.deepEqual(readFileSync(join(w.root, ".git/index")), index);
-  assert.ok(result.configFiles.includes(join(w.root, "ruff.toml"))); assert.deepEqual(w.events()[0].argv, ["check", "--no-cache", "--force-exclude", "--output-format=json", "--verbose", w.file]);
+  assert.ok(result.configFiles.includes(join(w.root, "ruff.toml"))); assert.deepEqual(w.events()[0].argv, ["check", "--no-fix", "--no-fix-only", "--no-cache", "--force-exclude", "--output-format=json", "--verbose", w.file]);
   assert.equal(w.events()[0].optionalLocks, "0"); assert.equal(w.events()[0].rustupAutoInstall, "0"); assert.equal(w.events()[0].input, "");
+});
+
+test("tool processes: Ruff configured autofix stays disabled for lint and fix previews", async () => {
+  const w = fixture(undefined, undefined, true);
+  w.put("pyproject.toml", "[tool.ruff]\nfix=true\nfix-only=true\nunsafe-fixes=true\n");
+  execFileSync("git", ["-C", w.root, "add", "source.py", "pyproject.toml"], { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  const original = readFileSync(w.file, "utf8"), index = readFileSync(join(w.root, ".git/index"));
+  w.set({ configuredFix: true, output: ruff(w.file), code: 1 });
+  for (const operation of ["lint", "fix"] as const) {
+    const result = await w.run("ruff", operation);
+    assert.equal(result.verified, true); assert.equal(result.diagnostics.length, 1);
+    assert.equal(result.updated, operation === "fix" ? '"😀"; \n' : undefined);
+    assert.equal(readFileSync(w.file, "utf8"), original); assert.deepEqual(readFileSync(join(w.root, ".git/index")), index);
+    assert.ok((w.events().at(-1)!.argv as string[]).includes("--no-fix"));
+    assert.ok((w.events().at(-1)!.argv as string[]).includes("--no-fix-only"));
+  }
 });
 
 test("tool processes: unsafe Ruff suggestions and conflicting fixes stay unchanged", async () => {
   const w = fixture(); w.set({ output: ruff(w.file, { applicability: "unsafe", edits: [] }), code: 1 });
   assert.equal((await w.run("ruff", "fix")).updated, readFileSync(w.file, "utf8"));
   w.set({ output: [...ruff(w.file), ...ruff(w.file)], code: 1 }); assert.equal((await w.run("ruff", "fix")).updated, '"😀"; \n');
+});
+
+test("tool processes: Ruff output-file environment cannot redirect reports into source", async () => {
+  const w = fixture(), original = readFileSync(w.file, "utf8"), before = process.env.RUFF_OUTPUT_FILE;
+  w.set({ honorOutputFile: true, output: ruff(w.file), code: 1 });
+  try {
+    process.env.RUFF_OUTPUT_FILE = w.file;
+    const result = await w.run("ruff");
+    assert.equal(result.verified, true); assert.equal(result.diagnostics.length, 1); assert.equal(readFileSync(w.file, "utf8"), original);
+    assert.equal(process.env.RUFF_OUTPUT_FILE, w.file);
+  } finally { if (before === undefined) delete process.env.RUFF_OUTPUT_FILE; else process.env.RUFF_OUTPUT_FILE = before; }
 });
 
 test("tool processes: Ruff and Prettier excluded files skip source processing with explicit ignored state", async () => {
@@ -112,12 +139,80 @@ test("tool processes: Clippy caches one crate invocation, maps workspace paths a
   w.set({ output: JSON.stringify(message) + "\n" + JSON.stringify(message) + '\n{"reason":"build-finished","success":true}\n' });
   const cache = new Map<string, Promise<ToolProcessResult>>(), result = await w.run("clippy", "fix", {}, cache);
   assert.equal(result.diagnostics.length, 1); assert.equal(result.updated, "pub fn n() -> i32 { 1 }\n");
-  assert.equal((await runToolProcess(w.args(), other, "clippy", "lint", cache)).diagnostics.length, 0);
+  const otherResult = await runToolProcess(w.args(), other, "clippy", "lint", cache); assert.equal(otherResult.diagnostics.length, 0); assert.equal(otherResult.verified, false);
   assert.equal(w.events().filter(event => (event.argv as string[])[0] === "clippy").length, 1);
   assert.equal(w.events().filter(event => (event.argv as string[])[0] === "metadata").length, 1);
   assert.ok((w.events().find(event => (event.argv as string[])[0] === "clippy")!.argv as string[]).includes("--locked"));
   w.set({ output: '{"reason":"build-finished","success":false}\n', code: 101, stderr: "compile error" });
   const incomplete = await w.run("clippy"); assert.equal(incomplete.verified, false); assert.match(incomplete.errors![0], /did not complete/);
+});
+
+test("tool processes: Clippy selects the source target and never builds unrelated tests", async () => {
+  const cases = [
+    { file: "src/module.rs", path: "src/lib.rs", kind: "lib", flags: ["--lib"] },
+    { file: "src/lib.rs", path: "src/lib.rs", kind: "proc-macro", flags: ["--lib"] },
+    { file: "src/bin/tool/helper.rs", path: "src/bin/tool/main.rs", kind: "bin", flags: ["--bin", "selected"] },
+    { file: "tests/selected.rs", path: "tests/selected.rs", kind: "test", flags: ["--test", "selected"] },
+    { file: "examples/demo/helper.rs", path: "examples/demo/main.rs", kind: "example", flags: ["--example", "selected"] },
+    { file: "benches/selected.rs", path: "benches/selected.rs", kind: "bench", flags: ["--bench", "selected"] },
+    { file: "build.rs", path: "build.rs", kind: "custom-build", flags: [] },
+  ];
+  for (const row of cases) {
+    const w = fixture(row.file, "pub fn n() {}\n"), manifest = w.put("Cargo.toml", '[package]\nname="fixture"\nversion="0.1.0"\n');
+    const target = { name: "selected", kind: [row.kind], src_path: join(w.root, row.path) };
+    const targetDirectory = join(w.root, ".git/target"), artifact = join(targetDirectory, "debug/deps/libselected-hash.rmeta");
+    w.put(".git/target/debug/deps/selected-hash.d", `${w.file.replaceAll(" ", "\\ ")}:\n`);
+    w.set({ metadata: { workspace_root: w.root, target_directory: targetDirectory, packages: [{ id: "fixture-id", name: "fixture", manifest_path: manifest,
+      targets: [{ name: "unrelated", kind: ["test"], src_path: join(w.root, "tests/unrelated.rs") }, target],
+    }] }, output: JSON.stringify({ reason: "compiler-artifact", package_id: "fixture-id", filenames: [artifact] }) + '\n{"reason":"build-finished","success":true}\n' });
+    const result = await w.run("clippy"), launch = w.events().find(event => (event.argv as string[])[0] === "clippy")!;
+    assert.equal(result.verified, true); assert.deepEqual(result.cargo?.targets, [{ name: "selected", kind: [row.kind] }]);
+    assert.deepEqual(launch.argv, ["clippy", "--offline", "--locked", ...row.flags, "--message-format=json", "--manifest-path", manifest]);
+  }
+});
+
+test("tool processes: unlinked Rust files require compiler input evidence before reporting clean", async () => {
+  const w = fixture("src/unlinked #module.rs", "pub fn n() {}\n"), manifest = w.put("Cargo.toml", '[package]\nname="fixture"\nversion="0.1.0"\n');
+  const targetDirectory = join(w.root, ".git/target"), artifact = join(targetDirectory, "debug/deps/libfixture-hash.rmeta");
+  const metadata = { workspace_root: w.root, target_directory: targetDirectory, packages: [{ id: "fixture-id", name: "fixture", manifest_path: manifest, targets: [{ name: "fixture", kind: ["lib"], src_path: join(w.root, "src/lib.rs") }] }] };
+  const report = (filename = artifact, packageId = "fixture-id") => JSON.stringify({ reason: "compiler-artifact", package_id: packageId, filenames: [filename] }) + '\n{"reason":"build-finished","success":true}\n';
+  w.set({ metadata, output: report() });
+  const missing = await w.run("clippy", "fix"); assert.equal(missing.verified, false); assert.equal(missing.updated, undefined); assert.equal(missing.cargo?.sourceInput, "unconfirmed"); assert.match(missing.errors![0], /absent from Cargo/);
+  const relativePath = "src/unlinked\\ \\#module.rs", dep = w.put(".git/target/debug/deps/fixture-hash.d", `${artifact}: ${relativePath}\n\n${relativePath}:\n`);
+  const included = await w.run("clippy"); assert.equal(included.verified, true); assert.equal(included.cargo?.sourceInput, "dep-info");
+  writeFileSync(dep, `${artifact}: ${relativePath}\n\nsrc/unlinkedmodule.rs:\n`);
+  assert.equal((await w.run("clippy")).verified, false);
+  writeFileSync(dep, `${relativePath}:\n`);
+  w.set({ metadata, output: report(artifact, "another-package") }); assert.equal((await w.run("clippy")).verified, false);
+  w.set({ metadata, output: report(join(w.root, "outside/libfixture-hash.rmeta")) }); assert.equal((await w.run("clippy")).verified, false);
+  assert.equal(readFileSync(w.file, "utf8"), "pub fn n() {}\n");
+});
+
+test("tool processes: Clippy reuses guarded Cargo feature settings and rejects invalid selections", async () => {
+  const w = fixture("src/lib.rs", "pub fn n() {}\n"); w.put("Cargo.toml", '[package]\nname="fixture"\nversion="0.1.0"\n');
+  const config = (settings: ObjectValue) => w.put(".codex/lsp.json", JSON.stringify({ "rust-analyzer": { settings } }));
+  w.set({ output: '{"reason":"build-finished","success":true}\n' });
+  const path = config({ "rust-analyzer": { cargo: { features: ["rt", "sync"], noDefaultFeatures: true } } });
+  const selected = await w.run("clippy"); assert.deepEqual(selected.cargo?.features, ["rt", "sync"]); assert.equal(selected.cargo?.noDefaultFeatures, true); assert.ok(selected.configFiles.includes(path));
+  const argv = w.events().at(-1)!.argv as string[]; assert.equal(argv[argv.indexOf("--features") + 1], "rt,sync"); assert.ok(argv.includes("--no-default-features"));
+  config({ "rust-analyzer.cargo.features": "all", "rust-analyzer.cargo.noDefaultFeatures": false });
+  assert.equal((await w.run("clippy")).cargo?.features, "all"); assert.ok((w.events().at(-1)!.argv as string[]).includes("--all-features")); assert.ok(!(w.events().at(-1)!.argv as string[]).includes("--no-default-features"));
+  for (const cargo of [{ features: "full" }, { features: ["rt,sync"] }, { features: [2] }, { noDefaultFeatures: "true" }]) {
+    config({ "rust-analyzer": { cargo } }); await assert.rejects(w.run("clippy"), /Invalid rust-analyzer Cargo/);
+  }
+  config({ "rust-analyzer": { cargo: { features: ["rt"] } } }); w.set({ output: '{"reason":"build-finished","success":true}\n', mutateConfig: path, mutateOn: "clippy" });
+  await assert.rejects(w.run("clippy"), /configuration changed/);
+});
+
+test("tool processes: unknown Cargo source membership and malformed targets never verify clean", async () => {
+  const w = fixture("outside/probe.rs", "pub fn n() {}\n"), manifest = w.put("Cargo.toml", '[package]\nname="fixture"\nversion="0.1.0"\n');
+  const metadata = (targets: unknown) => ({ workspace_root: w.root, packages: [{ id: "fixture-id", name: "fixture", manifest_path: manifest, targets }] });
+  w.set({ metadata: metadata([{ name: "fixture", kind: ["lib"], src_path: join(w.root, "src/lib.rs") }]) });
+  await assert.rejects(w.run("clippy"), /outside Cargo target directories/);
+  for (const targets of [undefined, [{ name: "bad", kind: "lib", src_path: w.file }], [{ name: "bad", kind: [2], src_path: w.file }]]) {
+    w.set({ metadata: metadata(targets) }); await assert.rejects(w.run("clippy"), /malformed target metadata/);
+  }
+  assert.ok(w.events().every(event => (event.argv as string[])[0] === "metadata"));
 });
 
 test("tool processes: denied Clippy lints retain safe fixes while unknown compiler/build failures stay unverified", async () => {

@@ -371,7 +371,8 @@ export async function applyPlan(args, verify, preflight) {
         }
         if (!plan.baseline) {
             const verified = result.data.verified === true, success = verified && result.data.hasErrors === false && (result.code ?? 0) === 0;
-            return { code: success ? 0 : 1, data: { success, applied, applicationState: "applied", plan: path, verification: "pending", toolVerification: verified ? "verified" : "unverified", ...(result.data.comparison !== undefined ? { comparison: result.data.comparison } : {}), toolResults: result.data, files: [...updated.keys()].map(uriFile), hint: "Edits applied. Review tool verification and run relevant project build/tests; the plan is single-use." }, human: `Applied ${updated.size} file(s). Tool verification: ${verified ? success ? "passed" : "failed" : "unverified"}. Project build/tests pending.` };
+            const { comparison, ...toolResults } = result.data;
+            return { code: success ? 0 : 1, data: { success, applied, applicationState: "applied", plan: path, verification: "pending", toolVerification: verified ? "verified" : "unverified", ...(comparison !== undefined ? { comparison } : {}), toolResults, files: [...updated.keys()].map(uriFile), hint: "Edits applied. Review tool verification and run relevant project build/tests; the plan is single-use." }, human: `Applied ${updated.size} file(s). Tool verification: ${verified ? success ? "passed" : "failed" : "unverified"}. Project build/tests pending.` };
         }
         const comparison = object(result.data.comparison), verified = result.data.verified === true && comparison.verified === true;
         const success = verified && comparison.newErrors === 0;

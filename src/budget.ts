@@ -1,7 +1,7 @@
 import { textPrefix } from "./output.ts";
 
 type ObjectValue = Record<string, unknown>;
-const textFields = new Set(["hover", "snippet", "documentation", "detail", "message", "error", "hint", "targetsHint", "description", "title", "label", "signature", "diff"]);
+const textFields = new Set(["hover", "snippet", "documentation", "detail", "message", "error", "hint", "targetsHint", "description", "title", "label", "signature", "diff", "matching"]);
 const omittedFields = new Set(["workspaceEdit", "workspaceEdits", "data", "relatedInformation", "additionalTextEdits", "textEdits"]);
 const collections = new Set(["locations", "symbols", "diagnostics", "issues", "edits", "snippets", "items", "hints", "nodes", "edges", "targets", "files", "removedFiles", "changes", "servers", "actions", "skipped", "candidateTests", "changedSymbols", "references", "calls"]);
 const flags = ["truncated", "textTruncated", "errorTruncated", "workspaceEditOmitted", "detailsOmitted"];
@@ -33,7 +33,7 @@ export function budgetData(data: ObjectValue, maximum: number): ObjectValue {
       } else if (typeof value === "string" && (textFields.has(key) || key === "value" && ["markdown", "plaintext"].includes(String(owner.kind)))) {
         texts.push({ owner, key, value, state: owner, minimum: key === "error" ? 32 : key === "message" ? 24 : 0 });
       } else if (Array.isArray(value)) {
-        if (collections.has(key)) {
+        if (collections.has(key) || key === "checked" && value.every(row => !Array.isArray((row as ObjectValue)?.diagnostics))) {
           const rank = path.endsWith(".references") || key === "edges" ? 0 : key === "symbols" || key === "targets" ? 1 : key === "diagnostics" ? 2 : path.endsWith(".type-definition") ? 3 : key === "edits" ? 4 : key === "snippets" ? 5 : 6;
           arrays.push({ owner, key, items: value, length: value.length, rank, minimum: ["snippets", "nodes"].includes(key) ? 2 : ["edges", "items", "targets"].includes(key) || path.endsWith(".definition") ? 1 : 0 });
         }

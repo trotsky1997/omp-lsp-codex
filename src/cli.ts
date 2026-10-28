@@ -66,7 +66,7 @@ Options: --json, --timeout SECONDS (5–300, default 20), --global-config-only
   --context             Include enclosing source, definitions, types and sampled references in inspect
   --tool NAME           Select CLI backend: ruff, eslint, biome, prettier, rustfmt, clippy
   --server NAME         Select an LSP provider for lint/format/fix/diagnostics/code-actions/request/capabilities
-Lint/format fields: --fields checked (providers), diagnostics (lint), files (diff), changedFiles,needsFormatting
+Lint/format fields: --fields checked (providers), diagnostics (lint), files (diff), checkedFiles,changedFiles,needsFormatting
 Positions are one-based UTF-16 columns. Use NAME#2 for a repeated token.
 ast-grep improves --symbol and selects call arguments for signature-help --symbol.
 Install it with npm install --global @ast-grep/cli. Explicit --column stays exact.

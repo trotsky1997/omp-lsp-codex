@@ -8,6 +8,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { saveEditPlan, applyPlan, type EditPlanInput } from "../src/fixes.ts";
 import { type Options, type Result } from "../src/commands.ts";
 import { object } from "../src/config.ts";
+import { budgetData } from "../src/budget.ts";
+import { captureBaseline, compareBaseline } from "../src/baseline.ts";
 import { cleanWorkspaces, isolateGlobalConfig, workspace } from "./fixtures/workspace.ts";
 
 let restore: () => void;
@@ -52,6 +54,24 @@ test("edit plans: native formatter verification receives actual post-apply bytes
   assert.equal(result.code, 1); assert.equal(result.data.applicationState, "applied"); assert.equal(result.data.toolVerification, "verified");
   assert.equal(object(result.data.toolResults).hasErrors, true); assert.equal(readFileSync(w.file, "utf8"), "value = 2\n");
   const event = JSON.parse(readFileSync(events, "utf8")); assert.equal(event.text, "value = 2\n"); assert.ok(event.pid > 0);
+});
+
+test("edit plans: applied lint comparison is emitted once and survives a small output budget", async () => {
+  const w = workspace(), before = captureBaseline([{ file: w.file, verified: true, errors: [], diagnostics: [
+    { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "unused import", severity: 1 },
+  ] }], w.root, ["fixture"]);
+  await saveEditPlan(args(w), input(w, { kind: "lint", verification: { command: "lint" } }));
+  const result = await applyPlan(applying(w), async () => {
+    assert.equal(readFileSync(w.file, "utf8"), "value = 2\n");
+    const current = captureBaseline([{ file: w.file, verified: true, errors: [], diagnostics: [] }], w.root, ["fixture"]);
+    return { data: { success: true, verified: true, hasErrors: false, errors: [], comparison: compareBaseline(before, current, [w.file], ["fixture"], 50),
+      checked: [{ file: w.file, verified: true, diagnosticCount: 0, providers: [{ name: "fixture", verified: true }] }],
+    }, human: "verified" };
+  });
+  assert.equal(result.code, 0); assert.equal(object(result.data.toolResults).comparison, undefined);
+  const compact = budgetData(result.data, 1000);
+  assert.equal(compact.applied, true); assert.equal(compact.applicationState, "applied"); assert.equal(compact.toolVerification, "verified");
+  assert.deepEqual(object(compact.comparison).counts, { new: 0, resolved: 1, existing: 0 }); assert.ok(JSON.stringify(compact).length <= 1000);
 });
 
 test("edit plans: changed or removed configuration guards stop apply before any source writes", async () => {

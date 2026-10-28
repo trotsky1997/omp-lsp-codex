@@ -29,6 +29,10 @@ function declaredTools(file, format) {
     const packages = dirs.filter(dir => existsSync(join(dir, "package.json"))).map(dir => object(JSON.parse(readText(join(dir, "package.json")))));
     const dependency = (name) => packages.some(pkg => name in object(pkg.dependencies) || name in object(pkg.devDependencies));
     const js = jsExtensions.includes(ext);
+    if (!format && js && (has(".oxlintrc.json", ".oxlintrc.jsonc") || dependency("oxlint")))
+        candidates.add("oxlint");
+    if (format && (js || [".json", ".jsonc", ".css", ".scss", ".less", ".md", ".mdx", ".html", ".yaml", ".yml", ".graphql", ".gql"].includes(ext)) && (has(".oxfmtrc.json", ".oxfmtrc.jsonc") || dependency("oxfmt")))
+        candidates.add("oxfmt");
     if ((js || [".json", ".jsonc", ".css", ".graphql", ".gql"].includes(ext)) && (has("biome.json", "biome.jsonc") || dependency("@biomejs/biome")))
         candidates.add("biome");
     if (!format && js && (has(".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml", "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "eslint.config.mts", "eslint.config.cts") || dependency("eslint") || packages.some(pkg => pkg.eslintConfig !== undefined)))
@@ -150,10 +154,10 @@ async function collect(args, paths, format, fixes, session, pinned) {
                     const beforeGuards = [...guards.keys()];
                     if (provider.kind === "cli") {
                         if (!tools.includes(provider.name))
-                            throw new Error(`Unknown tool ${provider.name}; choose ${tools.join(", ")}`);
+                            throw new Error(`Project tool ${provider.name} is not supported by codex-lsp. Run the project's configured ${format ? "format" : "lint"} script, or explicitly choose --tool ${format ? "prettier|biome|ruff|rustfmt" : "eslint|biome|ruff|clippy"} or --server NAME to override`);
                         if (args.range)
                             throw new Error("CLI formatting does not support --range; select --server NAME with documentRangeFormattingProvider");
-                        for (const path of toolConfigCandidates(provider.name, file))
+                        for (const path of toolConfigCandidates(provider.name, file, args.globalConfigOnly))
                             guard(path);
                         const result = await runToolProcess({ ...args, timeout: Math.max(1, deadline - Date.now()) }, file, provider.name, format ? "format" : fixes ? "fix" : "lint", cache);
                         if (result.original !== original)
@@ -167,9 +171,9 @@ async function collect(args, paths, format, fixes, session, pinned) {
                         for (const path of result.configFiles)
                             guard(path);
                         // Bind discovery inputs as well as the tool's effective configuration.
-                        for (const path of toolConfigCandidates(provider.name, file))
+                        for (const path of toolConfigCandidates(provider.name, file, args.globalConfigOnly))
                             guard(path);
-                        row.providers.push({ kind: provider.kind, name: provider.name, command: result.command, verified, ...(ignored ? { ignored: true } : {}) });
+                        row.providers.push({ kind: provider.kind, name: provider.name, command: result.command, verified, ...(ignored ? { ignored: true } : {}), ...(result.cargo ? { cargo: result.cargo } : {}) });
                     }
                     else {
                         const server = servers.find(server => server.name === provider.name);
@@ -353,7 +357,7 @@ export async function runTooling(args, session) {
     const scopeNote = [ignoredFiles ? `${ignoredFiles} ignored` : "", result.skipped.length ? `${result.skipped.length} unsupported changed file(s) skipped` : "", ...providerHints].filter(Boolean).join(", ");
     const checked = result.files.map(file => ({ file: file.file, verified: file.verified, diagnosticCount: file.diagnostics.length, changed: file.updated !== file.original, providers: file.providers }));
     const errorHint = result.files.some(file => file.errorTruncated) ? "Tool error text clipped; use --limit 0 --json for complete output." : undefined;
-    const base = { command: args.command, success: verified, applied: false, verified, hasErrors, checked, skipped: result.skipped, skippedCount: result.skipped.length, ignoredFiles, changedFiles: changed.length, diagnosticCount: summary.total, ...(format ? { needsFormatting: !!changed.length } : {}), errors, ...summary, ...(providerHints.length ? { hint: providerHints.join(" ") } : {}), ...(errorHint ? { errorTruncated: true, hint: errorHint } : {}) };
+    const base = { command: args.command, success: verified, applied: false, verified, hasErrors, checked, checkedFiles: checked.length, skipped: result.skipped, skippedCount: result.skipped.length, ignoredFiles, changedFiles: changed.length, diagnosticCount: summary.total, ...(format ? { needsFormatting: !!changed.length } : {}), errors, ...summary, ...(providerHints.length ? { hint: providerHints.join(" ") } : {}), ...(errorHint ? { errorTruncated: true, hint: errorHint } : {}) };
     if (!verified)
         return { data: base, code: 1, human: [`${args.command}: ${errors.length} tool error(s)`, ...errors.map(row => `${row.file}: ${row.error}`), errorHint].filter(Boolean).join("\n") };
     if (args.check)

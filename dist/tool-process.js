@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { ancestors, gitRoot, inside, MAX_FILE_BYTES, object, readText, resolveCommand } from "./config.js";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { ancestors, configPaths, gitRoot, inside, loadConfig, MAX_FILE_BYTES, object, readText, resolveCommand } from "./config.js";
 import { windowsCommand } from "./windows-command.js";
 const INSTALL = {
     ruff: "uv tool install ruff; https://docs.astral.sh/ruff/installation/",
@@ -23,11 +23,11 @@ function roots(file) {
     const root = gitRoot(dirname(file));
     return ancestors(dirname(file)).filter(path => inside(root, path));
 }
-export function toolConfigCandidates(tool, file) {
-    return roots(file).flatMap(root => CONFIGS[tool].map(name => join(root, name)));
+export function toolConfigCandidates(tool, file, globalConfigOnly = false) {
+    return [...new Set([...roots(file).flatMap(root => CONFIGS[tool].map(name => join(root, name))), ...(tool === "clippy" ? configPaths(dirname(file), globalConfigOnly) : [])])];
 }
-export function toolConfigFiles(tool, file) {
-    return [...new Set(toolConfigCandidates(tool, file).filter(existsSync).map(path => realpathSync(path)))];
+export function toolConfigFiles(tool, file, globalConfigOnly = false) {
+    return [...new Set(toolConfigCandidates(tool, file, globalConfigOnly).filter(existsSync).map(path => realpathSync(path)))];
 }
 export function resolveToolCommand(tool, file, globalOnly = false) {
     const name = tool === "clippy" ? "cargo" : tool;
@@ -44,8 +44,10 @@ async function processOutput(command, argv, cwd, input, deadline) {
     if (Date.now() >= deadline)
         throw new Error("Tool deadline exceeded; narrow scope or increase --timeout");
     const invocation = process.platform === "win32" && /\.(cmd|bat)$/i.test(command) ? windowsCommand(command, argv) : { command, args: argv, windowsVerbatimArguments: false };
+    const env = { ...process.env, NO_COLOR: "1", CARGO_TERM_COLOR: "never", GIT_OPTIONAL_LOCKS: "0", RUSTUP_AUTO_INSTALL: "0" };
+    delete env.RUFF_OUTPUT_FILE;
     return new Promise((accept, reject) => {
-        const child = spawn(invocation.command, invocation.args, { cwd, detached: process.platform !== "win32", windowsVerbatimArguments: invocation.windowsVerbatimArguments, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1", CARGO_TERM_COLOR: "never", GIT_OPTIONAL_LOCKS: "0", RUSTUP_AUTO_INSTALL: "0" } });
+        const child = spawn(invocation.command, invocation.args, { cwd, detached: process.platform !== "win32", windowsVerbatimArguments: invocation.windowsVerbatimArguments, stdio: ["pipe", "pipe", "pipe"], env });
         const stdout = [], stderr = [];
         let bytes = 0, failure;
         const stop = (error) => {
@@ -157,13 +159,70 @@ function diagnostic(tool, message, start, end = start, code, severity = 1) {
     return { source: tool, message, range: { start, end }, severity, ...(typeof code === "string" || typeof code === "number" ? { code } : {}) };
 }
 const cargoReports = new WeakMap();
+function cargoTargets(pkg, file) {
+    if (!Array.isArray(pkg.targets))
+        throw new Error("Cargo returned malformed target metadata");
+    const targets = pkg.targets.map(object);
+    if (targets.some(target => typeof target.src_path !== "string" || typeof target.name !== "string" || !Array.isArray(target.kind) || !target.kind.every(kind => typeof kind === "string")))
+        throw new Error("Cargo returned malformed target metadata");
+    const exact = targets.filter(target => resolve(String(target.src_path)) === file);
+    const parents = targets.filter(target => inside(dirname(String(target.src_path)), file));
+    const depth = Math.max(0, ...parents.map(target => dirname(String(target.src_path)).length));
+    const selected = exact.length ? exact : parents.filter(target => dirname(String(target.src_path)).length === depth);
+    if (!selected.length)
+        throw new Error("Source is outside Cargo target directories; select a target source or use --server rust-analyzer for path-based modules");
+    const flags = [];
+    for (const target of selected) {
+        const kinds = target.kind;
+        if (kinds.some(kind => ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"].includes(kind)))
+            flags.push("--lib");
+        else if (kinds[0] === "custom-build")
+            continue;
+        else if (["bin", "test", "example", "bench"].includes(kinds[0]))
+            flags.push(`--${kinds[0]}`, String(target.name));
+        else
+            throw new Error(`Unsupported Cargo target kind: ${kinds.join(", ")}`);
+    }
+    return { flags, inputs: selected.map(target => String(target.src_path)), targets: selected.map(target => ({ name: target.name, kind: target.kind })) };
+}
+function cargoSourceInput(records, pkg, root, targetDirectory, file) {
+    if (typeof targetDirectory !== "string" || !isAbsolute(targetDirectory))
+        return false;
+    let bytes = 0;
+    for (const record of records) {
+        if (record.reason !== "compiler-artifact" || record.package_id !== pkg.id || !Array.isArray(record.filenames))
+            continue;
+        for (const filename of record.filenames) {
+            if (typeof filename !== "string" || !isAbsolute(filename) || !inside(targetDirectory, filename))
+                continue;
+            const stem = basename(filename, extname(filename));
+            for (const name of new Set([stem, stem.replace(/^lib(?=.+)/, "")])) {
+                const path = join(dirname(filename), `${name}.d`);
+                if (!existsSync(path))
+                    continue;
+                const text = readText(path);
+                bytes += Buffer.byteLength(text);
+                if (bytes > MAX_FILE_BYTES)
+                    throw new Error("Cargo dependency input scope exceeds 16 MiB; narrow the target scope");
+                // rustc emits empty Makefile rules for source inputs, including cfg-gated modules.
+                for (const line of text.split(/\r?\n/))
+                    if (line.endsWith(":")) {
+                        const input = line.slice(0, -1).replace(/\\([ \t#:\\])/g, "$1").replace(/\$\$/g, "$");
+                        if (resolve(root, input) === file)
+                            return true;
+                    }
+            }
+        }
+    }
+    return false;
+}
 export async function runToolProcess(args, file, tool, operation, cache) {
     const command = resolveToolCommand(tool, file, args.globalBinsOnly);
     if (!command)
         throw new Error(`${tool} is unavailable. Install: ${INSTALL[tool]}`);
     if (operation === "format" ? tool === "eslint" || tool === "clippy" : tool === "prettier" || tool === "rustfmt")
         throw new Error(`${tool} does not support ${operation}; select a matching --tool`);
-    const original = readText(file), configFiles = toolConfigFiles(tool, file), configSnapshots = new Map(), deadline = Date.now() + args.timeout, cwd = dirname(file);
+    const original = readText(file), configFiles = toolConfigFiles(tool, file, args.globalConfigOnly), configSnapshots = new Map(), deadline = Date.now() + args.timeout, cwd = dirname(file);
     let configBytes = 0;
     for (const path of configFiles) {
         const text = readText(path);
@@ -192,9 +251,9 @@ export async function runToolProcess(args, file, tool, operation, cache) {
         const value = object(json(output.stdout));
         if (!Array.isArray(value.packages) || typeof value.workspace_root !== "string")
             throw new Error("Cargo returned malformed package metadata");
-        return { packages: value.packages.map(object), root: realpathSync(value.workspace_root) };
+        return { packages: value.packages.map(object), root: realpathSync(value.workspace_root), targetDirectory: value.target_directory };
     };
-    let diagnostics = [], updated, ignored = false, verified = true, errors;
+    let diagnostics = [], updated, ignored = false, verified = true, errors, cargo;
     if (tool === "ruff") {
         if (operation === "format") {
             const inventory = await run(["format", "--no-cache", "--check", "--force-exclude", file], "");
@@ -209,7 +268,7 @@ export async function runToolProcess(args, file, tool, operation, cache) {
             }
         }
         else {
-            const output = await run(["check", "--no-cache", "--force-exclude", "--output-format=json", "--verbose", file], "");
+            const output = await run(["check", "--no-fix", "--no-fix-only", "--no-cache", "--force-exclude", "--output-format=json", "--verbose", file], "");
             expected(output, tool, [0, 1]);
             const report = json(output.stdout);
             if (!Array.isArray(report) || output.code === 1 && !report.length)
@@ -349,7 +408,17 @@ export async function runToolProcess(args, file, tool, operation, cache) {
         if (!manifest)
             throw new Error("Clippy requires a Cargo.toml project; select a Rust crate");
         const project = await metadata(command, manifest);
-        const flags = ["clippy", "--offline", "--locked", "--all-targets", "--message-format=json", "--manifest-path", manifest];
+        const pkg = project.packages.find(pkg => pkg.manifest_path === manifest);
+        if (!pkg)
+            throw new Error("Cargo could not resolve this file's package");
+        const selection = cargoTargets(pkg, file);
+        const settings = object(loadConfig(cwd, args.globalConfigOnly)["rust-analyzer"]?.settings), build = object(object(settings["rust-analyzer"]).cargo);
+        const features = settings["rust-analyzer.cargo.features"] ?? build.features ?? [], noDefaultFeatures = settings["rust-analyzer.cargo.noDefaultFeatures"] ?? build.noDefaultFeatures ?? false;
+        if (features !== "all" && (!Array.isArray(features) || features.some(feature => typeof feature !== "string" || !feature || /[\s,\0]/.test(feature))) || typeof noDefaultFeatures !== "boolean")
+            throw new Error("Invalid rust-analyzer Cargo features/noDefaultFeatures; use a feature-name array or features: \"all\", and a boolean noDefaultFeatures");
+        const featureArgs = features === "all" ? ["--all-features"] : features.length ? ["--features", features.join(",")] : [];
+        const flags = ["clippy", "--offline", "--locked", ...selection.flags, ...featureArgs, ...(noDefaultFeatures ? ["--no-default-features"] : []), "--message-format=json", "--manifest-path", manifest];
+        cargo = { targets: selection.targets, features, noDefaultFeatures };
         const output = await cachedCargo(command, flags, project.root);
         expected(output, tool, [0, 101]);
         const records = output.stdout.split(/\r?\n/).filter(Boolean).map(line => object(json(line))), finishes = records.filter(item => item.reason === "build-finished");
@@ -389,15 +458,23 @@ export async function runToolProcess(args, file, tool, operation, cache) {
                 if (operation === "fix")
                     suggestions(item);
             }
+        if (verified) {
+            const sourceInput = selection.inputs.includes(file) ? "cargo-target" : diagnostics.length ? "compiler-diagnostic" : cargoSourceInput(records, pkg, project.root, project.targetDirectory, file) ? "dep-info" : "unconfirmed";
+            cargo.sourceInput = sourceInput;
+            if (sourceInput === "unconfirmed") {
+                verified = false;
+                errors = ["Selected source is absent from Cargo's dependency inputs. Declare its module or select the owning target/features; use --server rust-analyzer for out-of-tree modules"];
+            }
+        }
         if (operation === "fix" && verified)
             updated = replacements(original, fixes);
     }
     if (readText(file) !== original)
         throw new Error(`Source changed during ${tool} analysis: ${file}`);
-    if (configFiles.some(path => readText(path) !== configSnapshots.get(path)) || JSON.stringify(toolConfigFiles(tool, file)) !== JSON.stringify(configFiles))
+    if (configFiles.some(path => readText(path) !== configSnapshots.get(path)) || JSON.stringify(toolConfigFiles(tool, file, args.globalConfigOnly)) !== JSON.stringify(configFiles))
         throw new Error(`Project configuration changed during ${tool} analysis; retry`);
     if (updated !== undefined && (Buffer.byteLength(updated) > MAX_FILE_BYTES || !updated.isWellFormed()))
         throw new Error("Tool returned oversized or invalid source");
     diagnostics = [...new Map(diagnostics.map(item => [JSON.stringify(item), item])).values()];
-    return { tool, command, configFiles, diagnostics, original, ...(updated !== undefined ? { updated } : {}), verified, ...(errors ? { errors } : {}), ...(ignored ? { ignored } : {}) };
+    return { tool, command, configFiles, diagnostics, original, ...(updated !== undefined ? { updated } : {}), verified, ...(errors ? { errors } : {}), ...(ignored ? { ignored } : {}), ...(cargo ? { cargo } : {}) };
 }

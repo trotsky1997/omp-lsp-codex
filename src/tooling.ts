@@ -26,14 +26,16 @@ function projectDirectories(file: string) {
   const roots = ancestors(dirname(file)), root = gitRoot(dirname(file)), end = roots.indexOf(root);
   return end < 0 ? roots : roots.slice(0, end + 1);
 }
-function declaredTools(file: string, format: boolean): ToolName[] {
-  const dirs = projectDirectories(file), ext = extname(file).toLowerCase(), candidates = new Set<ToolName>();
+function declaredTools(file: string, format: boolean): string[] {
+  const dirs = projectDirectories(file), ext = extname(file).toLowerCase(), candidates = new Set<string>();
   const has = (...names: string[]) => dirs.some(dir => names.some(name => existsSync(join(dir, name))));
   if ([".py", ".pyi"].includes(ext)) return has("ruff.toml", ".ruff.toml") || dirs.some(dir => existsSync(join(dir, "pyproject.toml")) && /^\s*\[tool\.ruff(?:\.|\])/m.test(readText(join(dir, "pyproject.toml")))) ? ["ruff"] : [];
   if (ext === ".rs") return has("Cargo.toml") ? [format ? "rustfmt" : "clippy"] : [];
   const packages = dirs.filter(dir => existsSync(join(dir, "package.json"))).map(dir => object(JSON.parse(readText(join(dir, "package.json")))));
   const dependency = (name: string) => packages.some(pkg => name in object(pkg.dependencies) || name in object(pkg.devDependencies));
   const js = jsExtensions.includes(ext);
+  if (!format && js && (has(".oxlintrc.json", ".oxlintrc.jsonc") || dependency("oxlint"))) candidates.add("oxlint");
+  if (format && (js || [".json", ".jsonc", ".css", ".scss", ".less", ".md", ".mdx", ".html", ".yaml", ".yml", ".graphql", ".gql"].includes(ext)) && (has(".oxfmtrc.json", ".oxfmtrc.jsonc") || dependency("oxfmt"))) candidates.add("oxfmt");
   if ((js || [".json", ".jsonc", ".css", ".graphql", ".gql"].includes(ext)) && (has("biome.json", "biome.jsonc") || dependency("@biomejs/biome"))) candidates.add("biome");
   if (!format && js && (has(".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml", "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "eslint.config.mts", "eslint.config.cts") || dependency("eslint") || packages.some(pkg => pkg.eslintConfig !== undefined))) candidates.add("eslint");
   if (format && (js || [".json", ".jsonc", ".css", ".scss", ".less", ".md", ".mdx", ".html", ".yaml", ".yml", ".graphql", ".gql"].includes(ext)) && (has(".prettierrc", ".prettierrc.json", ".prettierrc.yml", ".prettierrc.yaml", ".prettierrc.json5", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.mjs", ".prettierrc.toml", "prettier.config.js", "prettier.config.cjs", "prettier.config.mjs", "prettier.config.ts") || dependency("prettier") || packages.some(pkg => pkg.prettier !== undefined))) candidates.add("prettier");
@@ -126,9 +128,9 @@ async function collect(args: Options, paths: string[], format: boolean, fixes: b
           let fingerprint: string, updated = original, diagnostics: Diagnostic[] = [], verified = true, ignored = false;
           const beforeGuards = [...guards.keys()];
           if (provider.kind === "cli") {
-            if (!tools.includes(provider.name as ToolName)) throw new Error(`Unknown tool ${provider.name}; choose ${tools.join(", ")}`);
+            if (!tools.includes(provider.name as ToolName)) throw new Error(`Project tool ${provider.name} is not supported by codex-lsp. Run the project's configured ${format ? "format" : "lint"} script, or explicitly choose --tool ${format ? "prettier|biome|ruff|rustfmt" : "eslint|biome|ruff|clippy"} or --server NAME to override`);
             if (args.range) throw new Error("CLI formatting does not support --range; select --server NAME with documentRangeFormattingProvider");
-            for (const path of toolConfigCandidates(provider.name as ToolName, file)) guard(path);
+            for (const path of toolConfigCandidates(provider.name as ToolName, file, args.globalConfigOnly)) guard(path);
             const result = await runToolProcess({ ...args, timeout: Math.max(1, deadline - Date.now()) }, file, provider.name as ToolName, format ? "format" : fixes ? "fix" : "lint", cache);
             if (result.original !== original) throw new Error("Source changed during tool analysis; retry");
             fingerprint = toolFingerprint(provider.name, result.command); verified = result.verified && !result.errors?.length; ignored = !!result.ignored;
@@ -136,8 +138,8 @@ async function collect(args: Options, paths: string[], format: boolean, fixes: b
             row.errors.push(...result.errors ?? []);
             for (const path of result.configFiles) guard(path);
             // Bind discovery inputs as well as the tool's effective configuration.
-            for (const path of toolConfigCandidates(provider.name as ToolName, file)) guard(path);
-            row.providers.push({ kind: provider.kind, name: provider.name, command: result.command, verified, ...(ignored ? { ignored: true } : {}) });
+            for (const path of toolConfigCandidates(provider.name as ToolName, file, args.globalConfigOnly)) guard(path);
+            row.providers.push({ kind: provider.kind, name: provider.name, command: result.command, verified, ...(ignored ? { ignored: true } : {}), ...(result.cargo ? { cargo: result.cargo } : {}) });
           } else {
             const server = servers.find(server => server.name === provider.name);
             if (!server) throw new Error(`Configured server ${provider.name} is unavailable for ${file}; run codex-lsp status --file PATH and setup <language> --project`);
@@ -256,7 +258,7 @@ export async function runTooling(args: Options, session?: Session): Promise<Resu
   const scopeNote = [ignoredFiles ? `${ignoredFiles} ignored` : "", result.skipped.length ? `${result.skipped.length} unsupported changed file(s) skipped` : "", ...providerHints].filter(Boolean).join(", ");
   const checked = result.files.map(file => ({ file: file.file, verified: file.verified, diagnosticCount: file.diagnostics.length, changed: file.updated !== file.original, providers: file.providers }));
   const errorHint = result.files.some(file => file.errorTruncated) ? "Tool error text clipped; use --limit 0 --json for complete output." : undefined;
-  const base = { command: args.command, success: verified, applied: false, verified, hasErrors, checked, skipped: result.skipped, skippedCount: result.skipped.length, ignoredFiles, changedFiles: changed.length, diagnosticCount: summary.total, ...(format ? { needsFormatting: !!changed.length } : {}), errors, ...summary, ...(providerHints.length ? { hint: providerHints.join(" ") } : {}), ...(errorHint ? { errorTruncated: true, hint: errorHint } : {}) };
+  const base = { command: args.command, success: verified, applied: false, verified, hasErrors, checked, checkedFiles: checked.length, skipped: result.skipped, skippedCount: result.skipped.length, ignoredFiles, changedFiles: changed.length, diagnosticCount: summary.total, ...(format ? { needsFormatting: !!changed.length } : {}), errors, ...summary, ...(providerHints.length ? { hint: providerHints.join(" ") } : {}), ...(errorHint ? { errorTruncated: true, hint: errorHint } : {}) };
   if (!verified) return { data: base, code: 1, human: [`${args.command}: ${errors.length} tool error(s)`, ...errors.map(row => `${row.file}: ${row.error}`), errorHint].filter(Boolean).join("\n") };
   if (args.check) return { data: { ...base, check: true, files: changed.map(file => ({ file: file.file })), total: changed.length, shown: changed.length, truncated: false }, code: changed.length ? 1 : 0, human: [`format: ${result.files.length} file(s), ${changed.length} would change`, ...changed.map(file => file.file), scopeNote].filter(Boolean).join("\n") };
   if (format || args.plan) {
