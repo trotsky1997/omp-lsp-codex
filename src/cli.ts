@@ -45,7 +45,7 @@ Commands:
   references             --file PATH --line N [--symbol NAME | --column N]
   hover                  --file PATH --line N [--symbol NAME | --column N]
   types                  --file PATH [--line N --symbol NAME | --range START:COL-END:COL]
-                         [--view computed|declared|expected] [--server pyrefly-tsp] TSP 0.4.x
+                         [--view computed|declared|expected] TS Compiler API or Python TSP 0.4.x
   signature-help         --file PATH --line N [--symbol NAME | --column N]
   snippet                --file PATH --line N [--symbol NAME | --column N]
                          Extract the enclosing declaration through ast-grep, without LSP

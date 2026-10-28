@@ -37,7 +37,7 @@ export function selectFields(data: Record<string, unknown>, fields: string[]): R
   let recovery = "";
   const state = (value: Record<string, unknown>, prefix: string) => {
     for (const key of STATE_FIELDS) if (Object.hasOwn(value, key) && value[key] !== undefined) selected.set(prefix + key, value[key]);
-    if (value.provider === "tsp") for (const key of ["server", "protocolVersion", "view", "typeOmitted"]) if (value[key] !== undefined) selected.set(prefix + key, value[key]);
+    if (["tsp", "typescript-api"].includes(String(value.provider))) for (const key of ["server", "protocolVersion", "compilerVersion", "view", "declarationSource", "typeOmitted"]) if (value[key] !== undefined) selected.set(prefix + key, value[key]);
   };
   state(data, "");
   for (const key of ["source", "destination", "importUpdates", "renameTarget"]) if (Object.hasOwn(data, key) && data[key] !== undefined) selected.set(key, data[key]);

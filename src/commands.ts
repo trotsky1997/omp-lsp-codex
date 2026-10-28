@@ -59,6 +59,7 @@ import { firstPage, nextPage } from "./pagination.ts";
 import { budgetData } from "./budget.ts";
 import { combinedPlan, declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.ts";
 import { queryType, typeServerVersion } from "./tsp.ts";
+import { typescriptFile, typescriptTypes } from "./typescript-api.ts";
 
 export interface Options {
   command: string;
@@ -1421,6 +1422,7 @@ async function runQuery(args: Options, session?: Session): Promise<Result> {
   if (navigation) return navigate(args, undefined, session);
   switch (args.command) {
     case "types": {
+      if (args.file && typescriptFile(args.file) && (!args.server || args.server === "typescript-api")) return typescriptTypes(args, session);
       const context = await fileContext(args, true, session);
       try {
         const point = await position(context.path, context.text, args);

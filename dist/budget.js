@@ -24,8 +24,8 @@ export function budgetData(data, maximum) {
         for (const [key, value] of Object.entries(owner)) {
             if (key === "budget")
                 continue;
-            if (key === "type" && owner.provider === "tsp" && value !== null && typeof value === "object") {
-                // TSP references are local to this graph; partial pruning could leave dangling type IDs.
+            if (key === "type" && ["tsp", "typescript-api"].includes(String(owner.provider)) && value !== null && typeof value === "object") {
+                // Keep structured types atomic so clipping cannot change their meaning or leave dangling IDs.
                 delete owner.type;
                 owner.typeOmitted = true;
                 owner.truncated = true;

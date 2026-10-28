@@ -24,6 +24,7 @@ import { firstPage, nextPage } from "./pagination.js";
 import { budgetData } from "./budget.js";
 import { combinedPlan, declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.js";
 import { queryType, typeServerVersion } from "./tsp.js";
+import { typescriptFile, typescriptTypes } from "./typescript-api.js";
 export function outputData(data, args) {
     const selected = args.fields ? selectFields(data, args.fields) : data;
     return args.budget === undefined ? selected : budgetData(selected, args.budget);
@@ -1431,6 +1432,8 @@ async function runQuery(args, session) {
         return navigate(args, undefined, session);
     switch (args.command) {
         case "types": {
+            if (args.file && typescriptFile(args.file) && (!args.server || args.server === "typescript-api"))
+                return typescriptTypes(args, session);
             const context = await fileContext(args, true, session);
             try {
                 const point = await position(context.path, context.text, args);

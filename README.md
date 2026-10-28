@@ -125,16 +125,19 @@ API diff and dependency graphs use ast-grep/Git for Rust, Python and TypeScript/
 
 `--budget` now applies to all ordinary JSON commands, including graphs, completions, batch and streaming rows. It preserves status/counts and valid graph endpoints; inspect its clipping metadata. When required state cannot fit, select fewer fields or raise the budget. Read [continuous exploration and repairs](skills/codex-lsp/references/workflows.md) for schemas, cache lifetime and limits.
 
-### Structured Python types (TSP)
+### Structured types (Python and TypeScript)
 
 ```sh
 uv tool install pyrefly
 codex-lsp setup pyrefly-tsp
 codex-lsp types --file app.py --line 20 --symbol value --view computed --fields summary
 codex-lsp types --file app.py --range 25:12-25:25 --view expected --json
+codex-lsp types --file src/app.ts --line 20 --symbol value --view declared --fields summary
 ```
 
 `types` queries computed, declared or contextual expected types through stable TSP 0.4.x, using `pyrefly tsp`. It negotiates versions, reacquires snapshots after cancellation/change and validates response-local type references. The optional backend is separate from normal LSP navigation and diagnostics. Batch/session rows accept `"command":"types"` with `view`, `server` and expression `range`. Use `--fields summary` for compact answers or `--fields type` for the structured graph. If a response exceeds `--budget`, its graph is omitted atomically with `typeOmitted: true`. See [TSP workflows and backend semantics](skills/codex-lsp/references/tsp.md).
+
+For TypeScript/JavaScript, the same command uses the project's TypeScript package and tsconfig/jsconfig through `provider: "typescript-api"`. It supports the Compiler API in TypeScript 6 and the native sync/AST API in TypeScript 7, with compiler identity in JSON. Compatible batch/session questions share an isolated compiler worker; dependency/config changes refresh analysis and timeouts close stalled workers. Structured output includes members, unions and call signatures. See [TypeScript queries](skills/codex-lsp/references/typescript-types.md).
 
 ### Calls, completions, baselines and impact
 
