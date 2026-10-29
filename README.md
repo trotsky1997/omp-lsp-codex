@@ -135,9 +135,11 @@ codex-lsp types --file app.py --range 25:12-25:25 --view expected --json
 codex-lsp types --file src/app.ts --line 20 --symbol value --view declared --fields summary
 ```
 
-`types` queries computed, declared or contextual expected types through stable TSP 0.4.x, using `pyrefly tsp`. It negotiates versions, reacquires snapshots after cancellation/change and validates response-local type references. The optional backend is separate from normal LSP navigation and diagnostics. Batch/session rows accept `"command":"types"` with `view`, `server` and expression `range`. Use `--fields summary` for compact answers or `--fields type` for the structured graph. If a response exceeds `--budget`, its graph is omitted atomically with `typeOmitted: true`. See [TSP workflows and backend semantics](skills/codex-lsp/references/tsp.md).
+For Python, `types` queries computed, declared or contextual expected types through stable TSP 0.4.x, using `pyrefly tsp`. It negotiates versions, reacquires snapshots after cancellation/change and validates response-local type references. The optional backend is separate from normal LSP navigation and diagnostics. Batch/session rows accept `"command":"types"` with `view`, `server` and expression `range`. Use `--fields summary` for compact answers or `--fields type` for the structured graph. If a response exceeds `--budget`, its graph is omitted atomically with `typeOmitted: true`. See [TSP workflows and backend semantics](skills/codex-lsp/references/tsp.md).
 
 For TypeScript/JavaScript, the same command uses the project's TypeScript package and tsconfig/jsconfig through `provider: "typescript-api"`. It supports the Compiler API in TypeScript 6 and the native sync/AST API in TypeScript 7, with compiler identity in JSON. Compatible batch/session questions share an isolated compiler worker; dependency/config changes refresh analysis and timeouts close stalled workers. Structured output includes members, unions and call signatures. See [TypeScript queries](skills/codex-lsp/references/typescript-types.md).
+
+For Rust and other languages without a matching TSP backend, use `hover` or `type-definition`; the missing-provider error points to those alternatives. A custom TSP provider can still be configured for its supported file types.
 
 ### Calls, completions, baselines and impact
 

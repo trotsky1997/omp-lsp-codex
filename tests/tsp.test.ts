@@ -51,11 +51,22 @@ test("TSP: protocol filters isolate ordinary navigation, diagnostics and hook di
 
 test("TSP: missing provider gives install and official documentation guidance; setup persists dedicated tsp arguments", async () => {
   const w = workspace();
-  await assert.rejects(run(w.args("types")), /uv tool install pyrefly.*setup pyrefly-tsp.*https:\/\/pyrefly.org/);
+  const file = join(w.root, "source.py"); writeFileSync(file, "value = 1\n");
+  await assert.rejects(run({ ...w.args("types"), file }), /uv tool install pyrefly.*setup pyrefly-tsp.*https:\/\/pyrefly.org/);
   w.configs["pyrefly-tsp"] = { command: process.execPath, disabled: true }; w.saveConfig();
   const result = await run(parseOptions(["setup", "pyrefly-tsp", "--project"], w.root)); assert.equal(result.data.success, true);
   const config = loadConfig(w.root)["pyrefly-tsp"];
   assert.deepEqual(config.args, ["tsp"]); assert.equal(config.protocol, "tsp"); assert.equal(config.disabled, false);
+});
+
+test("TSP: missing Rust provider suggests semantic alternatives without Python installation instructions", async () => {
+  const w = workspace(), file = join(w.root, "source.rs"); writeFileSync(file, "fn value() -> i32 { 1 }\n");
+  await assert.rejects(run({ ...w.args("types"), file }), error => {
+    assert.match(String(error), /No available TSP server.*hover.*type-definition/);
+    assert.doesNotMatch(String(error), /pyrefly|uv tool install/); return true;
+  });
+  assert.equal(LspClient.active.size, 0);
+  assert.equal(readFileSync(file, "utf8"), "fn value() -> i32 { 1 }\n");
 });
 
 test("TSP: CLI and JSONL validate view, range and provider before starting a process", async () => {

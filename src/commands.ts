@@ -263,8 +263,12 @@ async function fileContext(args: Options, semantic = true, session?: Session): P
     ),
     path,
   ).find(server => !args.server || server.name === args.server);
-  if (!server && args.command === "types")
-    throw new Error(`No available TSP server${args.server ? ` named ${args.server}` : ""} matches ${path}; install with uv tool install pyrefly, then run codex-lsp setup pyrefly-tsp. Official documentation: https://pyrefly.org/blog/pyrefly-pylance/`);
+  if (!server && args.command === "types") {
+    const hint = /\.pyi?$/i.test(path)
+      ? "install with uv tool install pyrefly, then run codex-lsp setup pyrefly-tsp. Official documentation: https://pyrefly.org/blog/pyrefly-pylance/"
+      : "use hover or type-definition for this language, or configure a TSP provider matching its file type";
+    throw new Error(`No available TSP server${args.server ? ` named ${args.server}` : ""} matches ${path}; ${hint}`);
+  }
   if (!server)
     throw new Error(`No available language server${args.server ? ` named ${args.server}` : ""} matches ${path}; run codex-lsp setup <language> --project from the project root`);
   if (args.command === "inspect" || session?.diagnostics) server = compilerDiagnostics(server);
@@ -364,6 +368,11 @@ async function navigate(args: Options, shared?: FileContext, session?: Session):
   try {
     const pos = await position(path, text, args),
       method = NAVIGATION[args.command];
+    const anchor = () => {
+      if (!args.targets) return {};
+      if (readText(path) !== text) throw new Error("Source changed while querying targets; rerun with a current anchor");
+      return { file: path, cursor: { line: pos.line + 1, column: pos.character + 1 } };
+    };
     const params = {
       textDocument: { uri },
       position: pos,
@@ -447,15 +456,20 @@ async function navigate(args: Options, shared?: FileContext, session?: Session):
           provider,
           hover: content,
           ...summary,
+          ...anchor(),
           ...(content.length < preview.length ? { characters: { total: originalCharacters, shown: content.length } } : {}),
         },
         human: [content.trim() ? content : found ? "Hover information found." : "No hover information", summary.hint].filter(Boolean).join("\n"),
       };
     }
     if (timedOut) throw new Error(`Timed out waiting for ${args.command} from ${server.name}`);
-    if (args.command === "signature-help") return signatureHelp(result, server.name, args.limit, {
-      line: pos.line + 1, column: pos.character + 1, automatic: args.column === undefined && !!syntaxLanguage(path),
-    });
+    const sourceAnchor = anchor();
+    if (args.command === "signature-help") {
+      const signature = signatureHelp(result, server.name, args.limit, {
+        line: pos.line + 1, column: pos.character + 1, automatic: args.column === undefined && !!syntaxLanguage(path),
+      });
+      return { ...signature, data: { ...sourceAnchor, ...signature.data } };
+    }
     if (args.pageSize !== undefined) {
       const data = firstPage({ cwd: args.cwd, sourceFile: path, sourceText: text, pageSize: args.pageSize }, { success: true, found: !!locations.length, server: server.name, locations });
       return { data, human: [`References: ${data.shown} of ${data.total} (snapshot page)`, ...locationLines(data.locations as ObjectValue[], gitRoot(server.root)), data.hint,

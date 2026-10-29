@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { after, afterEach, before, test } from "node:test";
-import { chmodSync, lstatSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { after, afterEach, before, mock, test } from "node:test";
+import { chmodSync, lstatSync, readFileSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,11 +9,12 @@ import { attachTargets, resolveTarget } from "../src/targets.ts";
 import { parseOptions } from "../src/cli.ts";
 import { run } from "../src/commands.ts";
 import { object } from "../src/config.ts";
+import { LspClient } from "../src/client.ts";
 import { cleanWorkspaces, isolateGlobalConfig, range, workspace } from "./fixtures/workspace.ts";
 
 let restore: () => void;
 before(() => { restore = isolateGlobalConfig(); }); after(() => restore());
-afterEach(() => cleanWorkspaces());
+afterEach(() => { mock.restoreAll(); cleanWorkspaces(); });
 const cache = () => join(homedir(), ".cache/codex-lsp/targets");
 const cli = join(dirname(fileURLToPath(import.meta.url)), "../src/cli.js");
 const query = (w: ReturnType<typeof workspace>, target: string) => parseOptions(["hover", "--target", target], w.root);
@@ -47,6 +48,56 @@ test("targets: private snapshots work across CLI invocations and point at the ac
   assert.equal(invoke(["hover", "--target", id, "--json"]).hover, "value: number");
   const params = object(w.events().find(event => event.method === "textDocument/hover")?.params);
   assert.deepEqual(params.position, { line: 0, character: 0 }); assert.equal(readFileSync(w.file, "utf8"), "value = 1\n");
+});
+
+for (const command of ["hover", "signature-help"]) test(`targets: ${command} creates a reusable handle at its actual UTF-16 query position`, async () => {
+  const w = workspace({ responses: {
+    "textDocument/hover": { contents: "value: number" },
+    "textDocument/signatureHelp": { signatures: [{ label: "value(input: number): number" }] },
+  } });
+  const text = 'const emoji = "😀"; value(value);\n', column = text.lastIndexOf("value") + 1;
+  writeFileSync(w.file, text);
+  const flags = command === "hover" ? ["--symbol", "value#2"] : ["--column", String(column)];
+  const first = await run(w.args(command, "--line", "1", ...flags, "--targets"));
+  const targets = first.data.targets as Record<string, unknown>[];
+  assert.equal(targets.length, 1); assert.equal(targets[0].path, "cursor");
+  assert.equal(object(first.data.cursor).column, column);
+  const next = await run(parseOptions(["hover", "--target", String(targets[0].id)], w.root));
+  assert.equal(next.data.hover, "value: number");
+  const hover = w.events().filter(event => event.method === "textDocument/hover").at(-1)!;
+  assert.deepEqual(object(hover.params).position, { line: 0, character: column - 1 });
+  assert.equal(readFileSync(w.file, "utf8"), text);
+  const plain = await run(w.args(command, "--line", "1", ...flags));
+  assert.equal(plain.data.cursor, undefined); assert.equal(plain.data.file, undefined);
+});
+
+test("targets: an edit injected during navigation cannot create a stale cursor handle", async () => {
+  const w = workspace({ responses: { "textDocument/hover": { contents: "value: number" } } }), request = LspClient.prototype.request;
+  mock.method(LspClient.prototype, "request", async function(this: LspClient, ...args: Parameters<typeof request>) {
+    const response = await request.apply(this, args);
+    if (args[0] === "textDocument/hover") writeFileSync(w.file, "other = 2\n");
+    return response;
+  });
+  await assert.rejects(run(w.args("hover", "--targets")), /Source changed.*current anchor/);
+  assert.equal(LspClient.active.size, 0);
+  assert.equal(readFileSync(w.file, "utf8"), "other = 2\n");
+});
+
+test("targets: a source edit during DevDocs fallback cannot bind the old hover cursor to new text", async () => {
+  const w = workspace({ responses: { "textDocument/hover": null } }), previous = process.env.CODEX_HOME;
+  w.configs.fixture.languageId = "rust"; w.saveConfig(); writeFileSync(w.file, "is_none()\n");
+  process.env.CODEX_HOME = w.root;
+  const fetch = mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    writeFileSync(w.file, "moved()\n");
+    return Response.json(String(input).endsWith("docs/docs.json") ? [{ slug: "rust" }] : { entries: [{ name: "is_none", path: "std/option.html#method.is_none" }] });
+  });
+  try {
+    await assert.rejects(run(w.args("hover", "--symbol", "is_none", "--targets")), /Source changed.*current anchor/);
+    assert.equal(fetch.mock.callCount(), 2); assert.equal(LspClient.active.size, 0);
+    assert.equal(readFileSync(w.file, "utf8"), "moved()\n");
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+  }
 });
 
 test("targets: changed or deleted source and another workspace fail before any backend starts", async () => {
@@ -101,6 +152,9 @@ test("targets: missing and virtual locations retain navigation data and report o
 
 test("targets: cache snapshots are bounded and callers can recover after eviction", () => {
   const w = workspace(), first = target(w);
+  // Files created within one filesystem clock tick can have identical modification times.
+  const earlier = new Date(Date.now() - 1000); utimesSync(first.path, earlier, earlier);
+  assert.equal(resolveTarget(query(w, first.id)).file, w.file);
   for (let i = 0; i < 20; i++) target(w);
   assert.ok(readdirSync(cache()).filter(file => /^[A-Za-z0-9_-]{16}\.json$/.test(file)).length <= 16);
   assert.throws(() => resolveTarget(query(w, first.id)), /unavailable.*rerun/);

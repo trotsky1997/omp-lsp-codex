@@ -145,7 +145,9 @@ export function budgetData(data, maximum) {
         budget.clipped = clipped;
         if (clipped) {
             result.truncated = true;
-            budget.hint = "Output clipped by --budget; increase it or omit --budget.";
+            budget.hint = result.results && typeof result.results === "object" && "hover" in result.results && "context" in result.results
+                ? "Clipped; increase --budget or select --fields results.context.snippets for source / results.hover for types."
+                : "Output clipped by --budget; increase it or omit --budget.";
         }
         else
             delete budget.hint;

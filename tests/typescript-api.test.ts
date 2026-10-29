@@ -4,12 +4,14 @@ import { readFileSync, writeFileSync, mkdirSync, realpathSync, symlinkSync, stat
 import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { Readable, Writable } from "node:stream";
 import { parseOptions } from "../src/cli.ts";
 import { outputData, run, type Options, type Session } from "../src/commands.ts";
 import { object, type ObjectValue } from "../src/config.ts";
 import { LspClient } from "../src/client.ts";
 import { cleanWorkspaces, isolateGlobalConfig, workspace } from "./fixtures/workspace.ts";
 import { typescriptCompiler } from "../src/typescript-api.ts";
+import { stdioSession } from "../src/session.ts";
 
 let restore: () => void;
 before(() => { restore = isolateGlobalConfig(); }); after(() => restore());
@@ -105,6 +107,37 @@ test("TypeScript worker: instrumented compiler hang times out, reaps its process
   writeFileSync(join(packageRoot,"index.js"),'const api=require('+JSON.stringify(compiler)+'); module.exports={...api,createLanguageService(host){const service=api.createLanguageService(host),getProgram=service.getProgram;service.getProgram=()=>{const program=getProgram();program.getTypeChecker().getTypeAtLocation=()=>{while(true){}};return program;};return service;}};');
   let pid:number|undefined;const start=LspClient.start;mock.method(LspClient,"start",async(...args:Parameters<typeof LspClient.start>)=>{const client=await start(...args);pid=client.proc.pid;return client;});
   await assert.rejects(run(w.args([],{timeout:1500})),/timed out/);assert(pid);assert.throws(()=>process.kill(pid!,0));assert.equal(readFileSync(w.file,"utf8"),source);
+});
+
+test("TypeScript session: an instrumented worker crash preserves later answers and reaps both compiler processes",async()=>{
+  for(const selected of [compiler,compiler7]){
+    const w=fixture(source,{strict:true},selected), rows:ObjectValue[]=[], pids:number[]=[];
+    const start=LspClient.start, request=LspClient.prototype.request;let queries=0;
+    const starts=mock.method(LspClient,"start",async(...args:Parameters<typeof LspClient.start>)=>{const client=await start(...args);pids.push(client.proc.pid!);return client;});
+    const requests=mock.method(LspClient.prototype,"request",function(this:LspClient,...args:Parameters<typeof request>){
+      if(args[0]==="codex/types"&&++queries===2)this.proc.kill("SIGKILL");
+      return request.apply(this,args);
+    });
+    try{
+      const input=Readable.from([1,2,3].map(id=>JSON.stringify({id,command:"types",file:w.file,line:4,symbol:"value",fields:"summary"})+"\n").concat('{"command":"close"}\n'));
+      const output=new Writable({write(chunk,_encoding,callback){rows.push(JSON.parse(String(chunk)));callback();}});
+      assert.equal(await stdioSession({...parseOptions(["session","--stdio"],w.root),timeout:10000},input,output),1);
+      assert.deepEqual(rows.map(row=>row.code),[0,2,0,0]);assert.deepEqual(rows.map(row=>row.id),[1,2,3,4]);
+      assert.equal(rows[0].summary,"string");assert.equal(rows[2].summary,"string");assert.equal(rows[3].closed,true);
+      assert.equal(pids.length,2);for(const pid of pids)assert.throws(()=>process.kill(pid,0));
+      assert.equal(LspClient.active.size,0);assert.equal(readFileSync(w.file,"utf8"),source);
+    }finally{requests.mock.restore();starts.mock.restore();await w.close();}
+  }
+});
+
+test("TypeScript worker: a dependency edit injected during analysis retries instead of returning its stale type",async()=>{
+  const text='import { value } from "./dependency";\nconst result = value;\n',w=fixture(text),dependency=join(w.root,"dependency.ts");
+  writeFileSync(dependency,'export const value: string = "ok";\n');
+  const packageRoot=join(w.root,"node_modules/typescript");rmSync(packageRoot,{recursive:true,force:true});mkdirSync(packageRoot);
+  writeFileSync(join(packageRoot,"package.json"),'{"main":"index.js"}');
+  writeFileSync(join(packageRoot,"index.js"),'const fs=require("node:fs"),api=require('+JSON.stringify(compiler)+');let changed=false;module.exports={...api,createLanguageService(host){const service=api.createLanguageService(host),getProgram=service.getProgram;service.getProgram=()=>{const program=getProgram(),checker=program.getTypeChecker(),getType=checker.getTypeAtLocation;checker.getTypeAtLocation=function(node){const type=getType.call(this,node);if(!changed){changed=true;fs.writeFileSync('+JSON.stringify(dependency)+',"export const value: number = 1;\\n")}return type;};return program;};return service;}};');
+  const result=await run(w.args([],{line:2,symbol:"result"}));
+  assert.equal(result.data.summary,"number");assert.equal(result.data.found,true);assert.equal(readFileSync(w.file,"utf8"),text);
 });
 
 test("TypeScript 7 native API: three views, declaration handles, unions and generic signatures use the project's native checker",async()=>{

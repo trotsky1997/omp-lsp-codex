@@ -10,6 +10,8 @@ codex-lsp references --target TARGET_ID --page-size 20 --budget 2000
 
 `--targets` opts into private cached handles and implies JSON. Each readable location gets `target`; the compact top-level `targets` list has `id`, its result `path`, and a name when available. Select `--fields targets` to avoid repeating long paths. Handles bind the current workspace, source hash and UTF-16 position. Use the same working directory or `--cwd`. A changed source, missing snapshot or ten-minute expiry requires a fresh query with `--targets`; the CLI never guesses a replacement position. The cache retains up to sixteen snapshots, with 200 files/2,000 locations per snapshot. Virtual or unreadable locations remain explicit anchors and carry omission guidance.
 
+`hover --targets` and `signature-help --targets` include a source `cursor` handle at the actual request position, including automatic argument cursors. Follow it with `inspect --target ID` or another position query; `--fields hover,targets` keeps the answer and handle compact.
+
 Session accepts `targets:true` to produce handles and `target:"ID"` to consume one without `file`, `line`, `column`, `symbol` or `range`. Global `session --stdio --targets --budget 2000` supplies defaults for each row. A row can override those defaults. Keep one request outstanding, read the answer, then choose the next query.
 
 ## Watch edits

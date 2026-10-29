@@ -47,6 +47,19 @@ test("budget: compact 512-character output preserves selected ancestor verificat
   assert.deepEqual(data.failedSections, ["diagnostics"]);
 });
 
+test("budget: clipped inspect includes copyable field selectors that recover focused source within the same budget", () => {
+  const data = inspect(), result = budgetData(data, 3000);
+  const hint = String(object(result.budget).hint);
+  assert.match(hint, /--fields results\.context\.snippets/);
+  assert.match(hint, /results\.hover/);
+  const fields = /--fields (\S+)/.exec(hint)![1];
+  const focused = budgetData(selectFields(data, [fields]), 3000); fits(focused, 3000);
+  assert.deepEqual(focused.failedSections, ["diagnostics"]);
+  const snippets = object(object(focused.results).context).snippets as ObjectValue[];
+  assert.match(String(snippets[0].snippet), /function parse/);
+  assert.equal(object(object(result.results).diagnostics).hasErrors, true);
+});
+
 test("budget: Unicode text is clipped at scalar boundaries and JSON escaping counts toward the budget", () => {
   const data = { success: true, applied: false, results: { hover: { success: true, found: true, total: 1, shown: 1, hover: "😀中文\\\"\n".repeat(3000), truncated: false } } };
   const result = budgetData(data, 512); fits(result, 512);
