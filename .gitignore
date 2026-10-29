@@ -1,3 +1,4 @@
 node_modules/
 *.tgz
 .test-build/
+native/rust-types/target/

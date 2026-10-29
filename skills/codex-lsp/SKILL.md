@@ -60,7 +60,7 @@ For repeated navigation, request `--targets` and reuse `--target ID`; stale sour
 
 Use call hierarchy to follow callers/callees, completion to discover members at a cursor, a diagnostic baseline to separate new issues from existing ones, and impact for changed declarations and candidate tests with evidence. These commands are read-only with respect to source. Read [analysis workflows](references/analysis.md) for capture/compare, traversal and resolution budgets, incomplete results or removed code.
 
-For structured type questions, `types --view computed|declared|expected` selects TypeScript's Compiler API for TS/JS or a TSP backend for Python. Use `--fields summary` for a compact answer or `--fields type` for structured details. Read [TypeScript queries](references/typescript-types.md) for compiler/project selection; [Python TSP queries](references/tsp.md) cover Pyrefly installation, snapshots and protocol details.
+For structured type questions, `types --view computed|declared|expected` selects Rust's semantic API, TypeScript's Compiler API for TS/JS, or a TSP backend for Python. Use `--fields summary` for a compact answer or `--fields type` for structured details. Read [Rust queries](references/rust-types.md) for helper installation and context coverage, [TypeScript queries](references/typescript-types.md) for compiler/project selection, or [Python TSP queries](references/tsp.md) for Pyrefly and snapshots.
 
 ## Setup and edits
 

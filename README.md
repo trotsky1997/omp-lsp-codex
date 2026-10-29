@@ -125,7 +125,7 @@ API diff and dependency graphs use ast-grep/Git for Rust, Python and TypeScript/
 
 `--budget` now applies to all ordinary JSON commands, including graphs, completions, batch and streaming rows. It preserves status/counts and valid graph endpoints; inspect its clipping metadata. When required state cannot fit, select fewer fields or raise the budget. Read [continuous exploration and repairs](skills/codex-lsp/references/workflows.md) for schemas, cache lifetime and limits.
 
-### Structured types (Python and TypeScript)
+### Structured types (Rust, Python and TypeScript)
 
 ```sh
 uv tool install pyrefly
@@ -133,13 +133,15 @@ codex-lsp setup pyrefly-tsp
 codex-lsp types --file app.py --line 20 --symbol value --view computed --fields summary
 codex-lsp types --file app.py --range 25:12-25:25 --view expected --json
 codex-lsp types --file src/app.ts --line 20 --symbol value --view declared --fields summary
+codex-lsp setup rust-types
+codex-lsp types --file src/lib.rs --line 20 --symbol value --view expected --fields summary
 ```
 
 For Python, `types` queries computed, declared or contextual expected types through stable TSP 0.4.x, using `pyrefly tsp`. It negotiates versions, reacquires snapshots after cancellation/change and validates response-local type references. The optional backend is separate from normal LSP navigation and diagnostics. Batch/session rows accept `"command":"types"` with `view`, `server` and expression `range`. Use `--fields summary` for compact answers or `--fields type` for the structured graph. If a response exceeds `--budget`, its graph is omitted atomically with `typeOmitted: true`. See [TSP workflows and backend semantics](skills/codex-lsp/references/tsp.md).
 
 For TypeScript/JavaScript, the same command uses the project's TypeScript package and tsconfig/jsconfig through `provider: "typescript-api"`. It supports the Compiler API in TypeScript 6 and the native sync/AST API in TypeScript 7, with compiler identity in JSON. Compatible batch/session questions share an isolated compiler worker; dependency/config changes refresh analysis and timeouts close stalled workers. Structured output includes members, unions and call signatures. See [TypeScript queries](skills/codex-lsp/references/typescript-types.md).
 
-For Rust and other languages without a matching TSP backend, use `hover` or `type-definition`; the missing-provider error points to those alternatives. A custom TSP provider can still be configured for its supported file types.
+For Rust, `provider: "rust-analyzer-api"` uses a small Cargo-installed helper backed by rust-analyzer's internal semantic APIs. Run `setup rust-types` for its status/installation command. It provides computed, declared and supported contextual expected types, including instantiated generic parameters, with original and adjusted types kept separate. It shares Cargo state across batch/session queries and validates source/dependency snapshots. Build scripts and external process macros are disabled in the initial backend; read [Rust type queries](skills/codex-lsp/references/rust-types.md) for setup and exact analysis scope. Other languages can use `hover`, `type-definition` or a configured matching TSP provider.
 
 ### Calls, completions, baselines and impact
 

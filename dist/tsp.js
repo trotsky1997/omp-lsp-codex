@@ -24,8 +24,12 @@ export function typeServerVersion(client, deadline) {
                 throw Object.assign(new Error(`Unsupported TSP protocol version ${JSON.stringify(value)}; this client supports stable 0.4.x`), { supported: false });
             return value;
         }).catch(error => {
-            if (object(error).code === -32601)
-                throw Object.assign(new Error(`${client.server.name} does not serve TSP; Pyrefly requires "pyrefly tsp". Run codex-lsp setup pyrefly-tsp and use --server pyrefly-tsp`), { supported: false });
+            if (object(error).code === -32601) {
+                const types = client.server.fileTypes ?? [];
+                const hint = types.some(type => /^\.pyi?$/.test(type)) ? 'Pyrefly requires "pyrefly tsp". Run codex-lsp setup pyrefly-tsp and use --server pyrefly-tsp'
+                    : types.includes(".rs") ? "For Rust, use types --server rust-analyzer-api or hover/type-definition" : "Choose a TSP provider matching this file type, or use hover/type-definition";
+                throw Object.assign(new Error(`${client.server.name} does not serve TSP; ${hint}`), { supported: false });
+            }
             if (object(error).supported !== false)
                 versions.delete(client);
             throw error;

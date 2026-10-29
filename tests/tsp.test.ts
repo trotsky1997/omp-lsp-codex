@@ -61,12 +61,21 @@ test("TSP: missing provider gives install and official documentation guidance; s
 
 test("TSP: missing Rust provider suggests semantic alternatives without Python installation instructions", async () => {
   const w = workspace(), file = join(w.root, "source.rs"); writeFileSync(file, "fn value() -> i32 { 1 }\n");
-  await assert.rejects(run({ ...w.args("types"), file }), error => {
+  await assert.rejects(run({ ...w.args("types", "--server", "missing-rust-tsp"), file }), error => {
     assert.match(String(error), /No available TSP server.*hover.*type-definition/);
     assert.doesNotMatch(String(error), /pyrefly|uv tool install/); return true;
   });
   assert.equal(LspClient.active.size, 0);
   assert.equal(readFileSync(file, "utf8"), "fn value() -> i32 { 1 }\n");
+});
+
+test("TSP: unsupported Rust handshake points to its native semantic backend", async () => {
+  const w=fixture({errors:{[version]:{code:-32601,message:"Unknown method"}}}), file=join(w.root,"source.rs");
+  writeFileSync(file,"fn value() -> i32 { 1 }\n"); w.configs.fixture.fileTypes=[".rs"]; w.saveConfig();
+  const result=await run({...w.args("types","--server","fixture"),file});
+  assert.equal(result.data.supported,false); assert.equal(result.code,1);
+  assert.match(result.human,/rust-analyzer-api/); assert.doesNotMatch(result.human,/pyrefly|uv tool install/);
+  assert.equal(w.calls(computed).length,0); assert.equal(w.calls("textDocument/hover").length,0);
 });
 
 test("TSP: CLI and JSONL validate view, range and provider before starting a process", async () => {
@@ -122,7 +131,7 @@ test("TSP: unsupported methods and incompatible versions never fall back to unre
     assert.equal(result.data.supported, false); assert.equal(result.code, 1); assert.equal(w.calls(snapshot).length, 0); assert.equal(w.calls("textDocument/hover").length, 0);
   }
   const w = fixture({ errors: { [version]: { code: -32601, message: "Unknown method" } } }), result = await run(w.args("types"));
-  assert.equal(result.data.supported, false); assert.match(result.human, /pyrefly tsp/);
+  assert.equal(result.data.supported, false); assert.match(result.human, /provider matching this file type/);
   for (const value of ["0.4.0", "0.4.99+build.2"]) {
     const good = fixture({ responses: { ...responses, [version]: value } }); assert.equal((await run(good.args("types"))).data.protocolVersion, value);
   }

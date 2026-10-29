@@ -121,7 +121,7 @@ export function attachTargets(args, data) {
             }
         }
         for (const [key, child] of Object.entries(row))
-            if (!["target", "workspaceEdit", "workspaceEdits", "data", "range"].includes(key) && !(key === "type" && ["tsp", "typescript-api"].includes(String(row.provider))))
+            if (!["target", "workspaceEdit", "workspaceEdits", "data", "range"].includes(key) && !(key === "type" && ["tsp", "typescript-api", "rust-analyzer-api"].includes(String(row.provider))))
                 visit(child, path ? `${path}.${key}` : key, source);
     };
     visit(result, "");

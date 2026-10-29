@@ -24,7 +24,7 @@ export function budgetData(data, maximum) {
         for (const [key, value] of Object.entries(owner)) {
             if (key === "budget")
                 continue;
-            if (key === "type" && ["tsp", "typescript-api"].includes(String(owner.provider)) && value !== null && typeof value === "object") {
+            if (key === "type" && ["tsp", "typescript-api", "rust-analyzer-api"].includes(String(owner.provider)) && value !== null && typeof value === "object") {
                 // Keep structured types atomic so clipping cannot change their meaning or leave dangling IDs.
                 delete owner.type;
                 owner.typeOmitted = true;

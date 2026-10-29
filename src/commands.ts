@@ -60,6 +60,7 @@ import { budgetData } from "./budget.ts";
 import { combinedPlan, declaredTools, runTooling, validateToolPlan, verifyToolPlan } from "./tooling.ts";
 import { queryType, typeServerVersion } from "./tsp.ts";
 import { typescriptFile, typescriptTypes } from "./typescript-api.ts";
+import { rustFile, rustTypes, setupRustTypes } from "./rust-api.ts";
 
 export interface Options {
   command: string;
@@ -834,6 +835,12 @@ function setup(args: Options): Result {
       .map((x) => x.trim())
       .filter(Boolean);
   if (!languages.length) throw new Error("Provide languages, such as codex-lsp setup rust python");
+  if (languages.some(name => ["rust-types", "rust-analyzer-api"].includes(name))) {
+    const native = setupRustTypes(args), remaining = languages.filter(name => !["rust-types", "rust-analyzer-api"].includes(name));
+    if (!remaining.length) return native;
+    const configured = setup({ ...args, languages: remaining });
+    return { ...configured, data: { ...configured.data, typeBackend: native.data }, human: configured.human + "\n" + native.human };
+  }
   if (args.project && languages.some((name) => name === "." || name === ".." || /[\\/]/.test(name) && !Object.hasOwn(configs, name)))
     throw new Error("--project takes no path; select the project with --cwd PATH, for example: codex-lsp --cwd PATH setup python --project");
   const selected: Record<string, string> = {},
@@ -1405,6 +1412,7 @@ export async function run(args: Options, session?: Session): Promise<Result> {
       const lookup = await syntaxLookup(file, readText(file), resolved.symbol, resolved.globalBinsOnly);
       const candidates = resolved.lineExplicit ? lookup.candidates.filter(row => row.line === resolved.line) : lookup.candidates;
       const selected = resolved.lineExplicit ? candidates.length === 1 ? { line: candidates[0].line - 1, character: candidates[0].column - 1 } : undefined : lookup.position;
+      if (!selected && !candidates.length && resolved.command === "types" && rustFile(file) && (!resolved.server || resolved.server === "rust-analyzer-api")) return finish(await runQuery(resolved, session));
       if (!selected) {
         const shown = candidates.slice(0, resolved.limit || undefined), hint = candidates.length ? "Choose a candidate with --line N --column N, or qualify the symbol by its containing class/module." : "No matching declaration; use symbols --file PATH --query NAME or an explicit source position.";
         const data = { success: false, found: false, reason: candidates.length ? "ambiguous-symbol" : "symbol-not-found", candidates: shown, total: candidates.length, shown: shown.length, truncated: shown.length < candidates.length, hint };
@@ -1431,12 +1439,13 @@ async function runQuery(args: Options, session?: Session): Promise<Result> {
     const path = resolveFile(args.file, args.cwd);
     const text = readText(path);
     if (args.range) for (const point of [args.range.start, args.range.end]) await position(path, text, { line: point.line + 1, column: point.character + 1 });
-    else await position(path, text, args);
+    else if (!(args.command === "types" && rustFile(path) && args.symbol && args.lineExplicit === false && args.column === undefined && (!args.server || args.server === "rust-analyzer-api"))) await position(path, text, args);
   }
   if (navigation) return navigate(args, undefined, session);
   switch (args.command) {
     case "types": {
       if (args.file && typescriptFile(args.file) && (!args.server || args.server === "typescript-api")) return typescriptTypes(args, session);
+      if (args.file && rustFile(args.file) && (!args.server || args.server === "rust-analyzer-api")) return rustTypes(args, session);
       const context = await fileContext(args, true, session);
       try {
         const point = await position(context.path, context.text, args);

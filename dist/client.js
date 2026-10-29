@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import childProcess from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { windowsCommand } from "./windows-command.js";
@@ -60,6 +60,7 @@ export class LspClient {
             : { command: command[0], args: command.slice(1), windowsVerbatimArguments: false };
         this.proc = childProcess.spawn(invocation.command, invocation.args, {
             cwd: server.root,
+            detached: server.name === "rust-analyzer-api" && process.platform !== "win32",
             stdio: "pipe",
             windowsVerbatimArguments: invocation.windowsVerbatimArguments,
             env: { ...process.env, RUSTUP_AUTO_INSTALL: "0" },
@@ -529,6 +530,25 @@ export class LspClient {
     close() {
         return this.#closing ??= this.#close();
     }
+    async #kill(signal) {
+        if (this.server.name !== "rust-analyzer-api" || !this.proc.pid) {
+            this.proc.kill(signal);
+            return;
+        }
+        if (process.platform === "win32") {
+            await new Promise(resolve => childProcess.execFile(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(this.proc.pid), "/T", "/F"], { timeout: 1000, windowsHide: true }, () => resolve()));
+            if (this.proc.exitCode === null && this.proc.signalCode === null)
+                this.proc.kill(signal);
+        }
+        else {
+            try {
+                process.kill(-this.proc.pid, signal);
+            }
+            catch {
+                this.proc.kill(signal);
+            }
+        }
+    }
     async #close() {
         this.#closed = true;
         try {
@@ -544,15 +564,17 @@ export class LspClient {
             if (this.proc.exitCode === null && this.proc.signalCode === null) {
                 await Promise.race([this.exited, sleep(200, undefined, { ref: false })]);
                 if (this.proc.exitCode === null && this.proc.signalCode === null) {
-                    this.proc.kill();
+                    await this.#kill("SIGTERM");
                     await Promise.race([this.exited, sleep(200, undefined, { ref: false })]);
                     if (this.proc.exitCode === null && this.proc.signalCode === null)
-                        this.proc.kill("SIGKILL");
+                        await this.#kill("SIGKILL");
                 }
             }
             await this.exited;
         }
         finally {
+            if (this.server.name === "rust-analyzer-api")
+                await this.#kill("SIGKILL");
             this.#fail(new Error("LSP client closed"));
             LspClient.active.delete(this);
         }

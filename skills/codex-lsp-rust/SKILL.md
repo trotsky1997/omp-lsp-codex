@@ -27,6 +27,8 @@ Use `lint --file PATH --tool clippy` for Cargo/Clippy diagnostics and `format --
 
 For local bindings, find the current line with snippet/ast-grep and use `hover --symbol NAME`; document-symbol results follow the server's item outline.
 
+Use `types --view computed|declared|expected --fields summary` for a focused semantic type answer. `setup rust-types` checks the optional Cargo-installed native helper and gives installation guidance. Select a complete argument/RHS expression for `expected`; check `expectedSource`, `incomplete` and the helper's disabled build-script/proc-macro scope. `type.adjusted` is separate from the original computed type. Read [Rust type queries](../codex-lsp/references/rust-types.md) for Cargo settings, supported contexts and session invalidation.
+
 Snippets preserve attached outer attributes such as `cfg` and `must_use`. From a declaration anchor, find a call with `references` or `ast-grep run --lang Rust --pattern '$RECV.method($$$ARGS)' FILE` before requesting a signature; replace `method` with the intended method name. AST search excludes documentation examples. Nearby call-name hints identify syntax matches, so check their receivers.
 
 Macro bodies can expose token trees without parsed calls. If automatic signature selection explains this limit, use an explicit column after the call's `(`. RA can still have no semantic signature for a macro template; inspect the expanded call or the trait/function declaration in that case.

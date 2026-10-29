@@ -1,0 +1,30 @@
+[package]
+name = "codex-lsp-rust-types"
+version = "0.4.24"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+description = "Rust semantic type queries for codex-lsp using rust-analyzer APIs"
+repository = "https://github.com/trotsky1997/omp-lsp-codex"
+
+[dependencies]
+anyhow = "1"
+ra_ap_hir = "=0.0.358"
+ra_ap_ide_db = "=0.0.358"
+ra_ap_load-cargo = "=0.0.358"
+ra_ap_project_model = "=0.0.358"
+ra_ap_syntax = "=0.0.358"
+ra_ap_vfs = "=0.0.358"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+
+[dev-dependencies]
+ra_ap_test_fixture = "=0.0.358"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = true
+opt-level = 1

@@ -18,3 +18,7 @@ OMP's UI, agent runtime, logger, native helpers, shared mux and tool schema are 
 # Windows command shims
 
 `src/windows-command.ts` adapts argument escaping from [moxystudio/node-cross-spawn](https://github.com/moxystudio/node-cross-spawn/tree/77cd97f3ca7b62c904a63a698fc4a79bf41977d0), `lib/util/escape.js` and `lib/parse.js`. Its MIT license is included at `LICENSES/cross-spawn-MIT.txt`. The helper preserves Windows npm command shim arguments without a runtime npm dependency.
+
+# Rust semantic backend
+
+The optional `native/rust-types` helper links the published `ra_ap_*` rust-analyzer crates at version 0.0.358, licensed MIT OR Apache-2.0. It uses their semantic database, type resolution and Cargo workspace loader. Upstream sources: [rust-lang/rust-analyzer](https://github.com/rust-lang/rust-analyzer). The upstream license texts are included in `LICENSES/rust-analyzer-MIT.txt` and `LICENSES/rust-analyzer-APACHE.txt`; Cargo.lock records the helper's dependency versions.

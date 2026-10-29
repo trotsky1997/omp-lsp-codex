@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, fstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { encodeMessageFrame, MessageFramer } from "../../src/omp/message-framing.ts";
 import { object } from "../../src/config.ts";
@@ -39,6 +40,10 @@ for await (const chunk of process.stdin) {
   for (const text of framer.drain(() => {})) {
     const message = object(JSON.parse(text)), params = object(message.params);
     trace("receive", message);
+    if (scenario.spawnChildOn === message.method && typeof scenario.childPidFile === "string") {
+      const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
+      writeFileSync(scenario.childPidFile, String(child.pid));
+    }
     const reply = async (result: unknown) => {
       if (scenario.corruptUtf8 === message.method) {
         corruptUtf8({ id: message.id, result });

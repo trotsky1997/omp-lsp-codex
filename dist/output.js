@@ -38,8 +38,8 @@ export function selectFields(data, fields) {
         for (const key of STATE_FIELDS)
             if (Object.hasOwn(value, key) && value[key] !== undefined)
                 selected.set(prefix + key, value[key]);
-        if (["tsp", "typescript-api"].includes(String(value.provider)))
-            for (const key of ["server", "protocolVersion", "compilerVersion", "view", "declarationSource", "typeOmitted"])
+        if (["tsp", "typescript-api", "rust-analyzer-api"].includes(String(value.provider)))
+            for (const key of ["server", "protocolVersion", "compilerVersion", "engineVersion", "backendVersion", "apiVersion", "view", "declarationSource", "expectedSource", "typeOmitted"])
                 if (value[key] !== undefined)
                     selected.set(prefix + key, value[key]);
     };
