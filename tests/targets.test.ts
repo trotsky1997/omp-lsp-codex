@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { after, afterEach, before, mock, test } from "node:test";
 import { chmodSync, lstatSync, readFileSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { attachTargets, resolveTarget } from "../src/targets.ts";
 import { parseOptions } from "../src/cli.ts";
 import { run } from "../src/commands.ts";
@@ -32,6 +34,29 @@ test("targets: opt-in handles deduplicate positions and preserve input and actua
   assert.deepEqual(original.locations[0], { file: w.file, line: 1, column: 1 });
   const options = resolveTarget(query(w, String(rows[0].target)));
   assert.equal(options.file, w.file); assert.equal(options.line, 1); assert.equal(options.column, 1);
+});
+
+test("targets: compact candidates distinguish same-name symbols and expose foreign source anchors", () => {
+  const w=workspace(), other=workspace();writeFileSync(w.file,"function parse() {}\nfunction parse(value: unknown) {}\n");
+  const data={success:true,symbols:[{name:"parse",kind:6,container:"Client",file:w.file,line:1,column:10},{name:"parse",kind:6,container:"Parser",file:w.file,line:2,column:10},{name:"parse",kind:12,file:other.file,line:1,column:1}]};
+  const original=structuredClone(data),result=attachTargets(w.args("symbols","--targets"),data),targets=result.targets as Record<string,unknown>[];
+  assert.deepEqual(data,original);
+  assert.deepEqual(targets.slice(0,2).map(row=>({name:row.name,kind:row.kind,container:row.container,line:row.line,column:row.column})),[{name:"parse",kind:6,container:"Client",line:1,column:10},{name:"parse",kind:6,container:"Parser",line:2,column:10}]);
+  assert.equal(targets[0].file,undefined);assert.equal(targets[2].file,other.file);
+  assert.equal(resolveTarget(query(w,String(targets[1].id))).line,2);
+  assert.equal(resolveTarget(query(w,String(targets[2].id))).file,other.file);
+});
+
+test("targets: an instrumented concurrent cache eviction cannot discard a new semantic result", () => {
+  const w=workspace(),expired=target(w),past=new Date(0);utimesSync(expired.path,past,past);
+  const remove=fs.rmSync;let injected=false;
+  mock.method(fs,"rmSync",(...args:Parameters<typeof fs.rmSync>)=>{
+    if(basename(String(args[0]))===basename(expired.path)&&!injected){injected=true;remove(expired.path);}
+    return remove(...args);
+  });
+  syncBuiltinESMExports();
+  try{const fresh=target(w);assert.equal(injected,true);assert.equal(resolveTarget(query(w,fresh.id)).file,w.file);}
+  finally{mock.restoreAll();syncBuiltinESMExports();}
 });
 
 test("targets: private snapshots work across CLI invocations and point at the actual backend position", () => {
@@ -124,6 +149,14 @@ test("targets: expired, oversized indexes and damaged snapshots never silently r
   assert.throws(() => resolveTarget(query(w, id)), /expired/);
   writeFileSync(path, saved); assert.throws(() => resolveTarget(query(w, id.replace(/\.0$/, ".9999"))), /Invalid target record/);
   writeFileSync(path, "{"); assert.throws(() => resolveTarget(query(w, id)), /unavailable.*rerun/);
+});
+
+test("targets: missing snapshots explain cache lifetime and recovery without private filesystem noise", () => {
+  const w=workspace(),saved=target(w);unlinkSync(saved.path);
+  assert.throws(()=>resolveTarget(query(w,saved.id)),error=>{
+    assert.match(String(error),/unavailable.*10-minute lifetime.*rerun.*--targets/);
+    assert.doesNotMatch(String(error),/ENOENT|no such file|\.cache/);return true;
+  });
 });
 
 test("targets: untrusted cache permissions and symlinks reject resolution", () => {

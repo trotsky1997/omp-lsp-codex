@@ -441,6 +441,20 @@ pub fn query(
                 .and_then(|arm| arm.expr())
                 .or_else(|| {
                     ast::LetStmt::cast(node.clone()).and_then(|statement| statement.initializer())
+                })
+                .or_else(|| {
+                    let arguments = node.ancestors().find_map(ast::ArgList::cast)?;
+                    let mut candidates = arguments.args().filter(|argument| {
+                        ast::ArgList::can_cast(node.kind())
+                            || argument
+                                .syntax()
+                                .text_range()
+                                .contains_range(node.text_range())
+                    });
+                    let argument = candidates.next()?;
+                    (candidates.next().is_none()
+                        && argument.syntax().text_range() != node.text_range())
+                    .then_some(argument)
                 });
             if let Some(range) = suggested
                 .and_then(|expression| sema.original_range_opt(expression.syntax()))
@@ -461,7 +475,7 @@ pub fn query(
                 );
                 result["suggestedRange"] = range.clone().into();
                 result["hint"] = format!(
-                    "{}\nRetry the contained expression with --range {range}",
+                    "{}\nRetry the complete expression with --range {range}",
                     result["hint"].as_str().unwrap()
                 )
                 .into();
@@ -708,6 +722,32 @@ mod tests {
         assert_eq!(arm["found"], false);
         assert_eq!(arm["suggestedRange"], "1:43-1:44");
         assert!(arm["hint"].as_str().unwrap().ends_with("--range 1:43-1:44"));
+    }
+    #[test]
+    fn expected_type_recovery_selects_the_complete_borrowed_argument() {
+        let source = "fn consume(value:&u64){} fn main(){let value=1;consume(&value);}";
+        for needle in ["value", "(&value)"] {
+            let result = at(source, needle, "expected", true);
+            assert_eq!(result["found"], false);
+            let begin = source.rfind("&value").unwrap() + 1;
+            let range = format!("1:{begin}-1:{}", begin + "&value".len());
+            assert_eq!(result["suggestedRange"], range);
+            assert!(
+                result["hint"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("--range {range}"))
+            );
+        }
+        assert_eq!(at(source, "&value", "expected", true)["summary"], "&u64");
+        let ambiguous = at(
+            "fn consume(x:u32,y:u64){} fn main(){consume(1,2);}",
+            "(1,2)",
+            "expected",
+            true,
+        );
+        assert_eq!(ambiguous["found"], false);
+        assert!(ambiguous.get("suggestedRange").is_none());
     }
     #[test]
     fn associated_type_projections_keep_their_identity_in_signatures() {

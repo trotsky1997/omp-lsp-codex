@@ -57,6 +57,15 @@ test("CLI: help, version, JSON and human errors have the right exit codes", asyn
   assert.strictEqual(await main(["unknown", "--json"]), 2); const error = JSON.parse(output.pop()!); assert.strictEqual(error.success, false); assert.match(error.error, /Unknown command: unknown/);
   assert.strictEqual(await main(["unknown"]), 2); assert.ok((output.pop()!).includes("codex-lsp: Unknown command"));
 });
+test("CLI: options without a command fail explicitly without starting a backend", async () => {
+  assert.equal(await main([]), 0); assert.match(output.pop()!, /Commands:/);
+  for (const flags of [["--file", "source.ts", "--json"], ["--json"], ["--cwd", ".", "--budget", "900"]]) {
+    assert.equal(await main(flags), 2);
+    const error=JSON.parse(output.pop()!); assert.equal(error.success,false); assert.match(error.error,/Missing command.*status --file PATH/);
+  }
+  assert.equal(await main(["--file", "source.ts"]),2); assert.match(output.pop()!,/codex-lsp: Missing command/);
+  assert.equal(calls.length,0);
+});
 for (const [caseIndex, caseValue] of ([false, true]).entries()) {
   const runCase: (value: typeof caseValue) => void | Promise<void> = async (claude) => {
   if (claude) process.env.CLAUDE_PLUGIN_ROOT = "/fixture/plugin"; else delete process.env.CLAUDE_PLUGIN_ROOT;

@@ -251,6 +251,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       console.log(`codex-lsp ${version}`);
       return 0;
     }
+    if (!args.command && !args.help && argv.length) throw new Error("Missing command. Run codex-lsp status --file PATH or codex-lsp --help.");
     if (args.help || !args.command) {
       console.log(HELP);
       return 0;

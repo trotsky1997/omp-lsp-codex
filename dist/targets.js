@@ -51,7 +51,8 @@ export function resolveTarget(args) {
         snapshot = readCache(join(directory(), match[1] + ".json"));
     }
     catch (error) {
-        throw new Error(`Target snapshot unavailable; rerun the original query with --targets. ${error}`);
+        const cause = ["ENOENT", "ENOTDIR"].includes(String(object(error).code)) ? "" : ` ${error}`;
+        throw new Error(`Target snapshot unavailable (10-minute lifetime, bounded cache); rerun the original query with --targets.${cause}`);
     }
     if (snapshot.root !== workspace(args.cwd))
         throw new Error("Target workspace mismatch; use --cwd with the original project");
@@ -75,6 +76,7 @@ export function attachTargets(args, data) {
         return data;
     const result = structuredClone(data), entries = [], visible = [], sources = new Map();
     const positions = new Map(), id = randomBytes(12).toString("base64url");
+    const requestedFile = args.file ? realpathSync(resolve(args.cwd, args.file)) : undefined;
     let omitted = 0, sourceBytes = 0;
     const visit = (value, path, inheritedFile) => {
         if (Array.isArray(value)) {
@@ -112,7 +114,10 @@ export function attachTargets(args, data) {
                     target = `t_${id}.${entries.length}`;
                     positions.set(key, target);
                     entries.push({ file, line, column, hash: document.hash });
-                    visible.push({ id: target, path: path.replace(/^\./, ""), ...(typeof row.name === "string" ? { name: row.name } : {}) });
+                    visible.push({ id: target, path: path.replace(/^\./, ""), ...(typeof row.name === "string" ? { name: row.name } : {}),
+                        ...(typeof row.kind === "number" && Number.isSafeInteger(row.kind) ? { kind: row.kind } : {}),
+                        ...(typeof row.container === "string" && row.container ? { container: row.container } : {}),
+                        ...(file !== requestedFile ? { file } : {}), line, column });
                 }
                 row.target = target;
             }
@@ -140,7 +145,7 @@ export function attachTargets(args, data) {
     let bytes = snapshots.reduce((sum, item) => sum + item.bytes, 0), count = snapshots.length;
     for (const item of snapshots)
         if (Date.now() - item.time > TTL || count > 15 || bytes > MAX_FILE_BYTES) {
-            rmSync(join(root, item.name));
+            rmSync(join(root, item.name), { force: true });
             bytes -= item.bytes;
             count--;
         }

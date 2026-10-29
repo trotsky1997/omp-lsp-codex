@@ -41,7 +41,10 @@ export function resolveTarget(args: Options): Options {
   if (!match) throw new Error("Invalid target ID; request a fresh result with --targets");
   let snapshot: ObjectValue;
   try { snapshot = readCache(join(directory(), match[1] + ".json")); }
-  catch (error) { throw new Error(`Target snapshot unavailable; rerun the original query with --targets. ${error}`); }
+  catch (error) {
+    const cause = ["ENOENT", "ENOTDIR"].includes(String(object(error).code)) ? "" : ` ${error}`;
+    throw new Error(`Target snapshot unavailable (10-minute lifetime, bounded cache); rerun the original query with --targets.${cause}`);
+  }
   if (snapshot.root !== workspace(args.cwd)) throw new Error("Target workspace mismatch; use --cwd with the original project");
   if (typeof snapshot.created !== "number" || snapshot.created > Date.now() || Date.now() - snapshot.created > TTL) throw new Error("Target expired; rerun the original query with --targets");
   if (!Array.isArray(snapshot.targets) || snapshot.targets.length > MAX_TARGETS) throw new Error("Invalid target snapshot");
@@ -58,6 +61,7 @@ export function attachTargets(args: Options, data: ObjectValue): ObjectValue {
   if (!args.targets) return data;
   const result = structuredClone(data), entries: Target[] = [], visible: ObjectValue[] = [], sources = new Map<string, { text: string; hash: string }>();
   const positions = new Map<string, string>(), id = randomBytes(12).toString("base64url");
+  const requestedFile = args.file ? realpathSync(resolve(args.cwd, args.file)) : undefined;
   let omitted = 0, sourceBytes = 0;
   const visit = (value: unknown, path: string, inheritedFile?: string) => {
     if (Array.isArray(value)) { value.forEach((item, index) => visit(item, `${path}.${index}`, inheritedFile)); return; }
@@ -84,7 +88,10 @@ export function attachTargets(args: Options, data: ObjectValue): ObjectValue {
           if (entries.length >= MAX_TARGETS) throw new Error("Target count limit");
           target = `t_${id}.${entries.length}`; positions.set(key, target);
           entries.push({ file, line, column, hash: document.hash });
-          visible.push({ id: target, path: path.replace(/^\./, ""), ...(typeof row.name === "string" ? { name: row.name } : {}) });
+          visible.push({ id: target, path: path.replace(/^\./, ""), ...(typeof row.name === "string" ? { name: row.name } : {}),
+            ...(typeof row.kind === "number" && Number.isSafeInteger(row.kind) ? { kind: row.kind } : {}),
+            ...(typeof row.container === "string" && row.container ? { container: row.container } : {}),
+            ...(file !== requestedFile ? { file } : {}), line, column });
         }
         row.target = target;
       } catch { omitted++; }
@@ -99,7 +106,7 @@ export function attachTargets(args: Options, data: ObjectValue): ObjectValue {
   }).sort((a, b) => a.time - b.time);
   let bytes = snapshots.reduce((sum, item) => sum + item.bytes, 0), count = snapshots.length;
   for (const item of snapshots) if (Date.now() - item.time > TTL || count > 15 || bytes > MAX_FILE_BYTES) {
-    rmSync(join(root, item.name)); bytes -= item.bytes; count--;
+    rmSync(join(root, item.name), { force: true }); bytes -= item.bytes; count--;
   }
   for (const [file, document] of sources) if (readText(file) !== document.text) throw new Error("Source changed while creating targets; retry the query");
   const encoded = JSON.stringify({ root: workspace(args.cwd), created: Date.now(), targets: entries });

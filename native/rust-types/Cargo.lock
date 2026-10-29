@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "codex-lsp-rust-types"
-version = "0.4.24"
+version = "0.4.25"
 dependencies = [
  "anyhow",
  "ra_ap_hir",

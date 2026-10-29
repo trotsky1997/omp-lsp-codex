@@ -15,7 +15,7 @@ import { cleanWorkspaces, isolateGlobalConfig, workspace } from "./fixtures/work
 let restore: () => void; const previousPath = process.env.PATH;
 before(() => {restore = isolateGlobalConfig();}); after(() => restore());
 afterEach(async () => {mock.restoreAll(); process.env.PATH = previousPath; const active = LspClient.active.size; await Promise.all([...LspClient.active].map(client => client.close())); cleanWorkspaces(); assert.equal(active, 0);});
-const answer = {success:true,supported:true,found:true,provider:"rust-analyzer-api",apiVersion:1,engineVersion:"0.0.358",backendVersion:"0.4.24",snapshot:2,view:"computed",summary:"u32",type:{text:"u32",kind:"primitive",properties:[],signatures:[]},cursor:{line:1,column:5}};
+const answer = {success:true,supported:true,found:true,provider:"rust-analyzer-api",apiVersion:1,engineVersion:"0.0.358",backendVersion:"0.4.25",snapshot:2,view:"computed",summary:"u32",type:{text:"u32",kind:"primitive",properties:[],signatures:[]},cursor:{line:1,column:5}};
 function fixture(result: ObjectValue=answer) {
   const w = workspace({capabilities:{codexTypesVersion:1},responses:{"codex/types":result}});
   const file=join(w.root,"source.rs"); writeFileSync(file,"let value: u32 = 1;\n"); writeFileSync(join(w.root,"Cargo.toml"),'[package]\nname="fixture"\nversion="0.1.0"\n');

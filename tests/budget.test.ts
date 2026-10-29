@@ -38,6 +38,26 @@ test("budget: one 3000-character envelope retains states and counts across all i
   for (const snippet of context.snippets as ObjectValue[]) { assert.equal(snippet.file, path); assert.deepEqual(snippet.range, range); assert.equal(object(snippet.characters).shown, String(snippet.snippet).length); }
 });
 
+test("budget: small inspect keeps a readable source signature before sampled reference snippets", () => {
+  const file="/workspace/"+"project/".repeat(18)+"src/session.ts";
+  const data=JSON.parse(JSON.stringify(inspect()).replaceAll(path,file)) as ObjectValue;
+  data.hint="Diagnostics verified: existing code errors. Navigation results remain available.";
+  const sections=object(data.results);
+  for(const section of Object.values(sections)) object(section).server="language-server";
+  object(sections.hover).provider="lsp";
+  sections.symbols={success:true,server:"language-server",total:13,shown:0,truncated:true,symbols:[]};
+  sections["type-definition"]={success:true,found:true,server:"language-server",total:1,shown:1,truncated:false,locations:[{file,line:1,column:1}]};
+  const source="function parse(value: string, fallback: Readonly<Record<string, unknown>>): string {\n"+"  return value;\n".repeat(100);
+  object(sections.hover).hover=source;
+  for(const snippet of object(sections.context).snippets as ObjectValue[]) Object.assign(snippet,{provider:"ast-grep",snippet:source,characters:{total:source.length,shown:source.length}});
+  const result=budgetData(data,2500); fits(result,2500);
+  const output=object(result.results),snippets=object(output.context).snippets as ObjectValue[];
+  assert.match(String(snippets[0].snippet),/fallback: Readonly<Record<string, unknown>>\): string \{/);
+  assert.equal(result.success,false); assert.deepEqual(result.failedSections,["diagnostics"]);
+  assert.equal(object(output.diagnostics).hasErrors,true); assert.deepEqual(object(output.diagnostics).counts,object(sections.diagnostics).counts);
+  assert.equal(object(output.context).shown,snippets.length);
+});
+
 test("budget: compact 512-character output preserves selected ancestor verification and whole ranges", () => {
   const selected = selectFields(inspect(), ["results.diagnostics.counts", "results.context.snippets"]);
   const data = budgetData(selected, 512); fits(data, 512);
@@ -52,6 +72,7 @@ test("budget: clipped inspect includes copyable field selectors that recover foc
   const hint = String(object(result.budget).hint);
   assert.match(hint, /--fields results\.context\.snippets/);
   assert.match(hint, /results\.hover/);
+  assert.match(hint, /snippet for one declaration/);
   const fields = /--fields (\S+)/.exec(hint)![1];
   const focused = budgetData(selectFields(data, [fields]), 3000); fits(focused, 3000);
   assert.deepEqual(focused.failedSections, ["diagnostics"]);

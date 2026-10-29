@@ -41,6 +41,8 @@ test("native Rust: original/declared/expected types and adjusted references come
     const computed=await run(w.query("text"),w.pool),declared=await run(w.query("text","declared"),w.pool),expected=await run(w.query("&text","expected",true),w.pool),reference=await run(w.query("&text","computed",true),w.pool);
     assert.equal(computed.data.summary,"String");assert.equal(declared.data.summary,"String");assert.equal(declared.data.declarationSource,"annotation");
     assert.equal(expected.data.summary,"&str");assert.equal(expected.data.expectedSource,"argument");assert.equal(reference.data.summary,"&String");assert.equal(object(reference.data.type).adjusted,"&str");
+    const partial=await run(w.query("text","expected",true),w.pool);assert.equal(partial.data.found,false);assert.equal(typeof partial.data.suggestedRange,"string");
+    const recovered=await run({...parseOptions(["types","--file",w.file,"--range",String(partial.data.suggestedRange),"--view","expected"],w.root),timeout:30000},w.pool);assert.equal(recovered.data.summary,"&str");
     const generic=await run(w.query("42u32","expected",true),w.pool);assert.equal(generic.data.summary,"u32");
     const macro=await run({...parseOptions(["types","--file",w.file,"--symbol","wrapped","--view","declared"],w.root),timeout:30000},w.pool);
     assert.equal(macro.data.found,true);assert.equal(object((object(macro.data.type).signatures as ObjectValue[])[0]).returns,"u8");

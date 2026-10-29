@@ -42,7 +42,7 @@ export function budgetData(data: ObjectValue, maximum: number): ObjectValue {
       } else if (Array.isArray(value)) {
         if (collections.has(key) || key === "checked" && value.every(row => !Array.isArray((row as ObjectValue)?.diagnostics))) {
           const rank = path.endsWith(".references") || key === "edges" ? 0 : key === "symbols" || key === "targets" ? 1 : key === "diagnostics" ? 2 : path.endsWith(".type-definition") ? 3 : key === "edits" ? 4 : key === "snippets" ? 5 : 6;
-          arrays.push({ owner, key, items: value, length: value.length, rank, minimum: ["snippets", "nodes"].includes(key) ? 2 : ["edges", "items", "targets"].includes(key) || path.endsWith(".definition") ? 1 : 0 });
+          arrays.push({ owner, key, items: value, length: value.length, rank, minimum: key === "nodes" ? 2 : ["snippets", "edges", "items", "targets"].includes(key) || path.endsWith(".definition") ? 1 : 0 });
         }
         for (const [index, item] of value.entries()) {
           if (item && typeof item === "object" && !Array.isArray(item)) visit(item as ObjectValue, `${path}.${key}`);
@@ -112,7 +112,7 @@ export function budgetData(data: ObjectValue, maximum: number): ObjectValue {
     if (clipped) {
       result.truncated = true;
       budget.hint = result.results && typeof result.results === "object" && "hover" in result.results && "context" in result.results
-        ? "Clipped; increase --budget or select --fields results.context.snippets for source / results.hover for types."
+        ? "Clipped; select --fields results.context.snippets for source / results.hover for types; use snippet for one declaration."
         : "Output clipped by --budget; increase it or omit --budget.";
     } else delete budget.hint;
     return size();
